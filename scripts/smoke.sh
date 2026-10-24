@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Real-model smoke check, never run by the gate: speak a sentence with `say`,
 # convert it to 16 kHz mono 16-bit WAV with ffmpeg, and transcribe it through
-# the app's Whisper adapter (apps/desktop/src-tauri/examples/smoke.rs).
+# the engine's Whisper adapter (crates/scriber-engine/examples/smoke.rs).
 # Needs the model (scripts/fetch-model.sh) and ffmpeg (brew install ffmpeg).
 #
 #   scripts/smoke.sh ["sentence to speak"]
@@ -20,4 +20,4 @@ say -o "$work/speech.aiff" "$sentence"
 ffmpeg -loglevel error -i "$work/speech.aiff" -ar 16000 -ac 1 -c:a pcm_s16le "$work/speech.wav"
 
 echo "spoken: \"$sentence\""
-(cd apps/desktop && cargo run --quiet --release --locked --example smoke -- "$model" "$work/speech.wav")
+cargo run --quiet --release --locked -p scriber-engine --example smoke -- "$model" "$work/speech.wav"

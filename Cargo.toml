@@ -1,12 +1,14 @@
-# Virtual workspace root: the logic crates only.
+# Virtual workspace root: the logic crate and the engine with the real adapters.
 #
 # scriber-core holds every decision the app makes and performs no I/O itself.
-# The desktop shell lives in apps/desktop, which is its OWN cargo workspace
-# with its own lockfile, so Tauri's dependency tree never reaches these gates
-# (coverage, mutants, machete, deny).
+# scriber-engine puts the real adapters (cpal, whisper.cpp, the data folder,
+# the model download) and a std-thread job queue around it, as a library any
+# Rust app can depend on. The desktop shell lives in apps/desktop, which is
+# its OWN cargo workspace with its own lockfile, so Tauri's dependency tree
+# never reaches these gates (coverage, mutants, machete, deny).
 [workspace]
 resolver = "3"
-members = ["crates/scriber-core"]
+members = ["crates/scriber-core", "crates/scriber-engine"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,19 +1,18 @@
 //! Real-model smoke check, never run by the gate: transcribes a 16 kHz mono
-//! WAV through the app's own Whisper adapter, warming it up first as the app
-//! does at launch, and prints the text and how long each step took.
-//! `scripts/smoke.sh` makes the WAV and runs this:
+//! WAV through the engine's Whisper adapter, warming it up first as the
+//! engine does at launch, and prints the text and how long each step took.
+//! `scripts/smoke.sh` makes the WAV and runs this from the repo root:
 //!
 //! ```sh
-//! cargo run --release --example smoke -- <model.bin> <speech.wav>
+//! cargo run --release -p scriber-engine --example smoke -- <model.bin> <speech.wav>
 //! ```
 
 use std::io::Write;
 use std::time::Instant;
 
-use scriber_app_lib::Whisper;
 use scriber_core::audio::decode_wav;
-use scriber_core::ports::Transcriber;
 use scriber_core::transcript::{is_silent, keep};
+use scriber_engine::{Transcriber, Whisper};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);

@@ -428,4 +428,73 @@ mod tests {
             "the last report is the session as it stands"
         );
     }
+
+    #[test]
+    fn launch_local_with_the_model_installed_queues_only_the_warm_up() {
+        let w = World::default();
+        let p = w.ports();
+        let d = Dictation::launch_local(&p);
+        assert_eq!(
+            d.snapshot(&p),
+            Dictation::recover(&p).snapshot(&p),
+            "the same state as recover"
+        );
+        let jobs: Vec<_> = w.queue.jobs.borrow_mut().drain(..).collect();
+        assert_eq!(jobs.len(), 1, "one job: the warm-up");
+        let _outcome = w.run(&jobs[0]);
+        assert_eq!(w.transcriber.warms.get(), 1, "it loads the model");
+        assert!(w.downloader.urls.borrow().is_empty(), "nothing downloaded");
+    }
+
+    #[test]
+    fn launch_local_refuses_a_download_as_local_even_when_installed() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = Dictation::launch_local(&p);
+        assert_eq!(
+            d.apply(Action::DownloadModel, "", &p),
+            Err(DictationError::LocalModel),
+            "local, not NoDownload"
+        );
+    }
+
+    #[test]
+    fn launch_local_with_the_model_missing_queues_nothing() {
+        let w = missing(&[]);
+        let p = w.ports();
+        let mut d = Dictation::launch_local(&p);
+        assert!(w.queue.jobs.borrow().is_empty(), "no job queued");
+        let s = d.snapshot(&p);
+        assert_eq!(
+            (s.model_error, s.download),
+            (Some(model_missing(PATH)), None),
+            "says where the model belongs, and does not download it"
+        );
+        assert_eq!(
+            d.apply(Action::DownloadModel, "", &p),
+            Err(DictationError::LocalModel),
+            "refused"
+        );
+        assert!(w.queue.jobs.borrow().is_empty(), "still no job");
+    }
+
+    #[test]
+    fn a_recovered_session_has_no_download_source() {
+        let w = missing(&[]);
+        let p = w.ports();
+        assert_eq!(
+            Dictation::recover(&p).apply(Action::DownloadModel, "", &p),
+            Err(DictationError::LocalModel),
+            "refused"
+        );
+    }
+
+    #[test]
+    fn the_local_model_sentence() {
+        assert_eq!(
+            DictationError::LocalModel.to_string(),
+            "The speech model is a local file, so there is nothing to download.",
+            "sentence"
+        );
+    }
 }

@@ -4,6 +4,9 @@
 
 [graph]
 all-features = true
+# The shipped Mac and the gate host: the engine's audio and TLS crates pull
+# in per-platform trees (Windows, wasm, Android) that never ship.
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
 
 [advisories]
 ignore = []
@@ -67,6 +70,12 @@ ignore = true
 multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
+# Build-time only, behind whisper.cpp's bindings and native-tls; each newer
+# version is also in the tree (cc, serde_derive, thiserror-impl).
+skip = [
+    { crate = "shlex@1.3.0", reason = "bindgen (build) <- whisper-rs-sys <- whisper-rs <- scriber-engine" },
+    { crate = "syn@2.0.119", reason = "bindgen and prettyplease (build) <- whisper-rs-sys, and openssl-macros <- openssl <- native-tls <- ureq <- scriber-engine" },
+]
 
 [sources]
 unknown-registry = "deny"

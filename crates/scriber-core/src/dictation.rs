@@ -46,6 +46,10 @@ pub enum DictationError {
     /// already downloading.
     #[error("The speech model is already installed or downloading.")]
     NoDownload,
+    /// A model download was asked for while the model is a local file, so
+    /// there is no source to download it from.
+    #[error("The speech model is a local file, so there is nothing to download.")]
+    LocalModel,
     /// The microphone could not start.
     #[error("Could not start recording: {0}")]
     Recorder(PortError),
@@ -203,7 +207,9 @@ enum Slot {
 }
 
 /// One dictation session and the app's place in it. The default is idle,
-/// with no session.
+/// with no session and no download source: until [`Self::launch`] or
+/// [`Self::launch_from`] sets one, [`Action::DownloadModel`] is refused with
+/// [`DictationError::LocalModel`].
 #[derive(Debug, Default)]
 pub struct Dictation {
     phase: Phase,
@@ -222,8 +228,9 @@ pub struct Dictation {
     revision: u64,
     /// The speech model's download.
     fetch: Fetch,
-    /// What the download fetches: the model, except in tests.
-    source: Source,
+    /// What the download fetches: the model, except in tests; `None` when
+    /// the model is a local file ([`Self::launch_local`]).
+    source: Option<Source>,
 }
 
 impl Dictation {
@@ -281,12 +288,12 @@ impl Dictation {
     #[must_use]
     pub fn launch_from(source: Source, ports: &Ports<'_>) -> Self {
         let mut this = Self {
-            source,
+            source: Some(source.clone()),
             ..Self::recover(ports)
         };
         let job = if ports.transcriber.missing_model().is_some() {
             this.fetch = Fetch::Running(0);
-            Job(Work::Download(this.source.clone()))
+            Job(Work::Download(source))
         } else {
             Job(Work::Warm)
         };
@@ -294,9 +301,24 @@ impl Dictation {
         this
     }
 
+    /// [`Self::launch`] for a model that is a local file, with no download
+    /// source: the warm-up is queued when the model is installed, and
+    /// nothing when it is missing (the snapshot says where it belongs, and
+    /// [`Action::DownloadModel`] is refused with [`DictationError::LocalModel`]).
+    #[must_use]
+    pub fn launch_local(ports: &Ports<'_>) -> Self {
+        let mut this = Self::recover(ports);
+        if ports.transcriber.missing_model().is_none() {
+            this.queue(vec![Job(Work::Warm)], ports);
+        }
+        this
+    }
+
     /// The state found on disk: finished with the last session's kept
     /// transcript; failed with the segments of a session that never finished
-    /// (a crash, a quit mid-transcription) waiting for Retry; or idle.
+    /// (a crash, a quit mid-transcription) waiting for Retry; or idle. It
+    /// has no download source, so [`Action::DownloadModel`] is refused with
+    /// [`DictationError::LocalModel`].
     #[must_use]
     pub fn recover(ports: &Ports<'_>) -> Self {
         let mut this = Self::default();
@@ -345,7 +367,7 @@ impl Dictation {
             download: match self.fetch {
                 Fetch::Running(received) => Some(Download {
                     received_bytes: received,
-                    total_bytes: self.source.bytes,
+                    total_bytes: self.source.as_ref().map_or(0, |s| s.bytes),
                 }),
                 Fetch::Idle | Fetch::Failed(_) => None,
             },
@@ -376,13 +398,17 @@ impl Dictation {
     ///
     /// # Errors
     ///
-    /// The model is installed or already downloading.
+    /// The model is a local file with no download source; the model is
+    /// installed or already downloading.
     pub fn download_model(&mut self, ports: &Ports<'_>) -> Result<Job, DictationError> {
+        let Some(source) = self.source.clone() else {
+            return Err(DictationError::LocalModel);
+        };
         if ports.transcriber.missing_model().is_none() || matches!(self.fetch, Fetch::Running(_)) {
             return Err(DictationError::NoDownload);
         }
         self.fetch = Fetch::Running(0);
-        Ok(Job(Work::Download(self.source.clone())))
+        Ok(Job(Work::Download(source)))
     }
 
     fn allow(&self, action: Action, allowed: &[Phase]) -> Result<(), DictationError> {

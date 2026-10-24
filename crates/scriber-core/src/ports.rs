@@ -1,5 +1,6 @@
 //! The core's view of the outside world. Each trait is one kind of effect;
-//! the app crate supplies the real implementations and the tests supply
+//! the engine crate (`crates/scriber-engine`) supplies the real
+//! implementations (the desktop app, its clipboard) and the tests supply
 //! fakes (`tests/common`). Nothing in the core touches the microphone, the
 //! transcription model, the filesystem or the clipboard except through
 //! these.
@@ -148,8 +149,9 @@ pub trait Clipboard {
 }
 
 /// Where jobs go to run off the caller's thread: closed segments to
-/// transcribe, the model's warm-up and its download (the app runs
-/// [`Job::run`] on a worker and hands the result to
+/// transcribe, the model's warm-up and its download (the engine,
+/// `crates/scriber-engine`, runs each on a std thread of its own through
+/// [`crate::dictation::work`], which hands the result to
 /// [`crate::dictation::Dictation::complete`]).
 pub trait JobQueue {
     /// Queues `job`.

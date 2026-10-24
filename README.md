@@ -37,7 +37,7 @@ cd apps/desktop && pnpm install --frozen-lockfile && pnpm exec playwright instal
 bash scripts/fetch-model.sh
 ```
 
-The app downloads `ggml-large-v3-turbo.bin` (1.6 GB) itself the first time it launches without it, showing the progress, and verifies its size and SHA-256 before using it; Record works once it is done. The script does the same from a terminal, into `~/Library/Application Support/com.jasonweddington.scriber/models/`, where the app looks for it. `bash scripts/smoke.sh` then checks the real model end to end: it speaks a sentence with `say`, converts it with ffmpeg and prints what the app's Whisper adapter hears, with timings.
+The app downloads `ggml-large-v3-turbo.bin` (1.6 GB) itself the first time it launches without it, showing the progress, and verifies its size and SHA-256 before using it; Record works once it is done. The script does the same from a terminal, into `~/Library/Application Support/com.jasonweddington.scriber/models/`, where the app looks for it. `bash scripts/smoke.sh` then checks the real model end to end: it speaks a sentence with `say`, converts it with ffmpeg and prints what the engine's Whisper adapter hears, with timings.
 
 An optional glossary, `vocabulary.txt` in the same folder (one term per line, `#` comments), steers the spelling of names and jargon.
 
@@ -65,6 +65,42 @@ Builds the release app, verifies its signature (ad hoc, so it runs on the machin
 ```
 
 Derives the next version from the conventional-commit history, sets it in every manifest, writes `CHANGELOG.md`, tags and pushes.
+
+## Using the engine from another Rust app
+
+`crates/scriber-engine` is the whole capability (microphone capture, local Whisper transcription, the model's download and verification) as a library with no Tauri and no async runtime; this app is one client of it. Depend on it from git:
+
+```toml
+[dependencies]
+scriber-engine = { git = "https://github.com/<owner>/scriber" }
+```
+
+Record, then stop and wait for the text. Forward events to a channel: the callback must never call the engine.
+
+```rust,no_run
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
+
+use scriber_engine::{Engine, EngineConfig, Event};
+
+fn main() -> Result<(), scriber_engine::EngineError> {
+    let (tx, rx) = mpsc::channel::<Event>();
+    let tx = Mutex::new(tx);
+    let events = Arc::new(move |e: Event| {
+        let _sent = tx.lock().map(|tx| tx.send(e));
+    });
+    let engine = Engine::open(EngineConfig::new("/path/to/my-app/scriber"), events);
+    // The model downloads (1.6 GB) the first time; rx shows its progress.
+    engine.record()?;
+    std::thread::sleep(Duration::from_secs(5)); // the user speaks
+    let text = engine.stop_and_wait(Duration::from_secs(60))?;
+    println!("{text}");
+    drop(rx);
+    Ok(())
+}
+```
+
+`EngineConfig::model` takes `ModelSource::Local(path)` to use a model file already on disk (nothing is downloaded), or `ModelSource::Download(Source { url, bytes, sha256 })` for a mirror; the default downloads `large-v3-turbo` from Hugging Face. `docs/design.md` (Engine API) has the threading contract and the rest.
 
 ## Documentation
 

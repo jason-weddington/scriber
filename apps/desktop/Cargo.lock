@@ -3437,14 +3437,11 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "scriber-app"
 version = "0.1.0"
 dependencies = [
- "cpal",
- "scriber-core",
+ "scriber-engine",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-single-instance",
- "ureq",
- "whisper-rs",
 ]
 
 [[package]]
@@ -3454,6 +3451,17 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "scriber-engine"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "scriber-core",
+ "thiserror 2.0.21",
+ "ureq",
+ "whisper-rs",
 ]
 
 [[package]]

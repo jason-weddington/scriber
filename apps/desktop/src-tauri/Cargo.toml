@@ -1,19 +1,21 @@
-# The Tauri 2 shell around scriber-core.
+# The Tauri 2 shell around scriber-engine (which holds scriber-core and the
+# real microphone, Whisper, data folder and download adapters).
 #
 # NO `[workspace]` table here: this crate resolves upward to
 # apps/desktop/Cargo.toml (the app's virtual workspace root), never to the
 # repo root. It therefore inherits NONE of the root `[workspace.lints]`, so
 # it carries its own copy of the table below.
 #
-# Every command is a thin adapter: arguments in, an scriber-core call,
-# the result out. Logic that needs a test belongs in scriber-core.
+# Every command is a thin adapter: arguments in, an engine call, the result
+# out. Logic that needs a test belongs in scriber-core; an adapter that any
+# app could use belongs in scriber-engine.
 [package]
 name = "scriber-app"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-description = "Scriber desktop app: a Tauri 2 shell around scriber-core."
+description = "Scriber desktop app: a Tauri 2 shell around scriber-engine."
 publish = false
 
 [lib]
@@ -21,9 +23,9 @@ name = "scriber_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-# The logic. A group of its own, so `cargo sort --grouped` keeps this order
-# whatever the app is named.
-scriber-core = { path = "../../../crates/scriber-core" }
+# The engine: the logic and every real adapter but the clipboard. A group of
+# its own, so `cargo sort --grouped` keeps this order whatever the app is named.
+scriber-engine = { path = "../../../crates/scriber-engine" }
 
 # Exact pins: `tauri build` refuses a crate whose major.minor differs from
 # @tauri-apps/api in package.json, and the plugins move with Tauri's minor.
@@ -31,16 +33,6 @@ tauri = { version = "=2.12.4", features = [] }
 tauri-plugin-clipboard-manager = "=2.5.0"
 # One window at a time: a second launch focuses the first.
 tauri-plugin-single-instance = "=2.5.4"
-
-# Audio capture from the default input device.
-cpal = "0.18.2"
-# The speech model's download when it is missing: HTTPS, blocking, on a
-# worker. native-tls is Security.framework on macOS, so the download trusts
-# the system's roots; ureq's default bundles Mozilla's (webpki-roots, under
-# CDLA-Permissive-2.0, which deny.toml does not allow).
-ureq = { version = "3.5.0", default-features = false, features = ["native-tls-no-default"] }
-# whisper.cpp, on the GPU through Metal. Building it needs cmake.
-whisper-rs = { version = "0.16.0", features = ["metal"] }
 
 [build-dependencies]
 tauri-build = { version = "=2.7.3", features = [] }

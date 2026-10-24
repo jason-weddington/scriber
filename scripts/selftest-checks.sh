@@ -45,6 +45,7 @@ expect_fail() {
 
 arch=scripts/check-architecture.sh
 core=crates/scriber-core
+engine=crates/scriber-engine
 app=apps/desktop/src-tauri
 
 # A local stand-in named tokio: planting the real crate would need it in the
@@ -60,6 +61,9 @@ export -f plant_fake_tokio
 expect_fail "the core depends on tokio" "$arch" \
   "plant_fake_tokio $core" \
   'scriber-core depends on tokio'
+expect_fail "the engine depends on tokio" "$arch" \
+  "plant_fake_tokio $engine" \
+  'scriber-engine depends on tokio'
 expect_fail "the core reads a file directly" "$arch" \
   "printf 'fn f() { let _ = std::fs::read(\"x\"); }\n' >> $core/src/dictation.rs" \
   'direct I/O in the core'

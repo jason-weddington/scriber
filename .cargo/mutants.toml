@@ -1,5 +1,9 @@
 # Mutation testing (scripts/gate.sh): zero surviving mutants is the bar for
-# the whole core. A mutant that survives is a behaviour no test pins.
-examine_globs = ["crates/scriber-core/src/**/*.rs"]
+# the whole core and the engine. A mutant that survives is a behaviour no
+# test pins.
+examine_globs = ["crates/scriber-core/src/**/*.rs", "crates/scriber-engine/src/**/*.rs"]
+# The engine's cpal and whisper.cpp adapters need a microphone and a speech
+# model the gate never has, so no test can run them (nor kill their mutants).
+exclude_globs = ["crates/scriber-engine/src/device.rs", "crates/scriber-engine/src/whisper.rs"]
 test_tool = "nextest"
 timeout_multiplier = 3.0

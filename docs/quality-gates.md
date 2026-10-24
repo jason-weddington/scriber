@@ -25,16 +25,16 @@ A change that touches only `docs/**` and top-level `*.md` skips clippy, tests, c
 | `cargo fmt --check`, `cargo sort --check` | Style and manifest drift that turns diffs into noise | Seconds |
 | `typos` | Misspelled identifiers and docs, which become permanent API | Seconds |
 | `gitleaks` | Secrets committed once and public forever; the commit hook scans staged changes, push and full scan the tree | Seconds |
-| `check-architecture.sh` | Violations of the layering rules (Tauri or async in the core, logic in the adapter, `@tauri-apps` imported outside `bridge.ts`, `#[allow]`) | Seconds |
+| `check-architecture.sh` | Violations of the layering rules (Tauri or async in the core or the engine, logic in the adapter, `@tauri-apps` imported outside `bridge.ts`, `#[allow]`) | Seconds |
 | `selftest-checks.sh` | A custom check that has silently stopped checking | Seconds |
 | `clippy` (both workspaces, `-D warnings`, `--locked`) | Bug classes the compiler accepts, plus the lint table below; `--locked` keeps the lockfile honest | Tens of seconds |
-| Core tests via `cargo llvm-cov nextest --no-report` | Behaviour regressions, in an instrumented build shared with coverage | Minutes cold, seconds warm |
+| Core and engine tests via `cargo llvm-cov nextest --no-report` | Behaviour regressions, in an instrumented build shared with coverage | Minutes cold, seconds warm |
 | Core tests under `TZ=Pacific/Chatham LANG=de_DE.UTF-8` | Hidden dependence on the machine's time zone or locale | One more test run |
 | Frontend: `pnpm install --frozen-lockfile`, `svelte-check --fail-on-warnings`, `eslint --max-warnings 0`, unit tests | Type errors and warnings in templates, lint debt, a lockfile that disagrees with `package.json` | Tens of seconds |
 | Rust line coverage floor (pre-push) | Code that no test executes | A test run in the warm tree |
 | Doctests (pre-push) | Documentation examples that no longer compile; nextest does not run doctests | Seconds to a minute |
 | `cargo mutants --in-diff`, zero survivors (pre-push) | Tests that pass without checking anything on the code just changed | Minutes |
-| `cargo mutants` over the core, zero survivors (full) | The same, over everything, so nothing escapes for long | Longest step |
+| `cargo mutants` over the core and the engine, zero survivors (full) | The same, over everything, so nothing escapes for long | Longest step |
 | `cargo machete`, `cargo deny check`, `pnpm audit --prod` | Unused dependencies, licences, advisories, unexpected registries, vulnerable frontend packages | Seconds |
 | Playwright e2e with axe, frontend coverage floor, `vite build` | UI regressions against the mock, accessibility violations, untested frontend code, a bundle that does not build | Minutes |
 
@@ -55,6 +55,11 @@ A change that touches only `docs/**` and top-level `*.md` skips clippy, tests, c
 **Nextest hard timeouts.** `.config/nextest.toml` sets `slow-timeout = { period = "30s", terminate-after = 4 }`, so a hung test is killed after two minutes instead of stalling the gate indefinitely. It matters most with fake clocks, which turn a would-be hang into a hot loop.
 
 **Frozen lockfiles everywhere.** `--locked` for cargo and `--frozen-lockfile` for pnpm mean the gate builds exactly what is committed. `cargo deny` runs for each cargo workspace, because it does not look upward for a policy and the app's workspace has its own lockfile.
+
+### Recorded relaxations
+
+- **The engine's device and Whisper adapters are not measured or mutated.** `crates/scriber-engine/src/device.rs` (cpal) and `src/whisper.rs` (whisper.cpp) need a microphone and a 1.6 GB speech model that the gate never has, so no test can run them: the coverage step ignores them (and the engine's `examples/`, the real-model smoke check) with `--ignore-filename-regex`, and `.cargo/mutants.toml` excludes them. Every other engine file, `lib.rs` included, is held to the 100 % floor and zero survivors. `scripts/smoke.sh` exercises them on a Mac.
+- **`cargo deny` looks at two targets only.** The root `deny.toml` sets `[graph] targets` to `aarch64-apple-darwin` (the shipped Mac) and `x86_64-unknown-linux-gnu` (the gate host): the engine's audio and TLS crates carry per-platform trees (Windows, wasm, Android) that never ship and would otherwise fail the duplicate-version ban. Two build-time duplicates remain on those targets (`shlex` 1.3 and `syn` 2, behind whisper.cpp's bindgen and native-tls's openssl), each skipped by version with its dependency path as the reason; `multiple-versions` stays `deny`.
 
 ## The lint table
 

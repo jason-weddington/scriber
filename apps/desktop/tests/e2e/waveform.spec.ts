@@ -7,7 +7,9 @@ import { open, press } from './helpers';
 // The live input-level waveform above the buttons: bars scroll in from the
 // right while recording, freeze while paused, clear on New and Discard, and
 // become one level bar under reduced motion. The mock microphone sends a
-// level every 50 ms (LEVEL_MS) while recording; the clock is Playwright's.
+// level every 50 ms (LEVEL_MS) while recording; the clock is Playwright's,
+// paused once the page has loaded so that only runFor moves it (a clock left
+// running lets real time add levels, and the exact bar counts flake).
 
 const BARS = 48;
 const LEVEL_MS = 50;
@@ -29,8 +31,9 @@ function synthetic(n: number): number {
 }
 
 test('the waveform appears while recording, newest bar on the right, as loud as the input', async ({ page }) => {
-  await page.clock.install();
+  await page.clock.install({ time: 0 });
   await open(page);
+  await page.clock.pauseAt(60_000);
   await press(page, 'New');
   await expect(page.locator('.meter')).toHaveCount(0);
   await press(page, 'Record');
@@ -56,8 +59,9 @@ test('the waveform appears while recording, newest bar on the right, as loud as 
 });
 
 test('the waveform keeps the newest bars as it scrolls', async ({ page }) => {
-  await page.clock.install();
+  await page.clock.install({ time: 0 });
   await open(page);
+  await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
   await page.clock.runFor(LEVEL_MS * (BARS + 10));
   await expect.poll(() => count(page)).toBe(BARS);
@@ -67,8 +71,9 @@ test('the waveform keeps the newest bars as it scrolls', async ({ page }) => {
 });
 
 test('Pause freezes the waveform, Resume carries on, Discard and New clear it', async ({ page }) => {
-  await page.clock.install();
+  await page.clock.install({ time: 0 });
   await open(page);
+  await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
   await page.clock.runFor(LEVEL_MS * 6);
   await expect.poll(() => count(page)).toBe(6);
@@ -93,8 +98,9 @@ test('Pause freezes the waveform, Resume carries on, Discard and New clear it', 
 
 test('with reduced motion, one level bar replaces the scrolling waveform', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.clock.install();
+  await page.clock.install({ time: 0 });
   await open(page);
+  await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
   await page.clock.runFor(LEVEL_MS * 3);
   await expect(page.locator('.wave')).toBeHidden();

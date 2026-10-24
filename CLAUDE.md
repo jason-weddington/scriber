@@ -5,7 +5,8 @@ macOS dictation app: Rust core, Tauri 2 shell, Svelte 5 frontend. New, Record, P
 ## Layout
 
 - `crates/scriber-core` (root cargo workspace): all logic. No Tauri, no async runtime, no direct I/O: every effect is a trait in `src/ports.rs`. Fakes for every port are in `tests/common`.
-- `apps/desktop/src-tauri`: its OWN cargo workspace (`apps/desktop/Cargo.toml`, own `Cargo.lock`). A thin adapter: the real port implementations and one `#[tauri::command]` per contract entry, each forwarding to the core.
+- `crates/scriber-engine` (root cargo workspace): the core plus the real adapters (cpal, whisper-rs, `std::fs`, ureq) and a std-thread job queue, behind a small `Engine` API that any Rust app can depend on. No Tauri, no async runtime. Its fakes are in its own `tests/common`.
+- `apps/desktop/src-tauri`: its OWN cargo workspace (`apps/desktop/Cargo.toml`, own `Cargo.lock`). A thin client over the engine: the clipboard adapter, the two events and one `#[tauri::command]` per contract entry, each forwarding to the `Engine`.
 - `apps/desktop/src`: Svelte 5 + TypeScript. `src/lib/bridge.ts` is the only file that imports `@tauri-apps/*`; outside Tauri it answers from `src/lib/mock.ts`.
 - `apps/desktop/tests/unit` (pure TS) and `tests/e2e` (the app in Chromium against the mock), both Playwright.
 
@@ -14,7 +15,7 @@ macOS dictation app: Rust core, Tauri 2 shell, Svelte 5 frontend. New, Record, P
 ```sh
 bash scripts/gate.sh pre-commit      # what every commit must pass (~10 s warm)
 bash scripts/gate.sh full            # everything: coverage, mutants, audits, e2e, build
-cargo nextest run --workspace        # core tests while iterating
+cargo nextest run --workspace        # core and engine tests while iterating
 cd apps/desktop && pnpm test         # frontend unit + e2e while iterating
 cd apps/desktop && pnpm dev          # the frontend in a browser, on the mock
 bash scripts/install.sh              # release build, verify the signature, install to /Applications
@@ -37,6 +38,6 @@ bash scripts/smoke.sh                # real-model check: `say` + ffmpeg + the ap
 
 ## Adding to a feature
 
-Write the rule in `crates/scriber-core/src` with any new effect as a port in `ports.rs` and its fake in `tests/common`; pin new JSON shapes in `model.rs`, `tests/serde_shapes.rs` and the fixture; keep `src-tauri/src/lib.rs` to adapters and one command per contract entry (it is near its 250-line limit, so prefer extending `dictation_act`'s `Action` over a new command); add the bridge function in `bridge.ts` and its mock in `mock.ts`; update `tests/e2e/contract.spec.ts`'s `CALLS`; and update `docs/design.md` in the same commit. The whisper.cpp build needs `cmake` (`brew install cmake`).
+Write the rule in `crates/scriber-core/src` with any new effect as a port in `ports.rs` and its fake in `tests/common`, and its real adapter in `crates/scriber-engine/src` (unless it needs Tauri); pin new JSON shapes in `model.rs`, `tests/serde_shapes.rs` and the fixture; keep `src-tauri/src/lib.rs` to the clipboard adapter and one command per contract entry over the `Engine` (it has a 250-line limit, so prefer extending `dictation_act`'s `Action` over a new command), and give the engine a method or `EngineConfig` field when another app would need it too; add the bridge function in `bridge.ts` and its mock in `mock.ts`; update `tests/e2e/contract.spec.ts`'s `CALLS`; and update `docs/design.md` in the same commit. The whisper.cpp build needs `cmake` (`brew install cmake`).
 
 More: `docs/quality-gates.md` (what each gate catches and why), `docs/tauri-design-notes.md` (patterns for Tauri 2 apps on macOS).

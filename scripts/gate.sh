@@ -16,7 +16,7 @@ mode=${1:?usage: gate.sh pre-commit|pre-push|full}
 case "$mode" in pre-commit|pre-push|full) ;; *) echo "unknown mode: $mode" >&2; exit 2 ;; esac
 
 # Coverage floors. RATCHET UP as coverage climbs, never down.
-# Rust: line coverage of the core, at least 98.
+# Rust: line coverage of the core and the engine, at least 98.
 RUST_COVERAGE_FLOOR=100
 # Frontend: line coverage of src/ (unit + e2e; the mock is excluded, see
 # apps/desktop/tests/coverage/options.ts), whole-number percent.
@@ -86,7 +86,11 @@ step unit-tests in_app pnpm exec playwright test --project unit
 # ---- pre-push and full ------------------------------------------------------
 # Measures afresh (cargo llvm-cov cleans its old profiles first), so a gate can
 # never pass on coverage data left by an earlier commit.
+# The engine's cpal and whisper.cpp adapters (and its smoke example) need a
+# microphone and a speech model the gate never has, so they are not measured;
+# every other file, the engine's lib.rs included, is held to the floor.
 step coverage cargo llvm-cov nextest --workspace --all-features --locked \
+  --ignore-filename-regex 'crates/scriber-engine/(src/(device|whisper)\.rs|examples/)' \
   --fail-under-lines "$RUST_COVERAGE_FLOOR"
 # nextest does not run doctests; without this they silently never run.
 step doctests cargo test --doc --workspace --locked

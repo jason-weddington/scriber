@@ -1,8 +1,9 @@
 //! Scriber's logic, with no Tauri, no async runtime and no direct I/O.
 //!
 //! Every effect goes through a trait in [`ports`]: the real implementations
-//! live in the app crate (`apps/desktop/src-tauri`) and the fakes in this
-//! crate's tests. The bridge contract (command names and JSON shapes) is in
+//! live in the engine crate (`crates/scriber-engine`; the clipboard's in the
+//! desktop app, `apps/desktop/src-tauri`) and the fakes in this crate's
+//! tests. The bridge contract (command names and JSON shapes) is in
 //! `docs/design.md`; the types in [`model`] are its Rust side.
 //!
 //! The feature is dictation: [`dictation::Dictation`] is the session's state

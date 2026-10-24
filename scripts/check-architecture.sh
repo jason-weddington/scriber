@@ -26,6 +26,17 @@ else
   bad "cargo tree failed for scriber-core"
 fi
 
+# 1b. The engine is a library for any Rust app: the same ban as the core, so
+#     no Tauri, webview or async runtime reaches a consumer through it.
+if deps=$(cargo tree --locked -q -p scriber-engine -e normal --prefix none 2>/dev/null | awk '{print $1}' | sort -u); then
+  for banned in tauri tauri-build wry tao tokio async-std smol futures; do
+    grep -qx "$banned" <<<"$deps" && bad "scriber-engine depends on $banned"
+  done
+  grep -qE '^tauri-' <<<"$deps" && bad "scriber-engine depends on a tauri crate"
+else
+  bad "cargo tree failed for scriber-engine"
+fi
+
 # 2. No direct I/O in the core: every effect goes through a trait in ports.rs.
 io='std::(fs|net|process|env|thread::sleep)|\b(File|OpenOptions|TcpStream|Command)::|\b(Instant|SystemTime)::now|\btokio\b'
 if hits=$(rust_code "$io" "$core/src"); then

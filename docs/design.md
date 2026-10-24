@@ -21,34 +21,42 @@ crates/scriber-core          all logic; no Tauri, no async runtime, no direct I/
   src/model.rs               the values that cross the bridge (serde, camelCase)
   src/ports.rs               Recorder, Transcriber, Files, Clipboard, JobQueue, Downloader
   tests/common               fakes for every port
-apps/desktop/src-tauri       thin adapter: cpal, whisper-rs, the filesystem, the clipboard plugin, ureq, two commands
+crates/scriber-engine        the core with the real adapters, as a library for any Rust app (see Engine API); no Tauri, no async runtime
+  src/lib.rs                 Engine, EngineConfig, ModelSource, Event, EngineError; the std-thread job queue
+  src/device.rs              CpalRecorder: cpal, the default input device
+  src/whisper.rs             Whisper: whisper-rs, the model loaded once
+  src/files.rs               DataDir: std::fs under the consumer's data folder
+  src/net.rs                 HttpDownloader: ureq over native-tls
+  tests/common               fakes for the recorder, transcriber and downloader
   examples/smoke.rs          real-model smoke check (scripts/smoke.sh), never run by the gate
+apps/desktop/src-tauri       thin client over the engine: the clipboard plugin, the two events, two commands
 apps/desktop/src             Svelte 5 frontend; src/lib/bridge.ts is its only door to Rust
 ```
 
 The rules, each enforced by `scripts/check-architecture.sh` and proven by `scripts/selftest-checks.sh`:
 
-- The core's dependency tree has no Tauri, no webview and no async runtime, and its code reads no file, clock, environment or network directly. Every effect goes through a trait in `ports.rs`; the real implementation lives in `src-tauri`, the fake in the core's tests.
-- `src-tauri` holds `lib.rs` and `main.rs` only, `lib.rs` stays under 250 lines, and it has no tests. Logic that needs a test belongs in the core.
+- The core's dependency tree has no Tauri, no webview and no async runtime, and its code reads no file, clock, environment or network directly. Every effect goes through a trait in `ports.rs`; the real implementation lives in `crates/scriber-engine` (the clipboard's in `src-tauri`), the fake in the core's tests.
+- The engine's dependency tree has no Tauri, no webview and no async runtime either, so none reaches an app that depends on it.
+- `src-tauri` holds `lib.rs` and `main.rs` only, `lib.rs` stays under 250 lines, and it has no tests. Logic that needs a test belongs in the core, and an adapter any app could use in the engine.
 - `src/lib/bridge.ts` is the only frontend file that imports `@tauri-apps/*` (also an eslint rule). Outside Tauri it answers from `src/lib/mock.ts`, and marks `<html data-bridge="mock">`; inside Tauri it marks `data-bridge="tauri"`.
 - No `#[allow(...)]` anywhere; a lint exception is `#[expect(lint, reason = "...")]`.
 
 ### Ports
 
-| Port | Real adapter (`src-tauri/src/lib.rs`) | What the core asks of it |
+| Port | Real adapter | What the core asks of it |
 |---|---|---|
-| `Recorder` | cpal, the default input device at its default config (f32) | start a segment; stop and hand over interleaved samples with their channel count and rate. Each block the device delivers goes to a core `level::Tap` (through `level::feeder`), which keeps it and meters it |
-| `Transcriber` | whisper-rs 0.16 with the `metal` feature | whether the model file is missing; load the model now (`warm`); samples (16 kHz mono) plus an optional prompt to text |
-| `Files` | `std::fs` under the app data folder | read, write (the folder is created), list a folder (a missing one is created and lists empty), remove, append, rename in one step; paths relative to the data folder |
-| `Clipboard` | `tauri-plugin-clipboard-manager` | write text |
-| `JobQueue` | `tauri::async_runtime::spawn_blocking` per job | take a job (a closed segment, the warm-up, the download) off the UI thread; `dictation::work` runs it and reports each snapshot it changes |
-| `Downloader` | ureq 3 over native-tls (Security.framework, the system's roots) | open a URL, following redirects, as a body to read; an error status is an error |
+| `Recorder` | `scriber-engine` `CpalRecorder` (`device.rs`): cpal, the default input device at its default config (f32) | start a segment; stop and hand over interleaved samples with their channel count and rate. Each block the device delivers goes to a core `level::Tap` (through `level::feeder`), which keeps it and meters it |
+| `Transcriber` | `scriber-engine` `Whisper` (`whisper.rs`): whisper-rs 0.16, with the `metal` feature on macOS only (the CPU elsewhere, so the workspace builds and gates on Linux) | whether the model file is missing; load the model now (`warm`); samples (16 kHz mono) plus an optional prompt to text |
+| `Files` | `scriber-engine` `DataDir` (`files.rs`): `std::fs` under the data folder the consumer gives | read, write (the folder is created), list a folder (a missing one is created and lists empty), remove, append, rename in one step; paths relative to the data folder |
+| `Clipboard` | `src-tauri/src/lib.rs`: `tauri-plugin-clipboard-manager` (another consumer passes its own, or none) | write text |
+| `JobQueue` | `scriber-engine` (`lib.rs`): one named std thread (`scriber-job`) per job | take a job (a closed segment, the warm-up, the download) off the UI thread; `dictation::work` runs it and reports each snapshot it changes |
+| `Downloader` | `scriber-engine` `HttpDownloader` (`net.rs`): ureq 3 over native-tls (Security.framework, the system's roots) | open a URL, following redirects, as a body to read; an error status is an error |
 
-The Whisper context loads once and stays loaded (`sync::LoadOnce`). At launch, when the model is installed, the core queues a warm-up job that loads it (about 7 s on an M-series Mac for `large-v3-turbo`, cold), so it is ready by the time the first segment closes; a transcription that arrives while the warm-up is still loading waits for it under the same lock rather than loading a second copy, and a load that fails is tried again by the next transcription, which reports the failure. A failed warm-up changes nothing in the session. Later segments take well under a second each. Decoding is beam search (beam 5), English, with non-speech tokens suppressed. Each job runs on Tauri's blocking pool, and the Whisper lock lets one transcription run at a time; jobs may finish in any order.
+The Whisper context loads once and stays loaded (`sync::LoadOnce`). At launch, when the model is installed, the core queues a warm-up job that loads it (about 7 s on an M-series Mac for `large-v3-turbo`, cold), so it is ready by the time the first segment closes; a transcription that arrives while the warm-up is still loading waits for it under the same lock rather than loading a second copy, and a load that fails is tried again by the next transcription, which reports the failure. A failed warm-up changes nothing in the session. Later segments take well under a second each. Decoding is beam search (beam 5), English, with non-speech tokens suppressed. Each job runs on a std thread of its own, and the Whisper lock lets one transcription run at a time; jobs may finish in any order.
 
 ## The data folder
 
-The app data folder is `~/Library/Application Support/com.jasonweddington.scriber/` (Tauri's `app_data_dir`). `crates/scriber-core/src/store.rs` owns its layout:
+The app data folder is `~/Library/Application Support/com.jasonweddington.scriber/` (Tauri's `app_data_dir`); another app using the engine names its own (`EngineConfig::data_dir`). `crates/scriber-core/src/store.rs` owns its layout:
 
 ```
 vocabulary.txt                   optional glossary, one term per line
@@ -79,7 +87,7 @@ When the model is missing at launch the app downloads it (`download.rs`): the bo
 
 Transitions: New (idle, finished, failed) and Discard (any phase but idle and transcribing) delete the session's audio, re-read the glossary and give an empty `ready` session; Discard while recording stops the microphone and throws the running segment away. Record (ready) and Resume (paused) start the microphone. Pause closes a segment. Done closes the running segment, if any, and moves to `transcribing`, which becomes `finished` or `failed` as soon as no segment is pending (at once when nothing is). Retry (failed) re-reads each failed segment's WAV and transcribes it again; segments already transcribed are kept.
 
-Download model (`downloadModel`) is not part of the phase table: it is allowed in any phase while the model is missing and not downloading, and refused otherwise ("The speech model is already installed or downloading.").
+Download model (`downloadModel`) is not part of the phase table: it is allowed in any phase while the model is missing and not downloading, and refused otherwise ("The speech model is already installed or downloading."). A session with no download source (the model is a local file, `Dictation::launch_local`, or a bare `recover`) refuses it first with "The speech model is a local file, so there is nothing to download."
 
 Decided beyond the brief: Discard is refused while idle (there is no session to discard); Discard deletes the session's audio like New does; Record and Resume are refused while the model is missing or downloading, rather than New.
 
@@ -116,6 +124,20 @@ Failures are a visible state, never a silent empty transcript. A segment whose t
 The session's WAV files stay on disk until the next New or Discard, and a finished session's transcript is kept beside them (`segments/transcript.txt`, rewritten by each Copy; a failure to write it only means a relaunch offers Retry instead). At launch the core reads that folder: with a transcript the session starts `finished`, showing it (nothing is copied again); with segments but no transcript (a crash, or a quit while transcribing) it starts `failed` with "The last session was not transcribed. Retry to transcribe its N recorded parts, or start a new session." Quitting drops the microphone stream and any transcription in flight; the audio survives for that Retry.
 
 A microphone that will not start refuses Record or Resume ("Could not start recording: <reason>") and leaves the session where it was. A microphone that fails while recording loses only that segment: Pause still pauses, and the notice says "The microphone stopped: <reason>. The last part was not recorded." A segment whose WAV cannot be saved still transcribes from memory, with the notice "Could not keep this part's audio for Retry: <reason>."
+
+## Engine API
+
+`crates/scriber-engine` is the whole capability as a library: another Rust app depends on it (as a git dependency) and the desktop app is one client of it. It has no Tauri and no async runtime; jobs run on std threads.
+
+- **`EngineConfig`**: `data_dir` (the consumer's data folder, laid out as in The data folder; it need not exist), `model: ModelSource` and `clipboard: Option<Arc<dyn Clipboard + Send + Sync>>`. `EngineConfig::new(data_dir)` takes the default model and no clipboard.
+- **`ModelSource`**: `Local(path)` uses a ggml model file where it is and never downloads; a missing file says "The speech model is missing from <path>." and `download_model()` is refused with `DictationError::LocalModel`. `Download(Source { url, bytes, sha256 })` downloads into `<data_dir>/models/ggml-large-v3-turbo.bin` when missing and verifies size and SHA-256, so a mirror only needs its own URL. The default is `Download(Source::default())`: Hugging Face `large-v3-turbo`, pinned above.
+- **Opening**: `Engine::open(config, events)` with the real adapters, or `Engine::with_adapters(config, make, events)` with others (`make` gets the level sink to hand to its recorder). Either recovers the data folder as the app does at launch and starts the warm-up, or the download, on a job thread. The session is assigned under its lock before any job it queued can record an outcome.
+- **`Event`**: `Level(f64)` (0 to 1, at most 20 a second while recording) and `State(Snapshot)` (whatever `dictation-changed` carries). No method emits events: the snapshot a method returns is its result.
+- **Threading**: `Event::State` is delivered on a job thread while the session lock is held, so the callback must never call the engine (it deadlocks); forward it to a channel. `Event::Level` is delivered on the audio thread and must return quickly. `Engine` is `Send + Sync` and `Clone`; dropping the last handle while no job runs drops the adapters.
+- **Recording**: `record()`, `pause()`, `resume()`, `stop()` (Done), `discard()`, `retry()`, `download_model()`, and `act(action, text)` for any action. Record then stop, with no pause, is the primary path. `record()` from idle or finished starts a new session first (deleting the last one); it never applies New from failed, which would delete audio not yet transcribed: it refuses ("Cannot record while failed."), and the consumer retries or discards.
+- **Waiting**: `wait(timeout)` answers a finished session's text at once, a failed session's error as `EngineError::Failed`, `NotStopped` while idle, ready, recording or paused, and while transcribing waits on a condition variable paired with the session lock, until the deadline (`Timeout`). `stop_and_wait(timeout)` is `stop()` then `wait`. A finished session recovered at open answers its old text until `record()` starts a new one.
+- **Clipboard**: with `clipboard: None` the transcript is copied nowhere, and the snapshot's notice still says "Copied to the clipboard." (pinned by a test).
+- **Not yet**: no streaming or partial transcripts. `Event` is not `#[non_exhaustive]` today, but a streaming mode would add a variant (and a mode), not change these.
 
 ## Bridge contract
 
