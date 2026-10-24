@@ -87,7 +87,7 @@ export function downloadFailed(reason: string): string {
 
 /** The mock microphone's level for its `n`th window: speech-like swells, deterministic. */
 export function syntheticLevel(n: number): number {
-  return Math.min(1, 0.1 + 0.55 * Math.abs(Math.sin(n * 0.45)) * (0.7 + 0.3 * Math.sin(n * 0.13)));
+  return Math.min(1, 0.1 + 0.75 * Math.abs(Math.sin(n * 0.45)) * (0.7 + 0.3 * Math.sin(n * 0.13)));
 }
 
 export function partFailed(part: number, total: number, reason: string): string {

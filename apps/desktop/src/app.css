@@ -141,9 +141,9 @@ main {
   white-space: nowrap;
 }
 
-/* The live input level above the buttons, Voice Memos style: the newest
-   bar on the right, older ones moving left; frozen (dimmed) while paused.
-   Each bar's height is its level (0 to 1) via --level. */
+/* Live input level: 2 px bars on a 4 px pitch, as many as fit, newest on the
+   right, mirrored about the centre line; red while recording, grey (frozen)
+   while paused. Each bar's height is its level (0 to 1) via --level. */
 .meter {
   flex-shrink: 0;
   height: 48px;
@@ -153,15 +153,16 @@ main {
 .wave {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
   height: 100%;
 }
 
 .bar {
-  flex: 1 1 0;
-  min-width: 2px;
+  flex: 0 0 2px;
+  width: 2px;
   height: max(2px, calc(var(--level) * 100%));
-  border-radius: 2px;
+  border-radius: 1px;
   background: var(--error);
 }
 

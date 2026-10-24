@@ -2,7 +2,10 @@ import { expect, test } from '@playwright/test';
 
 import {
   allowed,
-  BARS,
+  BAR_PX,
+  barCount,
+  GAP_PX,
+  MAX_BARS,
   bars,
   downloadText,
   formatBytes,
@@ -77,27 +80,45 @@ test('the status line says what to do next in every phase', () => {
   for (const [patch, want] of cases) expect(statusText({ ...base, ...patch }), JSON.stringify(patch)).toBe(want);
 });
 
-test('the waveform keeps the newest BARS levels, newest last, clamped to 0..1', () => {
-  expect(BARS).toBe(48);
+test('the bar geometry is 2 px bars 2 px apart, at most 512 levels', () => {
+  expect([BAR_PX, GAP_PX, MAX_BARS]).toEqual([2, 2, 512]);
+});
+
+test('barCount is how many 4 px slots fit the width', () => {
+  const cases: [number, number][] = [
+    [0, 0],
+    [1, 0],
+    [2, 1],
+    [6, 2],
+    [488, 122],
+    [568, 142],
+    [928, 232],
+    [100000, 512],
+    [-10, 0],
+    [NaN, 0],
+    [Infinity, 0],
+  ];
+  for (const [width, want] of cases) expect(barCount(width), String(width)).toBe(want);
+});
+
+test('the waveform keeps the newest MAX_BARS levels, newest last, clamped to 0..1', () => {
   expect(pushLevel([], 0.5)).toEqual([0.5]);
   expect(pushLevel([0.1, 0.2], 0.3)).toEqual([0.1, 0.2, 0.3]);
   expect(pushLevel([], 1.5)).toEqual([1]);
   expect(pushLevel([], -0.2)).toEqual([0]);
-  const full = Array.from({ length: BARS }, (_, i) => i / 100);
+  const full = Array.from({ length: MAX_BARS }, (_, i) => i / 1000);
   const next = pushLevel(full, 0.9);
-  expect(next.length).toBe(BARS);
-  expect(next[0]).toBe(0.01);
+  expect(next.length).toBe(MAX_BARS);
+  expect(next[0]).toBe(0.001);
   expect(next.at(-1)).toBe(0.9);
 });
 
-test('the bars are the levels right-aligned, the empty slots at 0', () => {
-  expect(bars([])).toEqual(Array<number>(BARS).fill(0));
-  const drawn = bars([0.2, 0.7]);
-  expect(drawn.length).toBe(BARS);
-  expect(drawn.slice(-2)).toEqual([0.2, 0.7]);
-  expect(drawn.slice(0, -2).every((l) => l === 0)).toBe(true);
-  const many = Array.from({ length: BARS + 5 }, (_, i) => i);
-  expect(bars(many)).toEqual(many.slice(5));
+test('the bars are the newest count levels right-aligned, the empty slots at 0', () => {
+  expect(bars([], 5)).toEqual([0, 0, 0, 0, 0]);
+  expect(bars([0.2, 0.7], 4)).toEqual([0, 0, 0.2, 0.7]);
+  expect(bars([0, 1, 2, 3, 4, 5], 3)).toEqual([3, 4, 5]);
+  expect(bars([0.2, 0.7], 0)).toEqual([]);
+  expect(bars([0.2, 0.7], -1)).toEqual([]);
 });
 
 const press = (key: string, mods: Partial<KeyPress> = {}): KeyPress => ({

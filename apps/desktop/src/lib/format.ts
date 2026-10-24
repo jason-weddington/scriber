@@ -59,18 +59,31 @@ export function statusText(s: Snapshot): string {
 
 // ---- the input level waveform ------------------------------------------------
 
-/** Bars across the waveform; at the core's 20 levels a second, 2.4 s of sound. */
-export const BARS = 48;
+/** A bar's width in px. */
+export const BAR_PX = 2;
 
-/** `levels` with `level` added as the newest (last), keeping the newest BARS. */
-export function pushLevel(levels: readonly number[], level: number): number[] {
-  return [...levels, Math.min(1, Math.max(0, level))].slice(-BARS);
+/** The gap between bars in px. */
+export const GAP_PX = 2;
+
+/** The levels kept: 25.6 s at the core's 20 a second, more than the widest strip draws. */
+export const MAX_BARS = 512;
+
+/** How many bars fit a strip `width` px wide, at BAR_PX wide and GAP_PX apart. */
+export function barCount(width: number): number {
+  if (!Number.isFinite(width) || width <= 0) return 0;
+  return Math.min(MAX_BARS, Math.floor((width + GAP_PX) / (BAR_PX + GAP_PX)));
 }
 
-/** The bars to draw, oldest first: `levels` right-aligned, the empty slots at 0. */
-export function bars(levels: readonly number[]): number[] {
-  const recent = levels.slice(-BARS);
-  return [...Array<number>(BARS - recent.length).fill(0), ...recent];
+/** `levels` with `level` added as the newest (last), keeping the newest MAX_BARS. */
+export function pushLevel(levels: readonly number[], level: number): number[] {
+  return [...levels, Math.min(1, Math.max(0, level))].slice(-MAX_BARS);
+}
+
+/** The `count` bars to draw, oldest first: the newest levels right-aligned, the empty slots at 0. */
+export function bars(levels: readonly number[], count: number): number[] {
+  if (count <= 0) return [];
+  const recent = levels.slice(-count);
+  return [...Array<number>(count - recent.length).fill(0), ...recent];
 }
 
 // ---- keyboard shortcuts --------------------------------------------------------

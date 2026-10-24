@@ -9,6 +9,7 @@
   import {
     allowed,
     bars,
+    barCount,
     downloadText,
     formatElapsed,
     percent,
@@ -32,6 +33,8 @@
   // The input levels the waveform draws, oldest first. Kept while paused,
   // cleared once the session leaves recording and paused.
   let levels = $state<number[]>([]);
+  // The waveform's width in px, which sets how many bars fit.
+  let waveWidth = $state(0);
   // Set when a Space keydown ran a shortcut, so its keyup cannot also click
   // a focused button.
   let swallowSpaceUp = false;
@@ -211,8 +214,8 @@
 
       {#if metering}
         <div class="meter" class:frozen={snapshot.phase === 'paused'}>
-          <div class="wave" aria-hidden="true" data-count={levels.length}>
-            {#each bars(levels) as level, i (i)}
+          <div class="wave" aria-hidden="true" data-count={levels.length} data-slots={barCount(waveWidth)} bind:clientWidth={waveWidth}>
+            {#each bars(levels, barCount(waveWidth)) as level, i (i)}
               <span class="bar" style:--level={level}></span>
             {/each}
           </div>

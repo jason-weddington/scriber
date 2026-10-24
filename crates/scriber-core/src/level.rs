@@ -3,9 +3,11 @@
 //! The recorder adapter hands every block of samples the device delivers to
 //! a [`Tap`], which keeps them for the segment and meters them: one reading
 //! per [`WINDOW_MS`] of sound, the RMS of the window's samples in dBFS,
-//! mapped linearly from [`FLOOR_DBFS`] (0.0) to 0 dBFS (1.0) and clamped.
-//! Decibels, not linear RMS: normal speech sits around -40 to -20 dBFS,
-//! which a linear scale would draw as a nearly flat line.
+//! mapped linearly from [`FLOOR_DBFS`] (0.0) to [`CEILING_DBFS`] (1.0) and clamped.
+//! Decibels, not linear RMS, and a ceiling well below full scale: dictation
+//! into a laptop mic sits around -41 to -33 dBFS with a quiet room near -52,
+//! so a 0 dBFS ceiling would draw speech at half height or less. The ceiling
+//! leaves headroom above quiet-room dictation for louder voices in large rooms.
 
 use std::sync::{Arc, Mutex};
 
@@ -17,15 +19,18 @@ use crate::sync::lock;
 pub const WINDOW_MS: u32 = 50;
 
 /// The level drawn as silence: an RMS at or below this many dBFS reads 0.0.
-pub const FLOOR_DBFS: f64 = -60.0;
+pub const FLOOR_DBFS: f64 = -52.0;
+
+/// The level drawn full height: an RMS at or above this many dBFS reads 1.0.
+pub const CEILING_DBFS: f64 = -20.0;
 
 /// An RMS (0 to 1, full scale) as a level from 0.0 to 1.0: its dBFS mapped
-/// linearly from [`FLOOR_DBFS`] to 0 dBFS and clamped. Silence, and an RMS
-/// that is not a number, read 0.0.
+/// linearly from [`FLOOR_DBFS`] to [`CEILING_DBFS`] and clamped. Silence, and
+/// an RMS that is not a number, read 0.0.
 #[must_use]
 pub fn level(rms: f64) -> f64 {
     let dbfs = 20.0 * rms.log10();
-    let level = (dbfs - FLOOR_DBFS) / -FLOOR_DBFS;
+    let level = (dbfs - FLOOR_DBFS) / (CEILING_DBFS - FLOOR_DBFS);
     if level.is_nan() {
         0.0
     } else {

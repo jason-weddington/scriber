@@ -127,11 +127,13 @@ test.describe('the mock speaks the Rust JSON shapes', () => {
 
   test('a level is a number from 0 to 1, as in the fixture', () => {
     expect(typeof shapes.level).toBe('number');
-    for (let n = 0; n < 200; n++) {
-      const level = syntheticLevel(n);
+    const all = Array.from({ length: 200 }, (_, n) => syntheticLevel(n));
+    for (const level of all) {
       expect(level).toBeGreaterThanOrEqual(0);
       expect(level).toBeLessThanOrEqual(1);
     }
+    expect(Math.min(...all)).toBeGreaterThanOrEqual(0.1);
+    expect(Math.max(...all)).toBeGreaterThan(0.8);
   });
 });
 

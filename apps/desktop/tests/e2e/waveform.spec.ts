@@ -11,7 +11,6 @@ import { open, press } from './helpers';
 // paused once the page has loaded so that only runFor moves it (a clock left
 // running lets real time add levels, and the exact bar counts flake).
 
-const BARS = 48;
 const LEVEL_MS = 50;
 
 /** Each bar's drawn level, oldest first. */
@@ -25,9 +24,13 @@ async function count(page: Page): Promise<number> {
   return Number(await page.locator('.wave').getAttribute('data-count'));
 }
 
+async function slots(page: Page): Promise<number> {
+  return Number(await page.locator('.wave').getAttribute('data-slots'));
+}
+
 /** The mock's level for its nth window (src/lib/mock.ts, syntheticLevel). */
 function synthetic(n: number): number {
-  return Math.min(1, 0.1 + 0.55 * Math.abs(Math.sin(n * 0.45)) * (0.7 + 0.3 * Math.sin(n * 0.13)));
+  return Math.min(1, 0.1 + 0.75 * Math.abs(Math.sin(n * 0.45)) * (0.7 + 0.3 * Math.sin(n * 0.13)));
 }
 
 test('the waveform appears while recording, newest bar on the right, as loud as the input', async ({ page }) => {
@@ -38,12 +41,14 @@ test('the waveform appears while recording, newest bar on the right, as loud as 
   await expect(page.locator('.meter')).toHaveCount(0);
   await press(page, 'Record');
   await expect(page.locator('.wave')).toBeVisible();
-  await expect(page.locator('.wave .bar')).toHaveCount(BARS);
+  await expect(page.locator('.wave')).toHaveAttribute('data-slots', '232');
+  await expect(page.locator('.wave .bar')).toHaveCount(232);
+  expect(await slots(page)).toBe(232);
   expect(await count(page)).toBe(0);
   await page.clock.runFor(LEVEL_MS * 5);
   await expect.poll(() => count(page)).toBe(5);
   const bars = await drawn(page);
-  expect(bars.slice(0, BARS - 5).every((l) => l === 0), 'older slots empty').toBe(true);
+  expect(bars.slice(0, 232 - 5).every((l) => l === 0), 'older slots empty').toBe(true);
   const newest = bars.slice(-5);
   newest.forEach((level, n) => {
     expect(level, `bar ${String(n)}`).toBeCloseTo(synthetic(n), 5);
@@ -56,6 +61,16 @@ test('the waveform appears while recording, newest bar on the right, as loud as 
   const quieter = newest.indexOf(Math.min(...newest));
   expect(heights[louder]).toBeGreaterThan(heights[quieter] ?? Infinity);
   await expect(page.locator('.meter')).toContainText('The microphone is picking up sound.');
+  // Thin bars on a 4 px pitch.
+  const boxes = await page.locator('.wave .bar').evaluateAll((els) =>
+    els.map((e) => {
+      const r = e.getBoundingClientRect();
+      return { left: r.left, width: r.width };
+    }),
+  );
+  for (const box of boxes) expect(box.width).toBeCloseTo(2, 1);
+  const [prev, last] = boxes.slice(-2);
+  expect((last?.left ?? 0) - (prev?.left ?? 0)).toBeCloseTo(4, 1);
 });
 
 test('the waveform keeps the newest bars as it scrolls', async ({ page }) => {
@@ -63,11 +78,35 @@ test('the waveform keeps the newest bars as it scrolls', async ({ page }) => {
   await open(page);
   await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
-  await page.clock.runFor(LEVEL_MS * (BARS + 10));
-  await expect.poll(() => count(page)).toBe(BARS);
+  await expect(page.locator('.wave')).toHaveAttribute('data-slots', '232');
+  await page.clock.runFor(LEVEL_MS * (232 + 10));
+  await expect.poll(() => count(page)).toBe(242);
   const bars = await drawn(page);
-  expect(bars.at(-1)).toBeCloseTo(synthetic(BARS + 9), 5);
+  expect(bars.at(-1)).toBeCloseTo(synthetic(241), 5);
   expect(bars[0]).toBeCloseTo(synthetic(10), 5);
+});
+
+test('a narrow window draws fewer bars', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 640 });
+  await page.clock.install({ time: 0 });
+  await open(page);
+  await page.clock.pauseAt(60_000);
+  await press(page, 'New', 'Record');
+  await expect.poll(() => page.locator('.wave').evaluate((e) => e.clientWidth)).toBe(488);
+  await expect(page.locator('.wave')).toHaveAttribute('data-slots', '122');
+  await expect(page.locator('.wave .bar')).toHaveCount(122);
+});
+
+test('the bars are red while recording and grey while paused', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.clock.install({ time: 0 });
+  await open(page);
+  await page.clock.pauseAt(60_000);
+  await press(page, 'New', 'Record');
+  await page.clock.runFor(LEVEL_MS * 3);
+  await expect(page.locator('.wave .bar').last()).toHaveCSS('background-color', 'rgb(163, 38, 27)');
+  await press(page, 'Pause');
+  await expect(page.locator('.wave .bar').last()).toHaveCSS('background-color', 'rgb(92, 87, 82)');
 });
 
 test('Pause freezes the waveform, Resume carries on, Discard and New clear it', async ({ page }) => {
