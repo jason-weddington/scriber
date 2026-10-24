@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "svelte-check --tsgo --tsconfig ./tsconfig.json --fail-on-warnings",
+    "check": "rm -rf .svelte-check && svelte-check --tsgo --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "eslint . --max-warnings 0",
     "test": "playwright test",
     "test:unit": "playwright test --project unit",
@@ -15,8 +15,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.12.4",
-    "@tauri-apps/plugin-dialog": "2.8.3"
+    "@tauri-apps/api": "2.12.4"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

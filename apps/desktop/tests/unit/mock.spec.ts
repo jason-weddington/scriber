@@ -3,133 +3,191 @@ import { resolve } from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-import { byDisplayOrder, extensionOf, Mock, MOCK_ROOT, MOCK_VERSION, tree, walk } from '../../src/lib/mock';
-import type { ExtensionSummary, ScanProgress } from '../../src/lib/types';
+import { LEGAL } from '../../src/lib/format';
+import { COPIED, heard, join, leftover, Mock, MOCK_VERSION, modelMissing, NOTHING_HEARD, partFailed, refusal } from '../../src/lib/mock';
+import type { Action, Phase, Snapshot } from '../../src/lib/types';
 
 // The mock must answer the way scriber-core does (docs/design.md), or the UI
 // is tested against behaviour the real app never produces. Three checks:
 // the mock's JSON shapes match the Rust fixture that the core's serde tests
-// pin; its rules match a transcription of the core's; and it identifies
-// itself, so it can never pass for the real app.
+// pin; its rules and sentences match a transcription of the core's; and it
+// identifies itself, so it can never pass for the real app.
 
 const FIXTURE = resolve(process.cwd(), '../../crates/scriber-core/tests/fixtures/bridge-shapes.json');
-const shapes = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, unknown>;
+const shapes = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, Record<string, unknown>>;
 
-/** The value's shape: each key and the type of its value, recursively (arrays by their first element). */
-function shape(v: unknown): unknown {
-  if (Array.isArray(v)) return [shape(v[0])];
-  if (v !== null && typeof v === 'object') {
-    return Object.fromEntries(
-      Object.entries(v)
-        .sort(([a], [b]) => (a < b ? -1 : 1))
-        .map(([k, x]) => [k, shape(x)]),
-    );
+const PHASES: Phase[] = ['idle', 'ready', 'recording', 'paused', 'transcribing', 'finished', 'failed'];
+const ACTIONS: Action[] = ['new', 'record', 'pause', 'resume', 'done', 'discard', 'retry', 'copy'];
+
+/** Each key, and the JSON types its value takes across the fixture's examples. */
+function types(examples: Record<string, unknown>[]): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const ex of examples) {
+    for (const [k, v] of Object.entries(ex)) {
+      const set = out.get(k) ?? new Set<string>();
+      set.add(v === null ? 'null' : typeof v);
+      out.set(k, set);
+    }
   }
-  return typeof v;
+  return out;
+}
+
+// ---- the core's rules, transcribed -------------------------------------------
+//
+// From crates/scriber-core/src/dictation.rs and model.rs. If the core changes,
+// this changes with it and the mock must follow.
+
+const CORE_LEGAL: Record<Phase, Action[]> = {
+  idle: ['new'],
+  ready: ['record', 'discard'],
+  recording: ['pause', 'done', 'discard'],
+  paused: ['resume', 'done', 'discard'],
+  transcribing: [],
+  finished: ['new', 'discard', 'copy'],
+  failed: ['new', 'discard', 'retry'],
+};
+
+const CORE_ACTION_NAMES: Record<Action, string> = {
+  new: 'start a new session',
+  record: 'record',
+  pause: 'pause',
+  resume: 'resume',
+  done: 'finish',
+  discard: 'discard',
+  retry: 'retry',
+  copy: 'copy',
+};
+
+/** A mock driven to `phase` (transcriptions held at 'transcribing'). */
+async function at(phase: Phase): Promise<Mock> {
+  const flaky = phase === 'failed' ? 'transcribe=fail&' : '';
+  const mock = new Mock(`?${flaky}`);
+  const steps: Record<Phase, Action[]> = {
+    idle: [],
+    ready: ['new'],
+    recording: ['new', 'record'],
+    paused: ['new', 'record', 'pause'],
+    transcribing: ['new', 'record', 'done'],
+    finished: ['new', 'record', 'done'],
+    failed: ['new', 'record', 'done'],
+  };
+  if (phase === 'transcribing') mock.handle.hold('transcribe');
+  for (const step of steps[phase]) await mock.act(step, '');
+  await settled();
+  expect(mock.snapshot().phase, `reached ${phase}`).toBe(phase);
+  return mock;
+}
+
+/** Lets the mock's background transcriptions run. */
+async function settled(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 
 test.describe('the mock speaks the Rust JSON shapes', () => {
-  test('app_info', async () => {
-    expect(shape(await new Mock('').appInfo())).toEqual(shape(shapes.appInfo));
-  });
-
-  test('scan_folder and its progress events', async () => {
-    const mock = new Mock('');
-    const events: ScanProgress[] = [];
-    mock.onProgress((p) => events.push(p));
-    const summary = await mock.scanFolder(MOCK_ROOT);
-    expect(shape(summary)).toEqual(shape(shapes.scanSummary));
-    expect(events.length).toBeGreaterThan(0);
-    for (const e of events) expect(shape(e)).toEqual(shape(shapes.scanProgress));
+  test('every snapshot field, with the types the fixture allows', async () => {
+    const allowedTypes = types([shapes.snapshot ?? {}, shapes.snapshotFailed ?? {}]);
+    const snapshots = [new Mock('?model=missing').snapshot(), new Mock('?leftover=1').snapshot()];
+    for (const phase of PHASES) snapshots.push((await at(phase)).snapshot());
+    for (const s of snapshots) {
+      expect(Object.keys(s).sort(), `${s.phase} keys`).toEqual([...allowedTypes.keys()].sort());
+      for (const [k, v] of Object.entries(s)) {
+        expect(allowedTypes.get(k)?.has(v === null ? 'null' : typeof v), `${s.phase} ${k}`).toBe(true);
+      }
+    }
   });
 });
 
-// ---- the core's rules, transcribed -----------------------------------------
-//
-// From crates/scriber-core/src/scan.rs. If the core's rule changes, this
-// changes with it and the mock must follow.
-
-function coreExtension(name: string): string {
-  // `rsplit_once('.')`, and no extension when the stem before the last dot is empty.
-  const i = name.lastIndexOf('.');
-  if (i === -1) return '';
-  const stem = name.slice(0, i);
-  return stem === '' ? '' : name.slice(i + 1).toLowerCase();
-}
-
-test('the extension rule is the core rule', () => {
-  // The same cases as the core's own unit test, and a few more.
-  for (const name of ['photo.JPG', 'archive.tar.gz', 'Makefile', '.profile', '..', 'trailing.', 'a.b', 'Ünïcode.ÄBC', '', '.']) {
-    expect(extensionOf(name), name).toBe(coreExtension(name));
+test('the legal actions are the core table, in the mock and in the buttons', async () => {
+  expect(LEGAL).toEqual(CORE_LEGAL);
+  for (const phase of PHASES) {
+    for (const action of ACTIONS) {
+      const mock = await at(phase);
+      const before = mock.snapshot();
+      const attempt = mock.act(action, 'edited');
+      if (CORE_LEGAL[phase].includes(action)) {
+        await expect(attempt, `${action} from ${phase}`).resolves.toMatchObject({ revision: before.revision + 1 });
+      } else {
+        await expect(attempt, `${action} from ${phase}`).rejects.toThrow(
+          `Cannot ${CORE_ACTION_NAMES[action]} while ${phase}.`,
+        );
+        expect(mock.snapshot(), `${action} from ${phase} changed nothing`).toEqual(before);
+      }
+    }
   }
-  expect(extensionOf('Ünïcode.ÄBC')).toBe('äbc');
 });
 
-test('the display order is the core order: bytes, then files, then name', () => {
-  const rows: ExtensionSummary[] = [
-    { extension: 'b', files: 1, bytes: 10 },
-    { extension: 'a', files: 1, bytes: 10 },
-    { extension: 'c', files: 2, bytes: 10 },
-    { extension: 'd', files: 9, bytes: 5 },
-    { extension: 'e', files: 1, bytes: 50 },
-  ];
-  expect([...rows].sort(byDisplayOrder).map((r) => r.extension)).toEqual(['e', 'c', 'a', 'b', 'd']);
-  const same = { extension: 'a', files: 1, bytes: 1 };
-  expect(byDisplayOrder(same, { ...same })).toBe(0);
-});
-
-test('the walk counts like the core: links skipped, unreadable subfolders counted', () => {
-  const reports: ScanProgress[] = [];
-  const summary = walk(tree('photos'), MOCK_ROOT, (p) => reports.push(p));
-  expect(summary).toEqual({
-    root: MOCK_ROOT,
-    files: 6,
-    totalBytes: 57_607_348,
-    unreadableFolders: 1,
-    extensions: [
-      { extension: 'dng', files: 2, bytes: 49_500_000 },
-      { extension: 'jpg', files: 2, bytes: 8_100_000 },
-      { extension: '', files: 1, bytes: 6_148 },
-      { extension: 'txt', files: 1, bytes: 1_200 },
-    ],
-    elapsedMs: 0,
-  });
-  // The last report is the final totals, as in the core.
-  expect(reports.at(-1)).toEqual({ files: 6, bytes: 57_607_348, folders: 2 });
-});
-
-test('an unreadable or missing root is the core error sentence', () => {
-  expect(() => walk(tree('locked'), MOCK_ROOT, () => undefined)).toThrow(
-    `${MOCK_ROOT} could not be read: Permission denied (os error 13)`,
+test('the sentences are the core sentences', () => {
+  expect(refusal('done', 'ready')).toBe('Cannot finish while ready.');
+  expect(modelMissing('/m.bin')).toBe('Model missing: run scripts/fetch-model.sh to download it to /m.bin.');
+  expect(partFailed(2, 3, 'boom')).toBe('Part 2 of 3 could not be transcribed: boom. Retry to try again.');
+  expect(leftover(1)).toBe(
+    'The last session was not transcribed. Retry to transcribe its 1 recorded part, or start a new session.',
   );
-  expect(() => walk(tree('photos'), '/nowhere', () => undefined)).toThrow(
-    '/nowhere could not be read: No such file or directory (os error 2)',
+  expect(leftover(2)).toContain('its 2 recorded parts,');
+  expect(COPIED).toBe('Copied to the clipboard.');
+  expect(NOTHING_HEARD).toBe(
+    'No speech was heard. If you spoke, check that Scriber may use the microphone in System Settings, Privacy & Security, Microphone.',
   );
 });
 
-test('the mock identifies itself', async () => {
-  expect((await new Mock('').appInfo()).version).toBe(MOCK_VERSION);
+test('segments join as paragraphs in order, silent ones left out', () => {
+  expect(join(['a', null, 'b'])).toBe('a\n\nb');
+  expect(join([null])).toBe('');
+  expect(heard(0, false)).toBe('This is part 1 of the dictation.');
+  expect(heard(1, true).length).toBeGreaterThan(1000);
+});
+
+test('a finished session copies its transcript, and a background result is announced', async () => {
+  const mock = new Mock('');
+  const events: Snapshot[] = [];
+  mock.onChange((s) => events.push(s));
+  await mock.act('new', '');
+  await mock.act('record', '');
+  const paused = await mock.act('pause', '');
+  expect(paused.pending, 'in flight').toBe(1);
+  await settled();
+  expect(events.map((e) => [e.phase, e.pending, e.revision])).toEqual([['paused', 0, paused.revision + 1]]);
+  await mock.act('resume', '');
+  await mock.act('done', '');
+  await settled();
+  expect(mock.snapshot().text).toBe(`${heard(0, false)}\n\n${heard(1, false)}`);
+  expect(mock.handle.copied).toEqual([mock.snapshot().text]);
+});
+
+test('a late result from a discarded session changes nothing', async () => {
+  const mock = new Mock('');
+  mock.handle.hold('transcribe');
+  await mock.act('new', '');
+  await mock.act('record', '');
+  await mock.act('pause', '');
+  await mock.act('discard', '');
+  await mock.act('record', '');
+  await mock.act('pause', '');
+  mock.handle.release('transcribe');
+  await settled();
+  const s = mock.snapshot();
+  expect([s.segments, s.pending]).toEqual([1, 0]);
+});
+
+test('the mock identifies itself, and named calls fail on request', async () => {
+  expect(await new Mock('').version()).toBe(MOCK_VERSION);
   expect(MOCK_VERSION).toMatch(/mock/);
+  await expect(new Mock('?fail=app_version').version()).rejects.toThrow('Mock failure: app_version');
+  await expect(new Mock('?fail=dictation_state').state()).rejects.toThrow('Mock failure: dictation_state');
+  await expect(new Mock('?fail=new').act('new', '')).rejects.toThrow('Mock failure: new');
+  await expect(new Mock('').state()).resolves.toMatchObject({ phase: 'idle' });
 });
 
-test('a command named in ?fail= rejects, and only that one', async () => {
-  const mock = new Mock('fail=app_info');
-  await expect(mock.appInfo()).rejects.toThrow('Mock failure: app_info');
-  await expect(mock.scanFolder(MOCK_ROOT)).resolves.toMatchObject({ root: MOCK_ROOT });
-});
-
-test('the picker can be cancelled, and a held scan waits for release', async () => {
-  expect(new Mock('pick=cancel').pickFolder()).toBeNull();
-  const mock = new Mock('tree=empty');
-  mock.handle.hold('scan_folder');
+test('a held call waits for release', async () => {
+  const mock = new Mock('');
+  mock.handle.hold('dictation_act');
   let done = false;
-  const pending = mock.scanFolder(MOCK_ROOT).then(() => {
+  const pending = mock.act('new', '').then(() => {
     done = true;
   });
-  await Promise.resolve();
+  await settled();
   expect(done).toBe(false);
-  mock.handle.release('scan_folder');
+  mock.handle.release('dictation_act');
   await pending;
   expect(done).toBe(true);
-  expect(mock.handle.scans).toEqual([MOCK_ROOT]);
 });

@@ -1,70 +1,157 @@
 //! The core's view of the outside world. Each trait is one kind of effect;
 //! the app crate supplies the real implementations and the tests supply
-//! fakes (`tests/common`). Nothing in the core touches the filesystem, the
-//! clock or the webview except through these.
+//! fakes (`tests/common`). Nothing in the core touches the microphone, the
+//! transcription model, the filesystem or the clipboard except through
+//! these.
 
-use std::path::Path;
+use crate::dictation::Job;
 
-use crate::model::ScanProgress;
-
-/// One entry of a folder listing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirEntry {
-    /// The entry's file name (the last path component).
-    pub name: String,
-    /// What kind of entry it is.
-    pub kind: EntryKind,
-}
-
-/// The kinds of entry a scan distinguishes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryKind {
-    /// A regular file, with its size in bytes.
-    File {
-        /// Size in bytes.
-        size: u64,
-    },
-    /// A folder, which the scan descends into.
-    Folder,
-    /// Anything else (a symbolic link, a socket, a device). Not counted and
-    /// never followed, so a link cycle cannot make a scan loop.
-    Other,
-}
-
-/// A failed filesystem read, as one readable sentence.
+/// A failed effect, as one readable sentence.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
-pub struct HostError(pub String);
+pub struct PortError(pub String);
 
-/// Filesystem reads.
-pub trait Host {
-    /// Lists one folder without following symbolic links.
+/// Sound as the input device delivered it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Captured {
+    /// Interleaved samples, nominally between -1 and 1.
+    pub samples: Vec<f32>,
+    /// Channels per frame.
+    pub channels: u16,
+    /// Frames per second.
+    pub sample_rate: u32,
+}
+
+impl Captured {
+    /// `samples` interleaved over `channels` at `sample_rate` frames per
+    /// second.
+    #[must_use]
+    pub fn new(samples: Vec<f32>, channels: u16, sample_rate: u32) -> Self {
+        Self {
+            samples,
+            channels,
+            sample_rate,
+        }
+    }
+}
+
+/// The microphone.
+pub trait Recorder {
+    /// Starts capturing a segment from the default input device.
     ///
     /// # Errors
     ///
-    /// The folder does not exist, is not a folder, or cannot be read.
-    fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>, HostError>;
+    /// There is no input device, or it cannot be opened.
+    fn start(&self) -> Result<(), PortError>;
+
+    /// Stops capturing and hands over everything captured since `start`.
+    ///
+    /// # Errors
+    ///
+    /// Nothing was being captured, or the device failed while it was.
+    fn stop(&self) -> Result<Captured, PortError>;
 }
 
-/// Monotonic time.
-pub trait Clock {
-    /// Milliseconds since an arbitrary fixed point. Never goes backwards.
-    fn now_ms(&self) -> u64;
+/// Speech to text.
+pub trait Transcriber {
+    /// Where the model should be, when it is not installed there.
+    fn missing_model(&self) -> Option<String>;
+
+    /// The text spoken in `samples` (16 kHz mono), steered by `prompt`.
+    ///
+    /// # Errors
+    ///
+    /// The model cannot be loaded or the transcription fails.
+    fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<String, PortError>;
 }
 
-/// Where progress goes (the app forwards it to the webview as an event).
-pub trait ProgressSink {
-    /// Called with the running totals while a scan is in progress.
-    fn progress(&self, progress: &ScanProgress);
+/// The app's data folder. Paths are relative to it and use `/`.
+pub trait Files {
+    /// The contents of the file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// The file is missing or unreadable.
+    fn read(&self, path: &str) -> Result<Vec<u8>, PortError>;
+
+    /// Writes the file at `path`, creating its folder if needed.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be written.
+    fn write(&self, path: &str, bytes: &[u8]) -> Result<(), PortError>;
+
+    /// The names of the files in `folder`, in any order; a missing folder
+    /// has none.
+    ///
+    /// # Errors
+    ///
+    /// The folder cannot be read.
+    fn list(&self, folder: &str) -> Result<Vec<String>, PortError>;
+
+    /// Deletes the file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be deleted.
+    fn remove(&self, path: &str) -> Result<(), PortError>;
 }
 
-/// Every port a scan needs, borrowed for the length of one call.
+/// The system clipboard.
+pub trait Clipboard {
+    /// Replaces the clipboard's contents with `text`.
+    ///
+    /// # Errors
+    ///
+    /// The clipboard cannot be written.
+    fn write(&self, text: &str) -> Result<(), PortError>;
+}
+
+/// Where closed segments go to be transcribed off the caller's thread (the
+/// app runs [`Job::run`] on a worker and hands the result to
+/// [`crate::dictation::Dictation::complete`]).
+pub trait JobQueue {
+    /// Queues `job`.
+    ///
+    /// # Errors
+    ///
+    /// The worker is gone.
+    fn send(&self, job: Job) -> Result<(), PortError>;
+}
+
+/// Every port a session action needs, borrowed for the length of one call.
 #[derive(Clone, Copy)]
 pub struct Ports<'a> {
-    /// Filesystem reads.
-    pub host: &'a dyn Host,
-    /// Time, for progress pacing and the elapsed figure.
-    pub clock: &'a dyn Clock,
-    /// Progress reports.
-    pub sink: &'a dyn ProgressSink,
+    /// The microphone.
+    pub recorder: &'a dyn Recorder,
+    /// Consulted for whether the model is installed; transcription itself
+    /// runs off the caller's thread through [`crate::dictation::Job::run`].
+    pub transcriber: &'a dyn Transcriber,
+    /// The data folder: the session's audio and the glossary.
+    pub files: &'a dyn Files,
+    /// Where the finished transcript goes.
+    pub clipboard: &'a dyn Clipboard,
+    /// The transcription worker's queue.
+    pub queue: &'a dyn JobQueue,
+}
+
+impl<'a> Ports<'a> {
+    /// Gathers the ports; each parameter is a different trait, so a mix-up
+    /// does not compile.
+    #[must_use]
+    pub fn new(
+        recorder: &'a dyn Recorder,
+        transcriber: &'a dyn Transcriber,
+        files: &'a dyn Files,
+        clipboard: &'a dyn Clipboard,
+        queue: &'a dyn JobQueue,
+    ) -> Self {
+        Self {
+            recorder,
+            transcriber,
+            files,
+            clipboard,
+            queue,
+        }
+    }
 }

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Scriber's logic: the folder scan and its summary, with every effect behind a port."
+description = "Scriber's logic: the dictation session, its audio and its transcript, with every effect behind a port."
 publish = false
 
 [dependencies]

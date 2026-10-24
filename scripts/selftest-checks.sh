@@ -61,10 +61,10 @@ expect_fail "the core depends on tokio" "$arch" \
   "plant_fake_tokio $core" \
   'scriber-core depends on tokio'
 expect_fail "the core reads a file directly" "$arch" \
-  "printf 'fn f() { let _ = std::fs::read(\"x\"); }\n' >> $core/src/scan.rs" \
+  "printf 'fn f() { let _ = std::fs::read(\"x\"); }\n' >> $core/src/dictation.rs" \
   'direct I/O in the core'
 expect_fail "the core reads the clock directly" "$arch" \
-  "printf 'fn f() { let _ = std::time::Instant::now(); }\n' >> $core/src/scan.rs" \
+  "printf 'fn f() { let _ = std::time::Instant::now(); }\n' >> $core/src/dictation.rs" \
   'direct I/O in the core'
 expect_fail "a logic module in src-tauri" "$arch" \
   "printf '//! logic\n' > $app/src/rules.rs" \
@@ -82,7 +82,7 @@ expect_fail "the mock stops identifying itself" "$arch" \
   "perl -pi -e \"s/dataset.bridge = 'mock'/dataset.bridge = 'real'/\" apps/desktop/src/lib/bridge.ts" \
   'data-bridge'
 expect_fail "an allow attribute" "$arch" \
-  "printf '#[allow(dead_code)]\nfn g() {}\n' >> $core/src/scan.rs" \
+  "printf '#[allow(dead_code)]\nfn g() {}\n' >> $core/src/dictation.rs" \
   'not #\[allow\]'
 expect_fail "a crate-level allow attribute" "$arch" \
   "perl -0pi -e 's/^/#![allow(missing_docs)]\n/' $app/src/main.rs" \
@@ -106,7 +106,7 @@ docs_case() {
   if ! (cd "$work/t" && scripts/docs-only.sh staged 2>/dev/null); then
     echo "selftest: docs-only.sh does not skip a docs-only change" >&2; fail=1
   fi
-  (cd "$work/t" && git add "$core/src/scan.rs")
+  (cd "$work/t" && git add "$core/src/dictation.rs")
   if (cd "$work/t" && scripts/docs-only.sh staged 2>/dev/null); then
     echo "selftest: docs-only.sh MISSED a code file in the change" >&2; fail=1
   else

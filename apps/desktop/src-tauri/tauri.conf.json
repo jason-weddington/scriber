@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "Scriber",
-        "width": 960,
-        "height": 640,
-        "minWidth": 640,
-        "minHeight": 420,
+        "width": 760,
+        "height": 560,
+        "minWidth": 520,
+        "minHeight": 380,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {
@@ -42,7 +42,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist"
     }
   }
 }

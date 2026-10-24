@@ -20,7 +20,7 @@ case "$mode" in pre-commit|pre-push|full) ;; *) echo "unknown mode: $mode" >&2; 
 RUST_COVERAGE_FLOOR=100
 # Frontend: line coverage of src/ (unit + e2e; the mock is excluded, see
 # apps/desktop/tests/coverage/options.ts), whole-number percent.
-FRONTEND_COVERAGE_FLOOR=96
+FRONTEND_COVERAGE_FLOOR=99
 
 # Scratch space on disk: /tmp is a small tmpfs on some hosts and concurrent
 # gates can fill it. Unless TMPDIR already points elsewhere, use target/gate-tmp

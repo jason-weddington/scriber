@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 
-import { chooseButton, hold, open, release } from './helpers';
+import { hold, open, press, release, status } from './helpers';
 
 // axe-core over every state the window can be in, in light and dark. Any
 // violation fails, whatever its impact: a contrast miss in dark mode is as
@@ -20,36 +20,65 @@ for (const colorScheme of ['light', 'dark'] as const) {
 
     test('idle', async ({ page }) => {
       await open(page);
+      await expect(status(page)).toHaveText('Click New to start a dictation.');
       await expectNoViolations(page);
     });
 
-    test('scanning', async ({ page }) => {
+    test('ready', async ({ page }) => {
       await open(page);
-      await hold(page, 'scan_folder');
-      await chooseButton(page).click();
-      await expect(chooseButton(page)).toBeDisabled();
+      await press(page, 'New');
+      await expect(status(page)).toHaveText('Click Record and start talking.');
       await expectNoViolations(page);
-      await release(page, 'scan_folder');
     });
 
-    test('summary', async ({ page }) => {
+    test('recording', async ({ page }) => {
       await open(page);
-      await chooseButton(page).click();
-      await expect(page.getByRole('list', { name: 'File types' })).toBeVisible();
+      await press(page, 'New', 'Record');
+      await expect(status(page)).toContainText('Recording.');
       await expectNoViolations(page);
     });
 
-    test('error', async ({ page }) => {
-      await open(page, { tree: 'locked' });
-      await chooseButton(page).click();
+    test('paused, transcribing in the background', async ({ page }) => {
+      await open(page);
+      await hold(page, 'transcribe');
+      await press(page, 'New', 'Record', 'Pause');
+      await expect(status(page)).toContainText('Transcribing 1 part');
+      await expectNoViolations(page);
+      await release(page, 'transcribe');
+    });
+
+    test('transcribing', async ({ page }) => {
+      await open(page);
+      await hold(page, 'transcribe');
+      await press(page, 'New', 'Record', 'Done');
+      await expect(status(page)).toContainText('Transcribing the last');
+      await expectNoViolations(page);
+      await release(page, 'transcribe');
+    });
+
+    test('finished', async ({ page }) => {
+      await open(page);
+      await press(page, 'New', 'Record', 'Done');
+      await expect(page.getByRole('textbox', { name: 'Transcript' })).toBeVisible();
+      await expectNoViolations(page);
+    });
+
+    test('failed', async ({ page }) => {
+      await open(page, { transcribe: 'fail' });
+      await press(page, 'New', 'Record', 'Done');
+      await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+      await expectNoViolations(page);
+    });
+
+    test('model missing', async ({ page }) => {
+      await open(page, { model: 'missing' });
       await expect(page.getByRole('alert')).toBeVisible();
       await expectNoViolations(page);
     });
 
-    test('empty', async ({ page }) => {
-      await open(page, { tree: 'empty' });
-      await chooseButton(page).click();
-      await expect(page.getByText('This folder has no files.')).toBeVisible();
+    test('session unreadable', async ({ page }) => {
+      await open(page, { fail: 'dictation_state' });
+      await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
       await expectNoViolations(page);
     });
   });

@@ -3,56 +3,104 @@
 //! names are camelCase, and unknown fields are refused rather than dropped.
 //! `tests/serde_shapes.rs` pins every shape.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
-/// What a finished scan found.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScanSummary {
-    /// The folder that was scanned, as the user picked it.
-    pub root: String,
-    /// Every regular file under the root, at any depth.
-    pub files: u64,
-    /// The sum of those files' sizes in bytes.
-    pub total_bytes: u64,
-    /// Folders below the root that could not be read, so their contents are
-    /// missing from the totals.
-    pub unreadable_folders: u64,
-    /// One entry per extension, largest total size first (see
-    /// [`crate::scan::summarise`] for the full order).
-    pub extensions: Vec<ExtensionSummary>,
-    /// Wall-clock time the scan took, from the clock port.
-    pub elapsed_ms: u64,
+/// Where a dictation session is. `docs/design.md` has the transition table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Phase {
+    /// The app has just started and no session exists.
+    #[default]
+    Idle,
+    /// A session exists and nothing has been recorded yet.
+    Ready,
+    /// The microphone is capturing a segment.
+    Recording,
+    /// Between segments; earlier segments may still be transcribing.
+    Paused,
+    /// Done was clicked; waiting for the last segments' text.
+    Transcribing,
+    /// The transcript is ready.
+    Finished,
+    /// A segment could not be transcribed; Retry re-reads its audio.
+    Failed,
 }
 
-/// The files of one extension.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExtensionSummary {
-    /// Lowercase, without the dot. Empty for a file with no extension.
-    pub extension: String,
-    /// How many files have it.
-    pub files: u64,
-    /// Their total size in bytes.
-    pub bytes: u64,
+impl fmt::Display for Phase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Idle => "idle",
+            Self::Ready => "ready",
+            Self::Recording => "recording",
+            Self::Paused => "paused",
+            Self::Transcribing => "transcribing",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+        })
+    }
 }
 
-/// A running count, sent while a scan is in progress.
+/// What the user asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScanProgress {
-    /// Files counted so far.
-    pub files: u64,
-    /// Their total size in bytes so far.
-    pub bytes: u64,
-    /// Folders read so far, the root included.
-    pub folders: u64,
+#[serde(rename_all = "camelCase")]
+pub enum Action {
+    /// Start a new, empty session.
+    New,
+    /// Start recording the first segment.
+    Record,
+    /// Close the current segment.
+    Pause,
+    /// Start recording another segment.
+    Resume,
+    /// Close the session and wait for its transcript.
+    Done,
+    /// Throw the session away.
+    Discard,
+    /// Transcribe the failed segments again from their saved audio.
+    Retry,
+    /// Copy the (possibly edited) transcript again.
+    Copy,
 }
 
-/// What the app reports about itself.
+impl fmt::Display for Action {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::New => "start a new session",
+            Self::Record => "record",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Done => "finish",
+            Self::Discard => "discard",
+            Self::Retry => "retry",
+            Self::Copy => "copy",
+        })
+    }
+}
+
+/// Everything the window shows about the session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AppInfo {
-    /// The app's version, from its manifest.
-    pub version: String,
+pub struct Snapshot {
+    /// Grows with every change. Commands and events can arrive out of order,
+    /// so the window keeps the snapshot with the highest revision.
+    pub revision: u64,
+    /// Where the session is.
+    pub phase: Phase,
+    /// Milliseconds of audio in the session's closed segments. The window
+    /// adds the running segment's time itself while recording.
+    pub recorded_ms: u64,
+    /// Segments recorded in this session.
+    pub segments: u32,
+    /// Of those, how many are still being transcribed.
+    pub pending: u32,
+    /// The transcript once finished; empty before.
+    pub text: String,
+    /// Why the session failed, when the phase is `failed`.
+    pub error: Option<String>,
+    /// One sentence about the last action (copied, the microphone stopped).
+    pub notice: Option<String>,
+    /// Set when the speech model is not installed, saying how to install it.
+    pub model_error: Option<String>,
 }

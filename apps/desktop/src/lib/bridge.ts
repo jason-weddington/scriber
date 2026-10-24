@@ -7,17 +7,17 @@
 //
 // Outside Tauri (a plain browser, Playwright) every function is answered by
 // the deterministic mock in mock.ts, which identifies itself: <html> carries
-// data-bridge="mock" and app_info reports version 0.0.0-mock. A green browser
-// test can therefore never be read as proof that the Tauri path works.
+// data-bridge="mock" and the version reads 0.0.0-mock. A green browser test
+// can therefore never be read as proof that the Tauri path works.
+import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
 
 import { Mock } from './mock';
-import type { AppInfo, ScanProgress, ScanSummary } from './types';
+import type { Action, Snapshot } from './types';
 
-/** The event src-tauri emits while a scan runs (SCAN_PROGRESS_EVENT in lib.rs). */
-export const SCAN_PROGRESS_EVENT = 'scan-progress';
+/** The event src-tauri emits when a transcription finishes (DICTATION_EVENT in lib.rs). */
+export const DICTATION_EVENT = 'dictation-changed';
 
 /** True inside the Tauri webview rather than a plain browser. */
 export function underTauri(): boolean {
@@ -47,27 +47,28 @@ export function errorText(e: unknown): string {
   return typeof e === 'string' ? e : JSON.stringify(e);
 }
 
-export async function appInfo(): Promise<AppInfo> {
-  if (!underTauri()) return mock().appInfo();
-  return invoke<AppInfo>('app_info');
+/** The app's version, from its manifest. */
+export async function appVersion(): Promise<string> {
+  if (!underTauri()) return mock().version();
+  return getVersion();
 }
 
-/** The folder picker. Resolves to null when the user cancels. */
-export async function pickFolder(): Promise<string | null> {
-  if (!underTauri()) return mock().pickFolder();
-  const picked = await open({ directory: true, multiple: false, title: 'Choose a folder to scan' });
-  return typeof picked === 'string' ? picked : null;
+/** The session as it stands. */
+export async function dictationState(): Promise<Snapshot> {
+  if (!underTauri()) return mock().state();
+  return invoke<Snapshot>('dictation_state');
 }
 
-export async function scanFolder(path: string): Promise<ScanSummary> {
-  if (!underTauri()) return mock().scanFolder(path);
-  return invoke<ScanSummary>('scan_folder', { path });
+/** One user action. `text` is the edited transcript for `copy`, ignored otherwise. */
+export async function act(action: Action, text = ''): Promise<Snapshot> {
+  if (!underTauri()) return mock().act(action, text);
+  return invoke<Snapshot>('dictation_act', { action, text });
 }
 
-/** Subscribes to scan progress. Resolves to the unsubscribe function. */
-export async function onScanProgress(cb: (progress: ScanProgress) => void): Promise<() => void> {
-  if (!underTauri()) return mock().onProgress(cb);
-  return listen<ScanProgress>(SCAN_PROGRESS_EVENT, (e) => {
+/** Subscribes to background changes (a segment transcribed). Resolves to the unsubscribe function. */
+export async function onDictationChanged(cb: (snapshot: Snapshot) => void): Promise<() => void> {
+  if (!underTauri()) return mock().onChange(cb);
+  return listen<Snapshot>(DICTATION_EVENT, (e) => {
     cb(e.payload);
   });
 }

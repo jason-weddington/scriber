@@ -1,6 +1,6 @@
 # Scriber
 
-A macOS desktop app built with Rust, Tauri 2 and Svelte 5. It ships with one example feature: choose a folder and see its files summarised by type.
+A macOS dictation app built with Rust, Tauri 2 and Svelte 5. Click New, Record, talk, Pause, think, Resume, talk more, then Done: the transcript appears in the window and is already on the clipboard. Transcription is local, with whisper.cpp (`large-v3-turbo`) on the GPU through Metal; nothing leaves the Mac. `docs/design.md` has the details.
 
 ## Prerequisites
 
@@ -16,6 +16,9 @@ brew install node pnpm
 # Git hooks, commit messages, spelling, secrets
 brew install lefthook cocogitto typos-cli gitleaks
 
+# whisper.cpp builds with cmake; the smoke check uses ffmpeg
+brew install cmake ffmpeg
+
 # Cargo tools the gate runs
 brew install cargo-nextest cargo-llvm-cov cargo-deny cargo-sort cargo-mutants
 cargo install cargo-machete
@@ -27,6 +30,16 @@ cargo install cargo-machete
 lefthook install
 cd apps/desktop && pnpm install --frozen-lockfile && pnpm exec playwright install chromium
 ```
+
+## The speech model
+
+```sh
+bash scripts/fetch-model.sh
+```
+
+Downloads `ggml-large-v3-turbo.bin` (1.6 GB) into `~/Library/Application Support/com.jasonweddington.scriber/models/`, where the app looks for it. Without it the app says so and refuses to record. `bash scripts/smoke.sh` then checks the real model end to end: it speaks a sentence with `say`, converts it with ffmpeg and prints what the app's Whisper adapter hears, with timings.
+
+An optional glossary, `vocabulary.txt` in the same folder (one term per line, `#` comments), steers the spelling of names and jargon.
 
 ## Develop
 
@@ -43,7 +56,7 @@ bash scripts/gate.sh full            # every check, including coverage, mutation
 bash scripts/install.sh
 ```
 
-Builds the release app, verifies its signature (ad hoc, so it runs on the machine that built it) and installs it in `/Applications`.
+Builds the release app, verifies its signature (ad hoc, so it runs on the machine that built it) and installs it in `/Applications`. The first Record asks for the microphone; allow it in the prompt (or later in System Settings, Privacy & Security, Microphone).
 
 ## Release
 

@@ -75,9 +75,22 @@ interface Call {
 
 // Each bridge function that invokes a command, with sample arguments, and what it must send.
 const CALLS: Call[] = [
-  { fn: 'appInfo', args: [], command: 'app_info', sent: {} },
-  { fn: 'scanFolder', args: ['/Users/me/Pictures'], command: 'scan_folder', sent: { path: '/Users/me/Pictures' } },
+  { fn: 'dictationState', args: [], command: 'dictation_state', sent: {} },
+  { fn: 'act', args: ['pause'], command: 'dictation_act', sent: { action: 'pause', text: '' } },
+  { fn: 'act', args: ['copy', 'Edited.'], command: 'dictation_act', sent: { action: 'copy', text: 'Edited.' } },
 ];
+
+const SNAPSHOT = {
+  revision: 3,
+  phase: 'paused',
+  recordedMs: 1500,
+  segments: 1,
+  pending: 1,
+  text: '',
+  error: null,
+  notice: null,
+  modelError: null,
+};
 
 test.describe('bridge.ts against the Rust command signatures', () => {
   const src = readFileSync(LIB_RS, 'utf8');
@@ -90,7 +103,7 @@ test.describe('bridge.ts against the Rust command signatures', () => {
 
   test('every bridge function sends the right command with exactly the Rust argument keys', async ({ page }) => {
     await open(page);
-    const sent = await page.evaluate(async (calls) => {
+    const sent = await page.evaluate(async ([calls, snapshot]) => {
       const url = '/src/lib/bridge.ts';
       const bridge = (await import(/* @vite-ignore */ url)) as Record<string, (...a: unknown[]) => Promise<unknown>>;
       const log: { command: string; args: Record<string, unknown> | undefined }[] = [];
@@ -99,7 +112,7 @@ test.describe('bridge.ts against the Rust command signatures', () => {
       w.__TAURI_INTERNALS__ = {
         invoke: (command: string, args?: Record<string, unknown>) => {
           log.push({ command, args });
-          return Promise.resolve(command === 'plugin:dialog|open' ? '/picked' : null);
+          return Promise.resolve(command === 'plugin:app|version' ? '9.9.9' : null);
         },
         transformCallback: (cb: (e: unknown) => void) => {
           callbacks.push(cb);
@@ -109,19 +122,19 @@ test.describe('bridge.ts against the Rust command signatures', () => {
       try {
         for (const c of calls) await bridge[c.fn]?.(...c.args);
         const received: unknown[] = [];
-        await bridge.onScanProgress?.((p: unknown) => received.push(p));
+        await bridge.onDictationChanged?.((p: unknown) => received.push(p));
         // Tauri delivers an event as { event, id, payload }; the bridge hands on the payload.
-        for (const cb of callbacks) cb({ event: 'scan-progress', id: 1, payload: { files: 1, bytes: 2, folders: 3 } });
+        for (const cb of callbacks) cb({ event: 'dictation-changed', id: 1, payload: snapshot });
         log.push({ command: 'received', args: { received } });
-        const picked = await bridge.pickFolder?.();
-        log.push({ command: 'picked', args: { picked } });
+        const version = await bridge.appVersion?.();
+        log.push({ command: 'version', args: { version } });
       } finally {
         delete w.__TAURI_INTERNALS__;
       }
       return log;
-    }, CALLS);
+    }, [CALLS, SNAPSHOT] as const);
 
-    const commandCalls = sent.filter((c) => !c.command.startsWith('plugin:') && !['picked', 'received'].includes(c.command));
+    const commandCalls = sent.filter((c) => !c.command.startsWith('plugin:') && !['version', 'received'].includes(c.command));
     expect(commandCalls.map((c) => c.command)).toEqual(CALLS.map((c) => c.command));
 
     for (const [i, call] of CALLS.entries()) {
@@ -133,22 +146,19 @@ test.describe('bridge.ts against the Rust command signatures', () => {
     }
 
     // Nothing in Rust is left without a bridge function.
-    expect([...rust.keys()].sort()).toEqual(CALLS.map((c) => c.command).sort());
+    expect([...rust.keys()].sort()).toEqual([...new Set(CALLS.map((c) => c.command))].sort());
 
-    // The progress subscription listens for the event name the Rust sink emits.
+    // The subscription listens for the event name the Rust worker emits.
     const listened = sent
       .filter((c) => c.command === 'plugin:event|listen')
       .map((c) => (c.args as { event: string }).event);
-    expect(listened).toEqual([constant(src, 'SCAN_PROGRESS_EVENT')]);
+    expect(listened).toEqual([constant(src, 'DICTATION_EVENT')]);
 
-    expect(sent.find((c) => c.command === 'received')?.args).toEqual({
-      received: [{ files: 1, bytes: 2, folders: 3 }],
-    });
+    expect(sent.find((c) => c.command === 'received')?.args).toEqual({ received: [SNAPSHOT] });
 
-    // The picker asks the dialog plugin for one folder, and passes its answer through.
-    const dialog = sent.find((c) => c.command === 'plugin:dialog|open');
-    expect(dialog?.args).toMatchObject({ options: { directory: true, multiple: false } });
-    expect(sent.at(-1)).toEqual({ command: 'picked', args: { picked: '/picked' } });
+    // The version comes from Tauri's own app plugin, passed through.
+    expect(sent.some((c) => c.command === 'plugin:app|version')).toBe(true);
+    expect(sent.at(-1)).toEqual({ command: 'version', args: { version: '9.9.9' } });
   });
 
   test('the stub is gone afterwards: the page is back on the mock', async ({ page }) => {

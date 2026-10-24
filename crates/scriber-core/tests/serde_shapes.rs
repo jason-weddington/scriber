@@ -12,7 +12,7 @@ mod tests {
     use serde::de::DeserializeOwned;
     use serde_json::{Value, json};
 
-    use scriber_core::model::{AppInfo, ExtensionSummary, ScanProgress, ScanSummary};
+    use scriber_core::model::{Action, Phase, Snapshot};
 
     const FIXTURE: &str = include_str!("fixtures/bridge-shapes.json");
 
@@ -38,62 +38,92 @@ mod tests {
     }
 
     #[test]
-    fn app_info() {
+    fn snapshot() {
         round_trip(
-            "appInfo",
-            &AppInfo {
-                version: "1.2.3".to_string(),
+            "snapshot",
+            &Snapshot {
+                revision: 12,
+                phase: Phase::Finished,
+                recorded_ms: 83_500,
+                segments: 3,
+                pending: 0,
+                text: "First thought.\n\nSecond thought.".to_string(),
+                error: None,
+                notice: Some("Copied to the clipboard.".to_string()),
+                model_error: None,
+            },
+        );
+        round_trip(
+            "snapshotFailed",
+            &Snapshot {
+                revision: 7,
+                phase: Phase::Failed,
+                recorded_ms: 4_000,
+                segments: 2,
+                pending: 0,
+                text: String::new(),
+                error: Some(
+                    "Part 2 of 2 could not be transcribed: model exploded. Retry to try again."
+                        .to_string(),
+                ),
+                notice: None,
+                model_error: Some(
+                    "Model missing: run scripts/fetch-model.sh to download it to /models/ggml-large-v3-turbo.bin."
+                        .to_string(),
+                ),
             },
         );
     }
 
     #[test]
-    fn scan_progress() {
-        round_trip(
-            "scanProgress",
-            &ScanProgress {
-                files: 2,
-                bytes: 1200,
-                folders: 1,
-            },
-        );
+    fn every_phase_is_its_lowercase_name() {
+        for (phase, name) in [
+            (Phase::Idle, "idle"),
+            (Phase::Ready, "ready"),
+            (Phase::Recording, "recording"),
+            (Phase::Paused, "paused"),
+            (Phase::Transcribing, "transcribing"),
+            (Phase::Finished, "finished"),
+            (Phase::Failed, "failed"),
+        ] {
+            assert_eq!(serde_json::to_value(phase).unwrap(), json!(name), "{name}");
+        }
     }
 
     #[test]
-    fn scan_summary() {
-        round_trip(
-            "scanSummary",
-            &ScanSummary {
-                root: "/Users/me/Pictures".to_string(),
-                files: 3,
-                total_bytes: 1500,
-                unreadable_folders: 1,
-                extensions: vec![
-                    ExtensionSummary {
-                        extension: "jpg".to_string(),
-                        files: 2,
-                        bytes: 1200,
-                    },
-                    ExtensionSummary {
-                        extension: String::new(),
-                        files: 1,
-                        bytes: 300,
-                    },
-                ],
-                elapsed_ms: 42,
-            },
+    fn every_action_is_its_lowercase_name() {
+        for (action, name) in [
+            (Action::New, "new"),
+            (Action::Record, "record"),
+            (Action::Pause, "pause"),
+            (Action::Resume, "resume"),
+            (Action::Done, "done"),
+            (Action::Discard, "discard"),
+            (Action::Retry, "retry"),
+            (Action::Copy, "copy"),
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), json!(name), "{name}");
+            assert_eq!(
+                serde_json::from_value::<Action>(json!(name)).unwrap(),
+                action,
+                "{name} reads back"
+            );
+        }
+        assert!(
+            serde_json::from_value::<Action>(json!("Pause")).is_err(),
+            "names are exact"
         );
     }
 
     #[test]
     fn unknown_fields_are_refused() {
-        let mut progress = fixture("scanProgress");
-        let _: Option<Value> = progress
+        let mut snapshot = fixture("snapshot");
+        let _: Option<Value> = snapshot
             .as_object_mut()
             .unwrap()
             .insert("extra".to_string(), json!(1));
         assert!(
-            serde_json::from_value::<ScanProgress>(progress).is_err(),
+            serde_json::from_value::<Snapshot>(snapshot).is_err(),
             "a field the contract does not name is an error, not dropped"
         );
     }
@@ -101,7 +131,8 @@ mod tests {
     #[test]
     fn missing_fields_are_refused() {
         assert!(
-            serde_json::from_value::<ScanProgress>(json!({ "files": 1, "bytes": 2 })).is_err(),
+            serde_json::from_value::<Snapshot>(json!({ "phase": "idle", "recordedMs": 0 }))
+                .is_err(),
             "every field is required"
         );
     }

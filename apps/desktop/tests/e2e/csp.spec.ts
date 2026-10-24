@@ -6,7 +6,7 @@ import { build } from 'vite';
 
 import { expect, test } from './fixtures';
 
-import { chooseButton } from './helpers';
+import { press } from './helpers';
 
 // The built app (what Tauri serves) under the exact production CSP from
 // tauri.conf.json, on the browser mock: any inline script or style, eval or
@@ -57,10 +57,8 @@ test('the built app runs under the production CSP with no violations', async ({ 
   await page.goto(`${ORIGIN}/`);
   await expect(page.locator('html')).toHaveAttribute('data-bridge', 'mock');
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
-  // The summary sets bar widths at run time; that must not need inline styles.
-  await chooseButton(page).click();
-  const fill = page.locator('.fill').first();
-  await expect(fill).toBeVisible();
-  expect(await fill.evaluate((el) => el.style.width)).toBe('100%');
+  // Through to the transcript, so every state's markup renders under the CSP.
+  await press(page, 'New', 'Record', 'Pause', 'Resume', 'Done');
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toBeVisible();
   expect(violations).toEqual([]);
 });

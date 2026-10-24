@@ -1,39 +1,62 @@
 import { expect, test } from '@playwright/test';
 
-import { extensionLabel, formatBytes, formatCount, plural } from '../../src/lib/format';
+import { allowed, formatElapsed, LEGAL, parts, statusText } from '../../src/lib/format';
+import type { Phase, Snapshot } from '../../src/lib/types';
 
-test('sizes use powers of 1000, one decimal below 10, and carry on rounding', () => {
+const base: Snapshot = {
+  revision: 1,
+  phase: 'idle',
+  recordedMs: 0,
+  segments: 0,
+  pending: 0,
+  text: '',
+  error: null,
+  notice: null,
+  modelError: null,
+};
+
+test('recorded time reads m:ss, then h:mm:ss, rounded down', () => {
   const cases: [number, string][] = [
-    [0, '0 B'],
-    [999, '999 B'],
-    [1000, '1 kB'],
-    [1200, '1.2 kB'],
-    [6148, '6.1 kB'],
-    [9960, '10 kB'],
-    [10_400, '10 kB'],
-    [999_499, '999 kB'],
-    [999_600, '1 MB'],
-    [57_607_348, '58 MB'],
-    [999_600_000, '1 GB'],
-    [2_500_000_000_000, '2.5 TB'],
-    [4.2e15, '4.2 PB'],
-    [1e19, '10000 PB'],
+    [0, '0:00'],
+    [999, '0:00'],
+    [1_000, '0:01'],
+    [59_999, '0:59'],
+    [60_000, '1:00'],
+    [75_500, '1:15'],
+    [3_599_999, '59:59'],
+    [3_600_000, '1:00:00'],
+    [3_725_000, '1:02:05'],
+    [-5, '0:00'],
   ];
-  for (const [bytes, want] of cases) expect(formatBytes(bytes), String(bytes)).toBe(want);
+  for (const [ms, want] of cases) expect(formatElapsed(ms), String(ms)).toBe(want);
 });
 
-test('counts carry thousands separators whatever the machine locale', () => {
-  expect(formatCount(0)).toBe('0');
-  expect(formatCount(1234567)).toBe('1,234,567');
+test('parts are counted in words', () => {
+  expect(parts(1)).toBe('1 part');
+  expect(parts(0)).toBe('0 parts');
+  expect(parts(3)).toBe('3 parts');
 });
 
-test('plural picks the singular only for exactly one', () => {
-  expect(plural(0, 'file', 'files')).toBe('0 files');
-  expect(plural(1, 'file', 'files')).toBe('1 file');
-  expect(plural(2000, 'file', 'files')).toBe('2,000 files');
+test('the buttons follow the legal actions per phase', () => {
+  expect(allowed('idle', 'new')).toBe(true);
+  expect(allowed('idle', 'record')).toBe(false);
+  expect(allowed('transcribing', 'discard')).toBe(false);
+  for (const phase of Object.keys(LEGAL) as Phase[]) {
+    for (const action of LEGAL[phase]) expect(allowed(phase, action), `${phase} ${action}`).toBe(true);
+  }
 });
 
-test('an extension is shown with its dot, and a missing one in words', () => {
-  expect(extensionLabel('jpg')).toBe('.jpg');
-  expect(extensionLabel('')).toBe('No extension');
+test('the status line says what to do next in every phase', () => {
+  const cases: [Partial<Snapshot>, string][] = [
+    [{ phase: 'idle' }, 'Click New to start a dictation.'],
+    [{ phase: 'ready' }, 'Click Record and start talking.'],
+    [{ phase: 'recording' }, 'Recording. Pause to think, Done when you have said it all.'],
+    [{ phase: 'paused', segments: 2, pending: 1 }, 'Paused. Transcribing 1 part while you think.'],
+    [{ phase: 'paused', segments: 2, pending: 0 }, 'Paused after 2 parts. Resume when you are ready.'],
+    [{ phase: 'transcribing', pending: 2 }, 'Transcribing the last 2 parts…'],
+    [{ phase: 'finished', notice: 'Copied to the clipboard.' }, 'Copied to the clipboard.'],
+    [{ phase: 'finished', notice: null }, 'The transcript is ready.'],
+    [{ phase: 'failed', error: 'Part 1 of 1 could not be transcribed.' }, 'The transcript is not ready.'],
+  ];
+  for (const [patch, want] of cases) expect(statusText({ ...base, ...patch }), JSON.stringify(patch)).toBe(want);
 });

@@ -28,9 +28,14 @@ scriber-core = { path = "../../../crates/scriber-core" }
 # Exact pins: `tauri build` refuses a crate whose major.minor differs from
 # @tauri-apps/api in package.json, and the plugins move with Tauri's minor.
 tauri = { version = "=2.12.4", features = [] }
-tauri-plugin-dialog = "=2.8.3"
+tauri-plugin-clipboard-manager = "=2.5.0"
 # One window at a time: a second launch focuses the first.
 tauri-plugin-single-instance = "=2.5.4"
+
+# Audio capture from the default input device.
+cpal = "0.18.2"
+# whisper.cpp, on the GPU through Metal. Building it needs cmake.
+whisper-rs = { version = "0.16.0", features = ["metal"] }
 
 [build-dependencies]
 tauri-build = { version = "=2.7.3", features = [] }

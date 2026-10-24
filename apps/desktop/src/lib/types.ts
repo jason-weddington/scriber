@@ -2,29 +2,26 @@
 // crates/scriber-core/src/model.rs; crates/scriber-core/tests/fixtures/bridge-shapes.json
 // holds one example of each, checked against both sides.
 
-export interface AppInfo {
-  version: string;
-}
+export type Phase = 'idle' | 'ready' | 'recording' | 'paused' | 'transcribing' | 'finished' | 'failed';
 
-export interface ScanProgress {
-  files: number;
-  bytes: number;
-  folders: number;
-}
+export type Action = 'new' | 'record' | 'pause' | 'resume' | 'done' | 'discard' | 'retry' | 'copy';
 
-export interface ExtensionSummary {
-  /** Lowercase, without the dot; empty for a file with no extension. */
-  extension: string;
-  files: number;
-  bytes: number;
-}
-
-export interface ScanSummary {
-  root: string;
-  files: number;
-  totalBytes: number;
-  unreadableFolders: number;
-  /** Largest total size first, then most files, then extension A to Z. */
-  extensions: ExtensionSummary[];
-  elapsedMs: number;
+export interface Snapshot {
+  /** Grows with every change; the window keeps the highest it has seen. */
+  revision: number;
+  phase: Phase;
+  /** Milliseconds of audio in the closed segments; the window adds the running one. */
+  recordedMs: number;
+  /** Segments recorded in this session. */
+  segments: number;
+  /** Of those, how many are still being transcribed. */
+  pending: number;
+  /** The transcript once finished; empty before. */
+  text: string;
+  /** Why the session failed, when the phase is `failed`. */
+  error: string | null;
+  /** One sentence about the last action. */
+  notice: string | null;
+  /** Set when the speech model is not installed. */
+  modelError: string | null;
 }

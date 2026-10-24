@@ -7,26 +7,40 @@ export async function open(page: Page, params: Record<string, string> = {}): Pro
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 }
 
-export function chooseButton(page: Page): Locator {
-  return page.getByRole('button', { name: /^Choose (another )?folder…$/ });
+/** The button with exactly this name. */
+export function button(page: Page, name: string): Locator {
+  return page.getByRole('button', { name, exact: true });
 }
 
-/** Makes the mock's next calls of `command` wait until `release`. */
-export async function hold(page: Page, command: string): Promise<void> {
-  await page.evaluate((c) => {
-    window.__mockBridge?.hold(c);
-  }, command);
+/** Clicks each button in turn, waiting for it to be enabled first. */
+export async function press(page: Page, ...names: string[]): Promise<void> {
+  for (const name of names) {
+    await expect(button(page, name)).toBeEnabled();
+    await button(page, name).click();
+  }
 }
 
-export async function release(page: Page, command: string): Promise<void> {
-  await page.evaluate((c) => {
-    window.__mockBridge?.release(c);
-  }, command);
+/** The status line. */
+export function status(page: Page): Locator {
+  return page.locator('.status');
 }
 
-/** Every path the UI asked the mock to scan. */
-export async function scans(page: Page): Promise<string[]> {
-  return page.evaluate(() => [...(window.__mockBridge?.scans ?? [])]);
+/** Makes the mock's `name` ('dictation_act', 'dictation_state', 'transcribe') wait until `release`. */
+export async function hold(page: Page, name: string): Promise<void> {
+  await page.evaluate((n) => {
+    window.__mockBridge?.hold(n);
+  }, name);
+}
+
+export async function release(page: Page, name: string): Promise<void> {
+  await page.evaluate((n) => {
+    window.__mockBridge?.release(n);
+  }, name);
+}
+
+/** Every text the mock clipboard was given. */
+export async function copied(page: Page): Promise<string[]> {
+  return page.evaluate(() => [...(window.__mockBridge?.copied ?? [])]);
 }
 
 /**

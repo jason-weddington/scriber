@@ -1,6 +1,6 @@
 # Scriber
 
-macOS desktop app: Rust core, Tauri 2 shell, Svelte 5 frontend. `docs/design.md` is the spec and the bridge contract (command names, argument names, JSON shapes, events). Read it before changing behaviour, and change it in the same commit when reality disagrees.
+macOS dictation app: Rust core, Tauri 2 shell, Svelte 5 frontend. New, Record, Pause, Resume, Done; local Whisper transcription; the transcript lands on the clipboard. `docs/design.md` is the spec and the bridge contract (command names, argument names, JSON shapes, events). Read it before changing behaviour, and change it in the same commit when reality disagrees.
 
 ## Layout
 
@@ -18,6 +18,8 @@ cargo nextest run --workspace        # core tests while iterating
 cd apps/desktop && pnpm test         # frontend unit + e2e while iterating
 cd apps/desktop && pnpm dev          # the frontend in a browser, on the mock
 bash scripts/install.sh              # release build, verify the signature, install to /Applications
+bash scripts/fetch-model.sh          # download the speech model into the app data folder (never in the gate)
+bash scripts/smoke.sh                # real-model check: `say` + ffmpeg + the app's Whisper adapter
 ./release.sh                         # cut a release (cog bump --auto, tag, push)
 ```
 
@@ -33,8 +35,8 @@ bash scripts/install.sh              # release build, verify the signature, inst
 - **Never launch the GUI app from an agent session**: no `pnpm tauri dev`, no `open` on the bundle, no osascript, no screen capture. macOS attributes the app's permission prompts to whatever launched it. Build and install with `scripts/install.sh`, and let the human open it. Browser tests through Playwright against the mock are fine.
 - Every list that can grow scrolls, and gets an `expectEveryItemReachable` test (`tests/e2e/helpers.ts`). Every screen state gets an axe check (`tests/e2e/a11y.spec.ts`).
 
-## Replacing the example feature
+## Adding to a feature
 
-The folder summary exists to show each seam working. To replace it: write the new rule in `crates/scriber-core/src` with its ports in `ports.rs` and its fakes in `tests/common`; pin its JSON shapes in `model.rs`, `tests/serde_shapes.rs` and the fixture; add one command per contract entry in `src-tauri/src/lib.rs`; add the bridge function in `bridge.ts` and its mock in `mock.ts`; update `tests/e2e/contract.spec.ts`'s `CALLS`; build the screen; then delete `scan.rs`, `SummaryList.svelte` and their tests, and rewrite `docs/design.md`.
+Write the rule in `crates/scriber-core/src` with any new effect as a port in `ports.rs` and its fake in `tests/common`; pin new JSON shapes in `model.rs`, `tests/serde_shapes.rs` and the fixture; keep `src-tauri/src/lib.rs` to adapters and one command per contract entry (it is near its 250-line limit, so prefer extending `dictation_act`'s `Action` over a new command); add the bridge function in `bridge.ts` and its mock in `mock.ts`; update `tests/e2e/contract.spec.ts`'s `CALLS`; and update `docs/design.md` in the same commit. The whisper.cpp build needs `cmake` (`brew install cmake`).
 
 More: `docs/quality-gates.md` (what each gate catches and why), `docs/tauri-design-notes.md` (patterns for Tauri 2 apps on macOS).

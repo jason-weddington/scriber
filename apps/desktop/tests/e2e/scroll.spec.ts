@@ -1,16 +1,22 @@
 import { expect, test } from './fixtures';
 
-import { chooseButton, expectEveryItemReachable, open } from './helpers';
+import { button, open, press } from './helpers';
 
-// Every container that holds a variable number of items, filled past the
-// window (tree=many: 40 file types) at the window's minimum size.
-test('the file-type list scrolls and every row stays whole', async ({ page }) => {
-  await page.setViewportSize({ width: 640, height: 420 });
-  await open(page, { tree: 'many' });
-  await chooseButton(page).click();
-  const rows = page.getByRole('list', { name: 'File types' }).getByRole('listitem');
-  await expect(rows).toHaveCount(40);
-  await expectEveryItemReachable(rows);
-  // The band and its button stay put while the list scrolls under them.
-  await expect(chooseButton(page)).toBeInViewport({ ratio: 1 });
+// The one container that holds a variable amount of content is the
+// transcript. Filled far past the window at its minimum size, it scrolls
+// inside itself and the controls stay in view.
+test('a long transcript scrolls inside its box and the controls stay put', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 380 });
+  await open(page, { long: '1' });
+  await press(page, 'New', 'Record', 'Pause', 'Resume', 'Pause', 'Resume', 'Done');
+  const transcript = page.getByRole('textbox', { name: 'Transcript' });
+  await expect(transcript).toHaveValue(/part 3 of the dictation\.$/);
+  const overflow = await transcript.evaluate((el) => el.scrollHeight - el.clientHeight);
+  expect(overflow, 'the text overflows the box').toBeGreaterThan(100);
+  for (const name of ['New', 'Copy', 'Done']) {
+    await expect(button(page, name)).toBeInViewport({ ratio: 1 });
+  }
+  await expect(transcript).toBeInViewport();
+  const fits = await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
+  expect(fits, 'the window itself never scrolls').toBe(true);
 });

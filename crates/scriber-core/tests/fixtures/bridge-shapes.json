@@ -1,21 +1,24 @@
 {
-  "appInfo": {
-    "version": "1.2.3"
+  "snapshot": {
+    "revision": 12,
+    "phase": "finished",
+    "recordedMs": 83500,
+    "segments": 3,
+    "pending": 0,
+    "text": "First thought.\n\nSecond thought.",
+    "error": null,
+    "notice": "Copied to the clipboard.",
+    "modelError": null
   },
-  "scanProgress": {
-    "files": 2,
-    "bytes": 1200,
-    "folders": 1
-  },
-  "scanSummary": {
-    "root": "/Users/me/Pictures",
-    "files": 3,
-    "totalBytes": 1500,
-    "unreadableFolders": 1,
-    "extensions": [
-      { "extension": "jpg", "files": 2, "bytes": 1200 },
-      { "extension": "", "files": 1, "bytes": 300 }
-    ],
-    "elapsedMs": 42
+  "snapshotFailed": {
+    "revision": 7,
+    "phase": "failed",
+    "recordedMs": 4000,
+    "segments": 2,
+    "pending": 0,
+    "text": "",
+    "error": "Part 2 of 2 could not be transcribed: model exploded. Retry to try again.",
+    "notice": null,
+    "modelError": "Model missing: run scripts/fetch-model.sh to download it to /models/ggml-large-v3-turbo.bin."
   }
 }
