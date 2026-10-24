@@ -62,6 +62,8 @@ pub enum Action {
     Retry,
     /// Copy the (possibly edited) transcript again.
     Copy,
+    /// Download the speech model again, after a download failed.
+    DownloadModel,
 }
 
 impl fmt::Display for Action {
@@ -75,6 +77,7 @@ impl fmt::Display for Action {
             Self::Discard => "discard",
             Self::Retry => "retry",
             Self::Copy => "copy",
+            Self::DownloadModel => "download the speech model",
         })
     }
 }
@@ -101,6 +104,19 @@ pub struct Snapshot {
     pub error: Option<String>,
     /// One sentence about the last action (copied, the microphone stopped).
     pub notice: Option<String>,
-    /// Set when the speech model is not installed, saying how to install it.
+    /// Set when the speech model is missing and not downloading: why, as
+    /// one sentence; the window offers [`Action::DownloadModel`].
     pub model_error: Option<String>,
+    /// The speech model's download, while it runs.
+    pub download: Option<Download>,
+}
+
+/// How far the speech model's download has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Download {
+    /// Bytes received so far.
+    pub received_bytes: u64,
+    /// The model's size in bytes.
+    pub total_bytes: u64,
 }

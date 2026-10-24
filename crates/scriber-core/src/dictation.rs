@@ -16,11 +16,14 @@
 //! [`DictationError::Illegal`] and changes nothing.
 
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use crate::audio::{decode_wav, duration_ms, encode_wav, to_mono_16k};
-use crate::model::{Action, Phase, Snapshot};
-use crate::ports::{PortError, Ports, Transcriber};
+use crate::download::{self, Source};
+use crate::model::{Action, Download, Phase, Snapshot};
+use crate::ports::{PortError, Ports};
 use crate::store;
+use crate::sync::lock;
 use crate::transcript::{is_silent, join, keep};
 use crate::vocabulary::prompt;
 
@@ -35,9 +38,14 @@ pub enum DictationError {
         /// Where the session was.
         phase: Phase,
     },
-    /// The speech model is not installed; the text says how to install it.
+    /// The speech model is not installed (or still downloading); the text
+    /// says which.
     #[error("{0}")]
     ModelMissing(String),
+    /// A model download was asked for while the model is installed or
+    /// already downloading.
+    #[error("The speech model is already installed or downloading.")]
+    NoDownload,
     /// The microphone could not start.
     #[error("Could not start recording: {0}")]
     Recorder(PortError),
@@ -49,11 +57,20 @@ pub enum DictationError {
     Clipboard(PortError),
 }
 
-/// The sentence shown when the speech model is missing.
+/// The sentence shown when the speech model is missing and not downloading.
 #[must_use]
 pub fn model_missing(path: &str) -> String {
-    format!("Model missing: run scripts/fetch-model.sh to download it to {path}.")
+    format!("The speech model is missing from {path}.")
 }
+
+/// The sentence shown when the speech model's download failed.
+#[must_use]
+pub fn download_failed(reason: &str) -> String {
+    format!("Could not download the speech model: {reason}.")
+}
+
+/// Why Record is refused while the model downloads.
+pub const DOWNLOADING: &str = "The speech model is still downloading.";
 
 /// Shown when the transcript was copied.
 pub const COPIED: &str = "Copied to the clipboard.";
@@ -61,42 +78,117 @@ pub const COPIED: &str = "Copied to the clipboard.";
 /// Shown when every segment was silent.
 pub const NOTHING_HEARD: &str = "No speech was heard. If you spoke, check that Scriber may use the microphone in System Settings, Privacy & Security, Microphone.";
 
-/// One segment to transcribe, made by Pause, Done or Retry.
+/// Work for the worker: one segment to transcribe, made by Pause, Done or
+/// Retry; the speech model's warm-up, queued at launch and after a
+/// download; or the model's download, queued at launch when it is missing
+/// and by [`Action::DownloadModel`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct Job {
-    session: u64,
-    index: u32,
-    samples: Vec<f32>,
-    prompt: Option<String>,
+pub struct Job(Work);
+
+#[derive(Debug, Clone, PartialEq)]
+enum Work {
+    /// Load the model, so the first segment does not wait for it.
+    Warm,
+    /// Download the model.
+    Download(Source),
+    /// Transcribe segment `index` of session `session`.
+    Segment {
+        session: u64,
+        index: u32,
+        samples: Vec<f32>,
+        prompt: Option<String>,
+    },
+}
+
+/// Which job an outcome is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    Warm,
+    Download,
+    Segment { session: u64, index: u32 },
 }
 
 impl Job {
-    /// Transcribes the segment. A silent segment is not sent to the
-    /// transcriber, and a hallucination is dropped (see [`crate::transcript`]).
+    fn segment(session: u64, index: u32, samples: Vec<f32>, prompt: Option<String>) -> Self {
+        Self(Work::Segment {
+            session,
+            index,
+            samples,
+            prompt,
+        })
+    }
+
+    fn mark(&self) -> Mark {
+        match &self.0 {
+            Work::Warm => Mark::Warm,
+            Work::Download(_) => Mark::Download,
+            Work::Segment { session, index, .. } => Mark::Segment {
+                session: *session,
+                index: *index,
+            },
+        }
+    }
+
+    /// Does the work. A silent segment is not sent to the transcriber, and a
+    /// hallucination is dropped (see [`crate::transcript`]). A download
+    /// calls `progress` with the bytes received as each whole percent
+    /// arrives (see [`download::fetch`]). The warm-up's outcome changes
+    /// nothing: a model that failed to load is loaded again by the first
+    /// segment, which reports the failure.
     #[must_use]
-    pub fn run(&self, transcriber: &dyn Transcriber) -> Outcome {
-        let result = if is_silent(&self.samples) {
-            Ok(None)
-        } else {
-            transcriber
-                .transcribe(&self.samples, self.prompt.as_deref())
-                .map(|heard| keep(self.samples.len(), &heard))
-                .map_err(|e| e.to_string())
+    pub fn run(&self, ports: &Ports<'_>, progress: &dyn Fn(u64)) -> Outcome {
+        let result = match &self.0 {
+            Work::Warm => ports
+                .transcriber
+                .warm()
+                .map(|()| None)
+                .map_err(|e| e.to_string()),
+            Work::Download(source) => {
+                download::fetch(source, ports.files, ports.downloader, progress).map(|()| None)
+            }
+            Work::Segment { samples, .. } if is_silent(samples) => Ok(None),
+            Work::Segment {
+                samples, prompt, ..
+            } => ports
+                .transcriber
+                .transcribe(samples, prompt.as_deref())
+                .map(|heard| keep(samples.len(), &heard))
+                .map_err(|e| e.to_string()),
         };
         Outcome {
-            session: self.session,
-            index: self.index,
+            mark: self.mark(),
             result,
         }
     }
 }
 
-/// A segment's transcription result, for [`Dictation::complete`].
+/// A job's result, for [`Dictation::complete`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
-    session: u64,
-    index: u32,
+    mark: Mark,
     result: Result<Option<String>, String>,
+}
+
+/// The speech model's download.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum Fetch {
+    /// Not running: the model is installed, or nothing has started it.
+    #[default]
+    Idle,
+    /// Running, with this many bytes received.
+    Running(u64),
+    /// Failed, for this reason.
+    Failed(String),
+}
+
+/// Runs `job` on a worker thread for the session in `shared`, reporting
+/// each snapshot it changes through `report`: a download's progress as it
+/// goes, then the outcome. The lock is held only to record them, never
+/// while the job works.
+pub fn work(shared: &Mutex<Dictation>, job: &Job, ports: &Ports<'_>, report: &dyn Fn(Snapshot)) {
+    let progress = |bytes| report(lock(shared).progress(bytes, ports));
+    let outcome = job.run(ports, &progress);
+    report(lock(shared).complete(outcome, ports));
 }
 
 /// A segment's state.
@@ -128,6 +220,10 @@ pub struct Dictation {
     notice: Option<String>,
     /// Bumped by every applied action and every accepted result.
     revision: u64,
+    /// The speech model's download.
+    fetch: Fetch,
+    /// What the download fetches: the model, except in tests.
+    source: Source,
 }
 
 impl Dictation {
@@ -154,26 +250,51 @@ impl Dictation {
             Action::Discard => self.discard(ports).map(|()| Vec::new()),
             Action::Retry => self.retry(ports),
             Action::Copy => self.copy(text, ports).map(|()| Vec::new()),
+            Action::DownloadModel => self.download_model(ports).map(|job| vec![job]),
         }?;
         self.revision = self.revision.wrapping_add(1);
-        for job in jobs {
-            let (session, index) = (job.session, job.index);
-            if let Err(e) = ports.queue.send(job) {
-                let result = Err(format!("it could not be queued: {e}"));
-                self.record_outcome(
-                    Outcome {
-                        session,
-                        index,
-                        result,
-                    },
-                    ports,
-                );
-            }
-        }
+        self.queue(jobs, ports);
         Ok(self.snapshot(ports))
     }
 
-    /// The state at launch: finished with the last session's kept
+    /// Sends each job to the worker; one the queue refuses fails at once.
+    fn queue(&mut self, jobs: Vec<Job>, ports: &Ports<'_>) {
+        for job in jobs {
+            let mark = job.mark();
+            if let Err(e) = ports.queue.send(job) {
+                let result = Err(format!("it could not be queued: {e}"));
+                self.record_outcome(Outcome { mark, result }, ports);
+            }
+        }
+    }
+
+    /// The state at launch ([`Self::recover`]). When the speech model is
+    /// installed its warm-up is queued, so the first segment does not wait
+    /// seconds for it to load (a queue that refuses it only means the first
+    /// segment loads the model itself); when it is missing its download is.
+    #[must_use]
+    pub fn launch(ports: &Ports<'_>) -> Self {
+        Self::launch_from(Source::default(), ports)
+    }
+
+    /// [`Self::launch`], downloading the model from `source`.
+    #[must_use]
+    pub fn launch_from(source: Source, ports: &Ports<'_>) -> Self {
+        let mut this = Self {
+            source,
+            ..Self::recover(ports)
+        };
+        let job = if ports.transcriber.missing_model().is_some() {
+            this.fetch = Fetch::Running(0);
+            Job(Work::Download(this.source.clone()))
+        } else {
+            Job(Work::Warm)
+        };
+        this.queue(vec![job], ports);
+        this
+    }
+
+    /// The state found on disk: finished with the last session's kept
     /// transcript; failed with the segments of a session that never finished
     /// (a crash, a quit mid-transcription) waiting for Retry; or idle.
     #[must_use]
@@ -220,12 +341,48 @@ impl Dictation {
             text: self.text.clone(),
             error: self.error.clone(),
             notice: self.notice.clone(),
-            model_error: ports
-                .transcriber
-                .missing_model()
-                .as_deref()
-                .map(model_missing),
+            model_error: self.model_error(ports),
+            download: match self.fetch {
+                Fetch::Running(received) => Some(Download {
+                    received_bytes: received,
+                    total_bytes: self.source.bytes,
+                }),
+                Fetch::Idle | Fetch::Failed(_) => None,
+            },
         }
+    }
+
+    /// Why the model is missing, unless it is downloading.
+    fn model_error(&self, ports: &Ports<'_>) -> Option<String> {
+        let path = ports.transcriber.missing_model()?;
+        match &self.fetch {
+            Fetch::Idle => Some(model_missing(&path)),
+            Fetch::Running(_) => None,
+            Fetch::Failed(reason) => Some(download_failed(reason)),
+        }
+    }
+
+    /// Records how far the model's download has got and answers with the
+    /// new snapshot; ignored unless a download is running.
+    pub fn progress(&mut self, received: u64, ports: &Ports<'_>) -> Snapshot {
+        if let Fetch::Running(bytes) = &mut self.fetch {
+            *bytes = received;
+            self.revision = self.revision.wrapping_add(1);
+        }
+        self.snapshot(ports)
+    }
+
+    /// Download model: starts the model's download again, in any phase.
+    ///
+    /// # Errors
+    ///
+    /// The model is installed or already downloading.
+    pub fn download_model(&mut self, ports: &Ports<'_>) -> Result<Job, DictationError> {
+        if ports.transcriber.missing_model().is_none() || matches!(self.fetch, Fetch::Running(_)) {
+            return Err(DictationError::NoDownload);
+        }
+        self.fetch = Fetch::Running(0);
+        Ok(Job(Work::Download(self.source.clone())))
     }
 
     fn allow(&self, action: Action, allowed: &[Phase]) -> Result<(), DictationError> {
@@ -301,8 +458,9 @@ impl Dictation {
         ports: &Ports<'_>,
     ) -> Result<(), DictationError> {
         self.allow(action, &[from])?;
-        if let Some(path) = ports.transcriber.missing_model() {
-            return Err(DictationError::ModelMissing(model_missing(&path)));
+        if ports.transcriber.missing_model().is_some() {
+            let why = self.model_error(ports).unwrap_or(DOWNLOADING.to_string());
+            return Err(DictationError::ModelMissing(why));
         }
         ports.recorder.start().map_err(DictationError::Recorder)?;
         self.notice = None;
@@ -349,12 +507,12 @@ impl Dictation {
             self.notice = Some(format!("Could not keep this part's audio for Retry: {e}."));
         }
         let _: Option<Slot> = self.slots.insert(index, Slot::Pending);
-        Some(Job {
-            session: self.session,
+        Some(Job::segment(
+            self.session,
             index,
             samples,
-            prompt: self.prompt.clone(),
-        })
+            self.prompt.clone(),
+        ))
     }
 
     /// Pause: closes the running segment. Returns it for transcription.
@@ -408,12 +566,12 @@ impl Dictation {
             match audio.and_then(|bytes| decode_wav(&bytes).map_err(|e| e.to_string())) {
                 Ok(samples) => {
                     *slot = Slot::Pending;
-                    jobs.push(Job {
-                        session: self.session,
-                        index: *index,
+                    jobs.push(Job::segment(
+                        self.session,
+                        *index,
                         samples,
-                        prompt: self.prompt.clone(),
-                    });
+                        self.prompt.clone(),
+                    ));
                 }
                 Err(e) => *slot = Slot::Failed(format!("its audio could not be read: {e}")),
             }
@@ -423,25 +581,55 @@ impl Dictation {
         Ok(jobs)
     }
 
-    /// Records a segment's result and answers with the new snapshot. An
-    /// outcome from a session that has since been discarded, or for a
-    /// segment that is not pending, is ignored.
+    /// Records a job's result and answers with the new snapshot. An
+    /// outcome from a session that has since been discarded, for a segment
+    /// that is not pending, or from the warm-up, is ignored.
     pub fn complete(&mut self, outcome: Outcome, ports: &Ports<'_>) -> Snapshot {
         self.record_outcome(outcome, ports);
         self.snapshot(ports)
     }
 
     fn record_outcome(&mut self, outcome: Outcome, ports: &Ports<'_>) {
-        if outcome.session != self.session {
+        match outcome.mark {
+            Mark::Warm => {}
+            Mark::Download => self.downloaded(outcome.result, ports),
+            Mark::Segment { session, index } => self.heard(session, index, outcome.result, ports),
+        }
+    }
+
+    /// The download finished: the model is in place and warms up, or the
+    /// download failed and the window offers it again.
+    fn downloaded(&mut self, result: Result<Option<String>, String>, ports: &Ports<'_>) {
+        if !matches!(self.fetch, Fetch::Running(_)) {
             return;
         }
-        let Some(slot) = self.slots.get_mut(&outcome.index) else {
+        self.revision = self.revision.wrapping_add(1);
+        match result {
+            Ok(_) => {
+                self.fetch = Fetch::Idle;
+                self.queue(vec![Job(Work::Warm)], ports);
+            }
+            Err(reason) => self.fetch = Fetch::Failed(reason),
+        }
+    }
+
+    fn heard(
+        &mut self,
+        session: u64,
+        index: u32,
+        result: Result<Option<String>, String>,
+        ports: &Ports<'_>,
+    ) {
+        if session != self.session {
+            return;
+        }
+        let Some(slot) = self.slots.get_mut(&index) else {
             return;
         };
         if *slot != Slot::Pending {
             return;
         }
-        *slot = match outcome.result {
+        *slot = match result {
             Ok(text) => Slot::Heard(text),
             Err(e) => Slot::Failed(e),
         };

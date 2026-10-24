@@ -12,7 +12,7 @@ mod tests {
     use serde::de::DeserializeOwned;
     use serde_json::{Value, json};
 
-    use scriber_core::model::{Action, Phase, Snapshot};
+    use scriber_core::model::{Action, Download, Phase, Snapshot};
 
     const FIXTURE: &str = include_str!("fixtures/bridge-shapes.json");
 
@@ -51,6 +51,7 @@ mod tests {
                 error: None,
                 notice: Some("Copied to the clipboard.".to_string()),
                 model_error: None,
+                download: None,
             },
         );
         round_trip(
@@ -68,9 +69,27 @@ mod tests {
                 ),
                 notice: None,
                 model_error: Some(
-                    "Model missing: run scripts/fetch-model.sh to download it to /models/ggml-large-v3-turbo.bin."
-                        .to_string(),
+                    "Could not download the speech model: the connection was reset.".to_string(),
                 ),
+                download: None,
+            },
+        );
+        round_trip(
+            "snapshotDownloading",
+            &Snapshot {
+                revision: 1,
+                phase: Phase::Idle,
+                recorded_ms: 0,
+                segments: 0,
+                pending: 0,
+                text: String::new(),
+                error: None,
+                notice: None,
+                model_error: None,
+                download: Some(Download {
+                    received_bytes: 812_277_637,
+                    total_bytes: 1_624_555_275,
+                }),
             },
         );
     }
@@ -91,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn every_action_is_its_lowercase_name() {
+    fn every_action_is_its_camel_case_name() {
         for (action, name) in [
             (Action::New, "new"),
             (Action::Record, "record"),
@@ -101,6 +120,7 @@ mod tests {
             (Action::Discard, "discard"),
             (Action::Retry, "retry"),
             (Action::Copy, "copy"),
+            (Action::DownloadModel, "downloadModel"),
         ] {
             assert_eq!(serde_json::to_value(action).unwrap(), json!(name), "{name}");
             assert_eq!(

@@ -70,9 +70,33 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
-    test('model missing', async ({ page }) => {
-      await open(page, { model: 'missing' });
-      await expect(page.getByRole('alert')).toBeVisible();
+    test('the speech model downloading', async ({ page }) => {
+      await open(page, { model: 'download', hold: 'download' });
+      await press(page, 'New');
+      await expect(page.getByRole('progressbar')).toBeVisible();
+      await expectNoViolations(page);
+      await release(page, 'download');
+    });
+
+    test('the speech model download failed', async ({ page }) => {
+      await open(page, { model: 'fail' });
+      await expect(page.getByRole('button', { name: 'Retry download' })).toBeVisible();
+      await expectNoViolations(page);
+    });
+
+    test('recording, with the waveform moving', async ({ page }) => {
+      await open(page);
+      await press(page, 'New', 'Record');
+      await expect(page.locator('.wave')).toHaveAttribute('data-count', /^[1-9]/);
+      await expectNoViolations(page);
+    });
+
+    test('paused, with the waveform frozen, and reduced motion', async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await open(page);
+      await press(page, 'New', 'Record');
+      await expect(page.locator('.level')).toBeVisible();
+      await press(page, 'Pause');
       await expectNoViolations(page);
     });
 

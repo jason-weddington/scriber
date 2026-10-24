@@ -4,7 +4,27 @@ import { resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 
 import { LEGAL } from '../../src/lib/format';
-import { COPIED, heard, join, leftover, Mock, MOCK_VERSION, modelMissing, NOTHING_HEARD, partFailed, refusal } from '../../src/lib/mock';
+import {
+  COPIED,
+  DOWNLOAD_REASON,
+  DOWNLOAD_STEP_MS,
+  DOWNLOAD_STEPS,
+  DOWNLOADING,
+  downloadFailed,
+  heard,
+  join,
+  LEVEL_MS,
+  leftover,
+  Mock,
+  MOCK_VERSION,
+  MODEL_BYTES,
+  modelMissing,
+  NO_DOWNLOAD,
+  NOTHING_HEARD,
+  partFailed,
+  refusal,
+  syntheticLevel,
+} from '../../src/lib/mock';
 import type { Action, Phase, Snapshot } from '../../src/lib/types';
 
 // The mock must answer the way scriber-core does (docs/design.md), or the UI
@@ -56,6 +76,7 @@ const CORE_ACTION_NAMES: Record<Action, string> = {
   discard: 'discard',
   retry: 'retry',
   copy: 'copy',
+  downloadModel: 'download the speech model',
 };
 
 /** A mock driven to `phase` (transcriptions held at 'transcribing'). */
@@ -85,17 +106,42 @@ async function settled(): Promise<void> {
 
 test.describe('the mock speaks the Rust JSON shapes', () => {
   test('every snapshot field, with the types the fixture allows', async () => {
-    const allowedTypes = types([shapes.snapshot ?? {}, shapes.snapshotFailed ?? {}]);
-    const snapshots = [new Mock('?model=missing').snapshot(), new Mock('?leftover=1').snapshot()];
+    const allowedTypes = types([shapes.snapshot ?? {}, shapes.snapshotFailed ?? {}, shapes.snapshotDownloading ?? {}]);
+    const downloading = new Mock('?model=download');
+    const failed = new Mock('?model=fail');
+    await finished(failed);
+    const snapshots = [downloading.snapshot(), failed.snapshot(), new Mock('?leftover=1').snapshot()];
+    expect(downloading.snapshot().download).not.toBeNull();
+    expect(failed.snapshot().modelError).not.toBeNull();
     for (const phase of PHASES) snapshots.push((await at(phase)).snapshot());
     for (const s of snapshots) {
       expect(Object.keys(s).sort(), `${s.phase} keys`).toEqual([...allowedTypes.keys()].sort());
       for (const [k, v] of Object.entries(s)) {
         expect(allowedTypes.get(k)?.has(v === null ? 'null' : typeof v), `${s.phase} ${k}`).toBe(true);
       }
+      if (s.download !== null) {
+        expect(Object.keys(s.download).sort()).toEqual(Object.keys(shapes.snapshotDownloading?.download ?? {}).sort());
+      }
+    }
+  });
+
+  test('a level is a number from 0 to 1, as in the fixture', () => {
+    expect(typeof shapes.level).toBe('number');
+    for (let n = 0; n < 200; n++) {
+      const level = syntheticLevel(n);
+      expect(level).toBeGreaterThanOrEqual(0);
+      expect(level).toBeLessThanOrEqual(1);
     }
   });
 });
+
+/** Waits until the mock's download (if any) is over. */
+async function finished(mock: Mock): Promise<void> {
+  for (let i = 0; i < 100 && mock.snapshot().download !== null; i++) {
+    await new Promise((resolve) => setTimeout(resolve, DOWNLOAD_STEP_MS));
+  }
+  expect(mock.snapshot().download, 'the download is over').toBeNull();
+}
 
 test('the legal actions are the core table, in the mock and in the buttons', async () => {
   expect(LEGAL).toEqual(CORE_LEGAL);
@@ -118,7 +164,11 @@ test('the legal actions are the core table, in the mock and in the buttons', asy
 
 test('the sentences are the core sentences', () => {
   expect(refusal('done', 'ready')).toBe('Cannot finish while ready.');
-  expect(modelMissing('/m.bin')).toBe('Model missing: run scripts/fetch-model.sh to download it to /m.bin.');
+  expect(modelMissing('/m.bin')).toBe('The speech model is missing from /m.bin.');
+  expect(downloadFailed('offline')).toBe('Could not download the speech model: offline.');
+  expect(DOWNLOADING).toBe('The speech model is still downloading.');
+  expect(NO_DOWNLOAD).toBe('The speech model is already installed or downloading.');
+  expect(MODEL_BYTES).toBe(1_624_555_275);
   expect(partFailed(2, 3, 'boom')).toBe('Part 2 of 3 could not be transcribed: boom. Retry to try again.');
   expect(leftover(1)).toBe(
     'The last session was not transcribed. Retry to transcribe its 1 recorded part, or start a new session.',
@@ -190,4 +240,65 @@ test('a held call waits for release', async () => {
   mock.handle.release('dictation_act');
   await pending;
   expect(done).toBe(true);
+});
+
+test('a missing model downloads at launch with progress, and Record waits for it', async () => {
+  const mock = new Mock('?model=download');
+  const events: Snapshot[] = [];
+  mock.onChange((e) => events.push(e));
+  expect(mock.snapshot()).toMatchObject({ revision: 0, modelError: null, download: { receivedBytes: 0, totalBytes: MODEL_BYTES } });
+  await mock.act('new', '');
+  await expect(mock.act('record', '')).rejects.toThrow(DOWNLOADING);
+  await expect(mock.act('downloadModel', '')).rejects.toThrow(NO_DOWNLOAD);
+  await finished(mock);
+  const received = events.map((e) => e.download?.receivedBytes ?? null);
+  expect(received).toEqual([
+    ...Array.from({ length: DOWNLOAD_STEPS }, (_, i) => Math.floor((MODEL_BYTES * (i + 1)) / DOWNLOAD_STEPS)),
+    null,
+  ]);
+  expect(events.map((e) => e.revision)).toEqual([2, 3, 4, 5, 6]);
+  expect(mock.snapshot()).toMatchObject({ modelError: null, download: null, notice: null });
+  await expect(mock.act('record', '')).resolves.toMatchObject({ phase: 'recording' });
+  await expect(mock.act('downloadModel', '')).rejects.toThrow(NO_DOWNLOAD);
+});
+
+test('a failed download is an error with Retry download, which then succeeds', async () => {
+  const mock = new Mock('?model=fail');
+  await finished(mock);
+  const failed = mock.snapshot();
+  expect(failed.modelError).toBe(downloadFailed(DOWNLOAD_REASON));
+  await mock.act('new', '');
+  await expect(mock.act('record', '')).rejects.toThrow(downloadFailed(DOWNLOAD_REASON));
+  const retrying = await mock.act('downloadModel', '');
+  expect(retrying).toMatchObject({ modelError: null, download: { receivedBytes: 0 } });
+  await finished(mock);
+  expect(mock.snapshot().modelError).toBeNull();
+});
+
+test('while recording the mock microphone sends a level every LEVEL_MS, and stops when the recording does', async () => {
+  const mock = new Mock('');
+  const levels: number[] = [];
+  mock.onLevel((l) => levels.push(l));
+  await mock.act('new', '');
+  await mock.act('record', '');
+  await new Promise((resolve) => setTimeout(resolve, LEVEL_MS * 5));
+  await mock.act('pause', '');
+  const heardWhileRecording = levels.length;
+  expect(heardWhileRecording).toBeGreaterThan(0);
+  expect(levels).toEqual(levels.map((_, n) => syntheticLevel(n)));
+  await new Promise((resolve) => setTimeout(resolve, LEVEL_MS * 3));
+  expect(levels.length, 'silent while paused').toBe(heardWhileRecording);
+  await mock.act('resume', '');
+  await mock.act('discard', '');
+  await mock.act('record', '');
+  await mock.act('done', '');
+  await new Promise((resolve) => setTimeout(resolve, LEVEL_MS * 3));
+  expect(levels.length, 'silent once discarded or done').toBe(heardWhileRecording);
+});
+
+test('the mock logs every action asked for, allowed or not', async () => {
+  const mock = new Mock('');
+  await mock.act('new', '');
+  await expect(mock.act('pause', '')).rejects.toThrow();
+  expect(mock.handle.acts).toEqual(['new', 'pause']);
 });

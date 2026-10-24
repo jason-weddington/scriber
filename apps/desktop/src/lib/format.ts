@@ -1,7 +1,7 @@
 // Display rules for the dictation screen. Pure functions, unit-tested in
 // tests/unit/format.spec.ts.
 
-import type { Action, Phase, Snapshot } from './types';
+import type { Action, Download, Phase, Snapshot } from './types';
 
 /**
  * The actions the core accepts in each phase (crates/scriber-core/src/dictation.rs).
@@ -55,4 +55,73 @@ export function statusText(s: Snapshot): string {
     case 'failed':
       return 'The transcript is not ready.';
   }
+}
+
+// ---- the input level waveform ------------------------------------------------
+
+/** Bars across the waveform; at the core's 20 levels a second, 2.4 s of sound. */
+export const BARS = 48;
+
+/** `levels` with `level` added as the newest (last), keeping the newest BARS. */
+export function pushLevel(levels: readonly number[], level: number): number[] {
+  return [...levels, Math.min(1, Math.max(0, level))].slice(-BARS);
+}
+
+/** The bars to draw, oldest first: `levels` right-aligned, the empty slots at 0. */
+export function bars(levels: readonly number[]): number[] {
+  const recent = levels.slice(-BARS);
+  return [...Array<number>(BARS - recent.length).fill(0), ...recent];
+}
+
+// ---- keyboard shortcuts --------------------------------------------------------
+
+/** The parts of a KeyboardEvent a shortcut depends on. */
+export type KeyPress = Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>;
+
+/** Each action's shortcut, as `aria-keyshortcuts` names it and as the button shows it. */
+export const SHORTCUTS: Readonly<Partial<Record<Action, { aria: string; hint: string }>>> = {
+  new: { aria: 'Meta+N', hint: '⌘N' },
+  record: { aria: 'Space', hint: 'Space' },
+  pause: { aria: 'Space', hint: 'Space' },
+  resume: { aria: 'Space', hint: 'Space' },
+  done: { aria: 'Enter', hint: '⏎' },
+};
+
+/**
+ * The action a key press asks for in `phase`, or null when it asks for none
+ * or for one the phase does not allow. ⌘N is New everywhere; Space (Record,
+ * Pause, Resume) and Return (Done) only outside text fields (`inText`), where
+ * they type.
+ */
+export function shortcut(press: KeyPress, phase: Phase, inText: boolean): Action | null {
+  const modifiers = [press.metaKey, press.ctrlKey, press.altKey, press.shiftKey];
+  let action: Action | null = null;
+  if (press.metaKey && modifiers.filter(Boolean).length === 1 && press.key.toLowerCase() === 'n') action = 'new';
+  else if (modifiers.some(Boolean) || inText) action = null;
+  else if (press.key === ' ') action = phase === 'ready' ? 'record' : phase === 'recording' ? 'pause' : 'resume';
+  else if (press.key === 'Enter') action = 'done';
+  return action !== null && allowed(phase, action) ? action : null;
+}
+
+// ---- the speech model's download --------------------------------------------------
+
+const UNITS = ['B', 'kB', 'MB', 'GB', 'TB'] as const;
+
+/** Bytes like Finder: powers of 1000, one decimal below 10, 999.6 MB carried to "1 GB". */
+export function formatBytes(bytes: number): string {
+  for (let unit = 0; ; unit++) {
+    const value = bytes / 1000 ** unit;
+    const shown = unit > 0 && value < 10 ? Math.round(value * 10) / 10 : Math.round(value);
+    if (shown < 1000 || unit === UNITS.length - 1) return `${String(shown)} ${UNITS[unit] ?? ''}`;
+  }
+}
+
+/** Whole percent received, never past 100. */
+export function percent(d: Download): number {
+  return d.totalBytes > 0 ? Math.min(100, Math.floor((d.receivedBytes * 100) / d.totalBytes)) : 0;
+}
+
+/** The download's line: why Record waits, and how far it has got. */
+export function downloadText(d: Download): string {
+  return `Downloading the speech model, needed once: ${String(percent(d))}% (${formatBytes(d.receivedBytes)} of ${formatBytes(d.totalBytes)}). Record works when it is done.`;
 }

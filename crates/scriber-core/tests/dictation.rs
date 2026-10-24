@@ -23,7 +23,7 @@ mod tests {
 
     /// Transcribes `job` with the world's transcriber and hands the result back.
     fn finish(d: &mut Dictation, w: &World, job: &Job) {
-        let snapshot = d.complete(job.run(&w.transcriber), &w.ports());
+        let snapshot = d.complete(w.run(job), &w.ports());
         assert_eq!(snapshot, snap(d, w), "complete answers with the snapshot");
     }
 
@@ -183,6 +183,7 @@ mod tests {
                 error: None,
                 notice: None,
                 model_error: None,
+                download: None,
             },
             "idle"
         );
@@ -270,7 +271,7 @@ mod tests {
         jobs.push(d.pause(&p).unwrap().unwrap());
         d.resume(&p).unwrap();
         jobs.push(d.done(&p).unwrap().unwrap());
-        let outcomes: Vec<_> = jobs.iter().map(|j| j.run(&w.transcriber)).collect();
+        let outcomes: Vec<_> = jobs.iter().map(|j| w.run(j)).collect();
         for o in outcomes.into_iter().rev() {
             let _snapshot = d.complete(o, &p);
         }
@@ -372,12 +373,12 @@ mod tests {
         w.files.set_vocabulary(Some("talos\nagent-gtd\n"));
         let p = w.ports();
         let (mut d, jobs) = at(&w, Phase::Paused);
-        let _first = jobs[0].run(&w.transcriber);
+        let _first = w.run(&jobs[0]);
         w.files.set_vocabulary(None);
         d.discard(&p).unwrap();
         d.record(&p).unwrap();
         let job = d.pause(&p).unwrap().unwrap();
-        let _second = job.run(&w.transcriber);
+        let _second = w.run(&job);
         assert_eq!(
             *w.transcriber.calls.borrow(),
             [
@@ -393,8 +394,7 @@ mod tests {
         let w = World::default();
         *w.transcriber.missing.borrow_mut() = Some("/data/models/ggml.bin".to_string());
         let p = w.ports();
-        let want =
-            "Model missing: run scripts/fetch-model.sh to download it to /data/models/ggml.bin.";
+        let want = "The speech model is missing from /data/models/ggml.bin.";
         assert_eq!(model_missing("/data/models/ggml.bin"), want, "sentence");
         let mut d = idle(&w);
         assert_eq!(
@@ -494,7 +494,7 @@ mod tests {
         let (_d, jobs) = at(&w, Phase::Paused);
         let stored = decode_wav(&w.files.segment(0).unwrap()).unwrap();
         assert_eq!(stored.len(), 16_000, "one second at 16 kHz");
-        let _outcome = jobs[0].run(&w.transcriber);
+        let _outcome = w.run(&jobs[0]);
         assert_eq!(
             w.transcriber.calls.borrow()[0].0,
             16_000,
@@ -621,7 +621,7 @@ mod tests {
         let w = World::default();
         let p = w.ports();
         let (mut d, old) = at(&w, Phase::Paused);
-        let stale = old[0].run(&w.transcriber);
+        let stale = w.run(&old[0]);
         d.discard(&p).unwrap();
         d.record(&p).unwrap();
         let job = d.done(&p).unwrap().unwrap();
@@ -632,12 +632,12 @@ mod tests {
             "an outcome from a discarded session changes nothing"
         );
 
-        let first = job.run(&w.transcriber);
+        let first = w.run(&job);
         w.transcriber
             .answers
             .borrow_mut()
             .push_back(Err("late".to_string()));
-        let duplicate = job.run(&w.transcriber);
+        let duplicate = w.run(&job);
         let _first = d.complete(first, &p);
         let _duplicate = d.complete(duplicate, &p);
         let s = snap(&d, &w);
@@ -653,7 +653,7 @@ mod tests {
         let w = World::default();
         let p = w.ports();
         let (mut d, jobs) = at(&w, Phase::Paused);
-        let outcome = jobs[0].run(&w.transcriber);
+        let outcome = w.run(&jobs[0]);
         d.discard(&p).unwrap();
         // A second dictation reaches the same session number with no
         // segment 0 yet.
@@ -935,7 +935,7 @@ mod tests {
         let done = d.apply(Action::Done, "", &p).unwrap();
         assert_eq!(done.revision, 3, "one per action");
         let job = w.queue.jobs.borrow_mut().remove(0);
-        let outcome = job.run(&w.transcriber);
+        let outcome = w.run(&job);
         let finished = d.complete(outcome.clone(), &p);
         assert_eq!(finished.revision, 4, "an accepted result");
         assert_eq!(

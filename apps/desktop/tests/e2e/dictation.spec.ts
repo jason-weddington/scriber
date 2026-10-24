@@ -106,13 +106,6 @@ test('buttons wait while an action is in flight', async ({ page }) => {
   await expect(button(page, 'Pause')).toBeEnabled();
 });
 
-test('a missing model is shown at once and Record stays off', async ({ page }) => {
-  await open(page, { model: 'missing' });
-  await expect(page.getByRole('alert')).toContainText('Model missing: run scripts/fetch-model.sh');
-  await press(page, 'New');
-  await expect(button(page, 'Record')).toBeDisabled();
-});
-
 test('a failed transcription is an error with Retry, never an empty transcript', async ({ page }) => {
   await open(page, { transcribe: 'fail' });
   await press(page, 'New', 'Record', 'Done');

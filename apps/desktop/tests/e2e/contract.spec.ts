@@ -43,7 +43,7 @@ const INJECTED = /:\s*(State\s*<|AppHandle\b|Window\b|WebviewWindow\b)/;
 /** command name -> the argument keys the webview must send (Tauri camel-cases them). */
 function rustCommands(src: string): Map<string, string[]> {
   const commands = new Map<string, string[]>();
-  const re = /#\[tauri::command\]\s*(?:#\[[^\]]*\]\s*)*pub\s+(?:async\s+)?fn\s+(\w+)\s*\(([\s\S]*?)\)\s*(?:->[^{]*)?\{/g;
+  const re = /#\[tauri::command\]\s*(?:#\[[^\]]*\]\s*)*pub(?:\(crate\))?\s+(?:async\s+)?fn\s+(\w+)\s*\(([\s\S]*?)\)\s*(?:->[^{]*)?\{/g;
   for (const m of src.matchAll(re)) {
     const [, name = '', params = ''] = m;
     const keys = splitParams(params)
@@ -78,6 +78,7 @@ const CALLS: Call[] = [
   { fn: 'dictationState', args: [], command: 'dictation_state', sent: {} },
   { fn: 'act', args: ['pause'], command: 'dictation_act', sent: { action: 'pause', text: '' } },
   { fn: 'act', args: ['copy', 'Edited.'], command: 'dictation_act', sent: { action: 'copy', text: 'Edited.' } },
+  { fn: 'act', args: ['downloadModel'], command: 'dictation_act', sent: { action: 'downloadModel', text: '' } },
 ];
 
 const SNAPSHOT = {
@@ -90,6 +91,7 @@ const SNAPSHOT = {
   error: null,
   notice: null,
   modelError: null,
+  download: null,
 };
 
 test.describe('bridge.ts against the Rust command signatures', () => {
@@ -123,8 +125,10 @@ test.describe('bridge.ts against the Rust command signatures', () => {
         for (const c of calls) await bridge[c.fn]?.(...c.args);
         const received: unknown[] = [];
         await bridge.onDictationChanged?.((p: unknown) => received.push(p));
+        await bridge.onLevel?.((p: unknown) => received.push(p));
         // Tauri delivers an event as { event, id, payload }; the bridge hands on the payload.
-        for (const cb of callbacks) cb({ event: 'dictation-changed', id: 1, payload: snapshot });
+        callbacks[0]?.({ event: 'dictation-changed', id: 1, payload: snapshot });
+        callbacks[1]?.({ event: 'dictation-level', id: 2, payload: 0.5 });
         log.push({ command: 'received', args: { received } });
         const version = await bridge.appVersion?.();
         log.push({ command: 'version', args: { version } });
@@ -152,9 +156,9 @@ test.describe('bridge.ts against the Rust command signatures', () => {
     const listened = sent
       .filter((c) => c.command === 'plugin:event|listen')
       .map((c) => (c.args as { event: string }).event);
-    expect(listened).toEqual([constant(src, 'DICTATION_EVENT')]);
+    expect(listened).toEqual([constant(src, 'DICTATION_EVENT'), constant(src, 'LEVEL_EVENT')]);
 
-    expect(sent.find((c) => c.command === 'received')?.args).toEqual({ received: [SNAPSHOT] });
+    expect(sent.find((c) => c.command === 'received')?.args).toEqual({ received: [SNAPSHOT, 0.5] });
 
     // The version comes from Tauri's own app plugin, passed through.
     expect(sent.some((c) => c.command === 'plugin:app|version')).toBe(true);

@@ -11,6 +11,11 @@ use crate::dictation::Job;
 #[error("{0}")]
 pub struct PortError(pub String);
 
+/// Any error as a [`PortError`], for an adapter's `map_err(fail)`.
+pub fn fail(e: impl std::fmt::Display) -> PortError {
+    PortError(e.to_string())
+}
+
 /// Sound as the input device delivered it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Captured {
@@ -57,6 +62,15 @@ pub trait Transcriber {
     /// Where the model should be, when it is not installed there.
     fn missing_model(&self) -> Option<String>;
 
+    /// Loads the model, if it is not loaded yet, so the first transcription
+    /// does not wait for it. A transcription asked for while this runs waits
+    /// for it rather than loading the model again.
+    ///
+    /// # Errors
+    ///
+    /// The model cannot be loaded.
+    fn warm(&self) -> Result<(), PortError>;
+
     /// The text spoken in `samples` (16 kHz mono), steered by `prompt`.
     ///
     /// # Errors
@@ -95,6 +109,32 @@ pub trait Files {
     ///
     /// The file cannot be deleted.
     fn remove(&self, path: &str) -> Result<(), PortError>;
+
+    /// Adds `bytes` to the end of the file at `path`, which must exist.
+    ///
+    /// # Errors
+    ///
+    /// The file is missing or cannot be written.
+    fn append(&self, path: &str, bytes: &[u8]) -> Result<(), PortError>;
+
+    /// Renames the file at `from` to `to` in one step, replacing any file at
+    /// `to`: a reader sees the old file or the new one, never part of it.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be renamed.
+    fn rename(&self, from: &str, to: &str) -> Result<(), PortError>;
+}
+
+/// The network, for the speech model's download.
+pub trait Downloader {
+    /// Requests `url`, following redirects, and answers with its body to
+    /// read. A read fails when the connection drops before the body ends.
+    ///
+    /// # Errors
+    ///
+    /// The request fails or the server answers with an error status.
+    fn open(&self, url: &str) -> Result<Box<dyn std::io::Read>, PortError>;
 }
 
 /// The system clipboard.
@@ -107,8 +147,9 @@ pub trait Clipboard {
     fn write(&self, text: &str) -> Result<(), PortError>;
 }
 
-/// Where closed segments go to be transcribed off the caller's thread (the
-/// app runs [`Job::run`] on a worker and hands the result to
+/// Where jobs go to run off the caller's thread: closed segments to
+/// transcribe, the model's warm-up and its download (the app runs
+/// [`Job::run`] on a worker and hands the result to
 /// [`crate::dictation::Dictation::complete`]).
 pub trait JobQueue {
     /// Queues `job`.
@@ -133,6 +174,8 @@ pub struct Ports<'a> {
     pub clipboard: &'a dyn Clipboard,
     /// The transcription worker's queue.
     pub queue: &'a dyn JobQueue,
+    /// The network, for the model's download.
+    pub downloader: &'a dyn Downloader,
 }
 
 impl<'a> Ports<'a> {
@@ -145,6 +188,7 @@ impl<'a> Ports<'a> {
         files: &'a dyn Files,
         clipboard: &'a dyn Clipboard,
         queue: &'a dyn JobQueue,
+        downloader: &'a dyn Downloader,
     ) -> Self {
         Self {
             recorder,
@@ -152,6 +196,7 @@ impl<'a> Ports<'a> {
             files,
             clipboard,
             queue,
+            downloader,
         }
     }
 }

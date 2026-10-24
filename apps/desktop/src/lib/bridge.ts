@@ -16,8 +16,11 @@ import { listen } from '@tauri-apps/api/event';
 import { Mock } from './mock';
 import type { Action, Snapshot } from './types';
 
-/** The event src-tauri emits when a transcription finishes (DICTATION_EVENT in lib.rs). */
+/** The event src-tauri emits when a job changes the snapshot (DICTATION_EVENT in lib.rs). */
 export const DICTATION_EVENT = 'dictation-changed';
+
+/** The event src-tauri emits with the input level while recording (LEVEL_EVENT in lib.rs). */
+export const LEVEL_EVENT = 'dictation-level';
 
 /** True inside the Tauri webview rather than a plain browser. */
 export function underTauri(): boolean {
@@ -65,10 +68,18 @@ export async function act(action: Action, text = ''): Promise<Snapshot> {
   return invoke<Snapshot>('dictation_act', { action, text });
 }
 
-/** Subscribes to background changes (a segment transcribed). Resolves to the unsubscribe function. */
+/** Subscribes to background changes (a segment transcribed, the model's download). Resolves to the unsubscribe function. */
 export async function onDictationChanged(cb: (snapshot: Snapshot) => void): Promise<() => void> {
   if (!underTauri()) return mock().onChange(cb);
   return listen<Snapshot>(DICTATION_EVENT, (e) => {
+    cb(e.payload);
+  });
+}
+
+/** Subscribes to the input level (0 to 1, about 20 a second) while recording. Resolves to the unsubscribe function. */
+export async function onLevel(cb: (level: number) => void): Promise<() => void> {
+  if (!underTauri()) return mock().onLevel(cb);
+  return listen<number>(LEVEL_EVENT, (e) => {
     cb(e.payload);
   });
 }

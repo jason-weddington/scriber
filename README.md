@@ -37,7 +37,7 @@ cd apps/desktop && pnpm install --frozen-lockfile && pnpm exec playwright instal
 bash scripts/fetch-model.sh
 ```
 
-Downloads `ggml-large-v3-turbo.bin` (1.6 GB) into `~/Library/Application Support/com.jasonweddington.scriber/models/`, where the app looks for it. Without it the app says so and refuses to record. `bash scripts/smoke.sh` then checks the real model end to end: it speaks a sentence with `say`, converts it with ffmpeg and prints what the app's Whisper adapter hears, with timings.
+The app downloads `ggml-large-v3-turbo.bin` (1.6 GB) itself the first time it launches without it, showing the progress, and verifies its size and SHA-256 before using it; Record works once it is done. The script does the same from a terminal, into `~/Library/Application Support/com.jasonweddington.scriber/models/`, where the app looks for it. `bash scripts/smoke.sh` then checks the real model end to end: it speaks a sentence with `say`, converts it with ffmpeg and prints what the app's Whisper adapter hears, with timings.
 
 An optional glossary, `vocabulary.txt` in the same folder (one term per line, `#` comments), steers the spelling of names and jargon.
 

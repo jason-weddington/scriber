@@ -1,36 +1,30 @@
-//! The Scriber desktop app: a Tauri 2 shell around `scriber-core`. The real
-//! ports live here (cpal, whisper-rs on Metal, the data folder, the clipboard,
-//! a transcription queue); each command forwards to the core. The bridge
-//! contract is `docs/design.md`.
+//! Scriber's Tauri 2 shell: real ports and commands over `scriber-core` (see `docs/design.md`).
 #![forbid(unsafe_code)]
 
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use scriber_core::dictation::{Dictation, Job};
-use scriber_core::ports::Transcriber;
-use scriber_core::ports::{Captured, Clipboard, Files, JobQueue, PortError, Ports, Recorder};
+use scriber_core::dictation::{Dictation, Job, work};
+use scriber_core::level::{Tap, feeder};
+use scriber_core::model::{Action, Snapshot};
+use scriber_core::ports::{Captured, Clipboard, Downloader, Files, JobQueue, PortError, Ports};
+use scriber_core::ports::{Recorder, Transcriber, fail};
 use scriber_core::store::MODEL;
+use scriber_core::sync::{LoadOnce, lock};
 
 /// Event name for a snapshot that changed in the background.
 pub const DICTATION_EVENT: &str = "dictation-changed";
 
-fn fail(e: impl std::fmt::Display) -> PortError {
-    PortError(e.to_string())
-}
-
-/// Locks, carrying on past a panic elsewhere: every value here stays valid.
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// While recording: cpal's stream, the samples it delivered, channels, rate.
-type Capture = (cpal::Stream, Arc<Mutex<Vec<f32>>>, u16, u32);
+/// Event name for the input level while recording (`scriber_core::level`).
+pub const LEVEL_EVENT: &str = "dictation-level";
 
 impl Recorder for App {
     fn start(&self) -> Result<(), PortError> {
@@ -38,35 +32,40 @@ impl Recorder for App {
         let device = host.default_input_device().ok_or(none)?;
         let config = device.default_input_config().map_err(fail)?;
         let (channels, rate) = (config.channels(), config.sample_rate());
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&buffer);
-        let deliver = move |data: &[f32], _: &_| lock(&sink).extend_from_slice(data);
+        let tap = Arc::new(Mutex::new(Tap::new(channels, rate)));
+        let handle = self.handle.clone();
+        // An emit (here, in `send`) fails only once the webview is gone: no one hears.
+        let emit = move |level| handle.emit(LEVEL_EVENT, level).unwrap_or_default();
+        let deliver = feeder(Arc::clone(&tap), emit);
         // A dropout loses a few milliseconds of sound; the segment goes on.
         let stream = device.build_input_stream(config.into(), deliver, |_| {}, None);
         let stream = stream.map_err(fail)?;
         stream.play().map_err(fail)?;
-        *lock(&self.capture) = Some((stream, buffer, channels, rate));
+        *lock(&self.capture) = Some((stream, tap));
         Ok(())
     }
 
     fn stop(&self) -> Result<Captured, PortError> {
-        let running = lock(&self.capture).take().ok_or(fail("not recording"))?;
-        let (stream, buffer, channels, sample_rate) = running;
+        let (stream, tap) = lock(&self.capture).take().ok_or(fail("not recording"))?;
         drop(stream);
-        let samples = std::mem::take(&mut *lock(&buffer));
-        Ok(Captured::new(samples, channels, sample_rate))
+        Ok(lock(&tap).take())
     }
 }
 
-/// whisper.cpp on Metal. The model loads on first use and stays loaded.
-pub struct Whisper(PathBuf, Mutex<Option<WhisperContext>>);
+/// whisper.cpp on Metal; the model loads once (warm-up or first use) and stays.
+pub struct Whisper(PathBuf, LoadOnce<WhisperContext>);
 
 impl Whisper {
     /// A transcriber for the ggml model at `path`.
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
         whisper_rs::install_logging_hooks();
-        Self(path, Mutex::new(None))
+        Self(path, LoadOnce::default())
+    }
+
+    fn load(&self) -> Result<WhisperContext, PortError> {
+        let params = WhisperContextParameters::default();
+        WhisperContext::new_with_params(&self.0, params).map_err(fail)
     }
 }
 
@@ -75,34 +74,39 @@ impl Transcriber for Whisper {
         (!self.0.is_file()).then(|| self.0.display().to_string())
     }
 
+    fn warm(&self) -> Result<(), PortError> {
+        self.1.with(&mut || self.load(), &mut |_| Ok(()))
+    }
+
     fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<String, PortError> {
-        let mut loaded = lock(&self.1);
-        let load = || WhisperContext::new_with_params(&self.0, WhisperContextParameters::default());
-        let context = match &mut *loaded {
-            Some(context) => context,
-            empty => empty.insert(load().map_err(fail)?),
-        };
-        let beam = SamplingStrategy::BeamSearch {
-            beam_size: 5,
-            patience: -1.0,
-        };
-        let mut params = FullParams::new(beam);
-        params.set_language(Some("en"));
-        params.set_suppress_nst(true);
-        if let Some(prompt) = prompt {
-            params.set_initial_prompt(prompt);
-        }
-        let mut state = context.create_state().map_err(fail)?;
-        state.full(params, samples).map_err(fail)?;
-        let text = state.as_iter().map(|s| s.to_str_lossy().map(String::from));
-        text.collect::<Result<String, _>>().map_err(fail)
+        self.1
+            .with(&mut || self.load(), &mut |m| decode(m, samples, prompt))
     }
 }
 
-/// The session and every real port, shared by the commands and the jobs.
+/// Beam search (beam 5), English, non-speech tokens suppressed.
+fn decode(model: &WhisperContext, pcm: &[f32], prompt: Option<&str>) -> Result<String, PortError> {
+    let beam = SamplingStrategy::BeamSearch {
+        beam_size: 5,
+        patience: -1.0,
+    };
+    let mut params = FullParams::new(beam);
+    params.set_language(Some("en"));
+    params.set_suppress_nst(true);
+    if let Some(prompt) = prompt {
+        params.set_initial_prompt(prompt);
+    }
+    let mut state = model.create_state().map_err(fail)?;
+    state.full(params, pcm).map_err(fail)?;
+    let text = state.as_iter().map(|s| s.to_str_lossy().map(String::from));
+    text.collect::<Result<String, _>>().map_err(fail)
+}
+
+/// The session and every real port, shared by the commands and the jobs;
+/// `capture` holds cpal's stream and the capture it feeds while recording.
 pub struct App {
     dictation: Mutex<Dictation>,
-    capture: Mutex<Option<Capture>>,
+    capture: Mutex<Option<(cpal::Stream, Arc<Mutex<Tap>>)>>,
     whisper: Whisper,
     data: PathBuf,
     handle: AppHandle,
@@ -114,7 +118,9 @@ impl Files for App {
     }
 
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), PortError> {
-        std::fs::write(self.data.join(path), bytes).map_err(fail)
+        let file = self.data.join(path);
+        std::fs::create_dir_all(file.parent().unwrap_or(&self.data)).map_err(fail)?;
+        std::fs::write(file, bytes).map_err(fail)
     }
 
     fn list(&self, folder: &str) -> Result<Vec<String>, PortError> {
@@ -128,6 +134,26 @@ impl Files for App {
     fn remove(&self, path: &str) -> Result<(), PortError> {
         std::fs::remove_file(self.data.join(path)).map_err(fail)
     }
+
+    fn append(&self, path: &str, bytes: &[u8]) -> Result<(), PortError> {
+        let file = OpenOptions::new().append(true).open(self.data.join(path));
+        file.map_err(fail)?.write_all(bytes).map_err(fail)
+    }
+
+    fn rename(&self, from: &str, to: &str) -> Result<(), PortError> {
+        std::fs::rename(self.data.join(from), self.data.join(to)).map_err(fail)
+    }
+}
+
+impl Downloader for App {
+    /// HTTPS through Security.framework, trusting the system's roots.
+    fn open(&self, url: &str) -> Result<Box<dyn Read>, PortError> {
+        let tls = TlsConfig::builder().provider(TlsProvider::NativeTls);
+        let tls = tls.root_certs(RootCerts::PlatformVerifier).build();
+        let agent = ureq::Agent::config_builder().tls_config(tls).build();
+        let response = agent.new_agent().get(url).call().map_err(fail)?;
+        Ok(Box::new(response.into_body().into_reader()))
+    }
 }
 
 impl Clipboard for App {
@@ -137,16 +163,13 @@ impl Clipboard for App {
 }
 
 impl JobQueue for App {
-    /// Transcribes on a blocking-pool thread, then reports the new snapshot.
-    /// Jobs may finish in any order; the Whisper lock runs one at a time.
+    /// A blocking-pool thread per job; the model's lock runs one at a time.
     fn send(&self, job: Job) -> Result<(), PortError> {
         let state = self.handle.try_state::<Arc<App>>();
         let app = Arc::clone(&*state.ok_or(fail("the app is starting"))?);
         let _task = tauri::async_runtime::spawn_blocking(move || {
-            let outcome = job.run(&app.whisper);
-            let snapshot = lock(&app.dictation).complete(outcome, &app.ports());
-            // Fails only when the webview is gone, and then nobody is listening.
-            let _sent = app.handle.emit(DICTATION_EVENT, snapshot);
+            let report = |s: Snapshot| app.handle.emit(DICTATION_EVENT, s).unwrap_or_default();
+            work(&app.dictation, &job, &app.ports(), &report);
         });
         Ok(())
     }
@@ -154,63 +177,31 @@ impl JobQueue for App {
 
 impl App {
     fn ports(&self) -> Ports<'_> {
-        Ports::new(self, &self.whisper, self, self, self)
+        Ports::new(self, &self.whisper, self, self, self, self)
     }
 }
 
-/// The Tauri commands, one per entry in the design doc's bridge contract (in
-/// a module: at the crate root, `#[tauri::command]` collides with itself).
+/// The bridge's commands, in a module: `#[tauri::command]` code trips a lint.
 #[expect(clippy::unreachable, reason = "macro expansion")]
-pub mod commands {
-    use std::sync::Arc;
+mod commands {
+    use super::{Action, App, Arc, Snapshot, State, lock};
 
-    use tauri::State;
-
-    use scriber_core::model::{Action, Snapshot};
-
-    use super::{App, lock};
-
-    /// `dictation_state`: the session as it stands.
-    ///
-    /// # Errors
-    ///
-    /// Never; async commands answer with a `Result`.
+    /// `dictation_state`: the session as it stands (never an error).
     #[tauri::command]
-    pub async fn dictation_state(app: State<'_, Arc<App>>) -> Result<Snapshot, String> {
+    pub(crate) async fn dictation_state(app: State<'_, Arc<App>>) -> Result<Snapshot, String> {
         Ok(lock(&app.dictation).snapshot(&app.ports()))
     }
 
-    /// `dictation_act`: one action; `text` is the edited transcript for `copy`.
-    ///
-    /// # Errors
-    ///
-    /// The core refused the action, as one sentence.
+    /// `dictation_act`: one action (`text` is the edited transcript for `copy`).
     #[tauri::command]
-    pub async fn dictation_act(
+    pub(crate) async fn dictation_act(
         app: State<'_, Arc<App>>,
         action: Action,
         text: String,
     ) -> Result<Snapshot, String> {
-        let ports = app.ports();
-        let snapshot = lock(&app.dictation).apply(action, &text, &ports);
+        let snapshot = lock(&app.dictation).apply(action, &text, &app.ports());
         snapshot.map_err(|e| e.to_string())
     }
-}
-
-/// The shared state, with the session found on disk at launch.
-fn start(handle: &AppHandle) -> Result<Arc<App>, tauri::Error> {
-    let data = handle.path().app_data_dir()?;
-    let whisper = Whisper::new(data.join(MODEL));
-    let (dictation, capture, handle) = (Mutex::default(), Mutex::default(), handle.clone());
-    let app = Arc::new(App {
-        dictation,
-        capture,
-        whisper,
-        data,
-        handle,
-    });
-    *lock(&app.dictation) = Dictation::recover(&app.ports());
-    Ok(app)
 }
 
 /// Builds and runs the app.
@@ -234,7 +225,17 @@ pub fn run() -> Result<(), tauri::Error> {
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
-            let _first = app.manage(start(app.handle())?);
+            let data = app.path().app_data_dir()?;
+            let state = Arc::new(App {
+                dictation: Mutex::default(),
+                capture: Mutex::default(),
+                whisper: Whisper::new(data.join(MODEL)),
+                data,
+                handle: app.handle().clone(),
+            });
+            let _first = app.manage(Arc::clone(&state));
+            // Once managed: the jobs `launch` queues look the state up.
+            *lock(&state.dictation) = Dictation::launch(&state.ports());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

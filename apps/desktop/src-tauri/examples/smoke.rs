@@ -1,6 +1,7 @@
 //! Real-model smoke check, never run by the gate: transcribes a 16 kHz mono
-//! WAV through the app's own Whisper adapter and prints the text and how long
-//! it took. `scripts/smoke.sh` makes the WAV and runs this:
+//! WAV through the app's own Whisper adapter, warming it up first as the app
+//! does at launch, and prints the text and how long each step took.
+//! `scripts/smoke.sh` makes the WAV and runs this:
 //!
 //! ```sh
 //! cargo run --release --example smoke -- <model.bin> <speech.wav>
@@ -28,11 +29,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         is_silent(&samples)
     )?;
 
-    let cold = Instant::now();
-    let first = whisper.transcribe(&samples, None)?;
-    let cold = cold.elapsed();
-    writeln!(out, "cold (model load + transcribe): {cold:.2?}")?;
-    writeln!(out, "text: {:?}", keep(samples.len(), &first))?;
+    let load = Instant::now();
+    whisper.warm()?;
+    let load = load.elapsed();
+    writeln!(out, "warm-up (model load, as at launch): {load:.2?}")?;
+
+    let first = Instant::now();
+    let heard = whisper.transcribe(&samples, None)?;
+    let first = first.elapsed();
+    writeln!(out, "first transcription after the warm-up: {first:.2?}")?;
+    writeln!(out, "text: {:?}", keep(samples.len(), &heard))?;
 
     let warm = Instant::now();
     let second = whisper.transcribe(&samples, Some("Glossary: Scriber, talos, agent-gtd"))?;

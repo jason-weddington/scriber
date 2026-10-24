@@ -4,7 +4,13 @@
 
 export type Phase = 'idle' | 'ready' | 'recording' | 'paused' | 'transcribing' | 'finished' | 'failed';
 
-export type Action = 'new' | 'record' | 'pause' | 'resume' | 'done' | 'discard' | 'retry' | 'copy';
+export type Action = 'new' | 'record' | 'pause' | 'resume' | 'done' | 'discard' | 'retry' | 'copy' | 'downloadModel';
+
+/** How far the speech model's download has got. */
+export interface Download {
+  receivedBytes: number;
+  totalBytes: number;
+}
 
 export interface Snapshot {
   /** Grows with every change; the window keeps the highest it has seen. */
@@ -22,6 +28,8 @@ export interface Snapshot {
   error: string | null;
   /** One sentence about the last action. */
   notice: string | null;
-  /** Set when the speech model is not installed. */
+  /** Set when the speech model is missing and not downloading; the window offers `downloadModel`. */
   modelError: string | null;
+  /** The speech model's download, while it runs. */
+  download: Download | null;
 }

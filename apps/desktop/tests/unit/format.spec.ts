@@ -1,6 +1,21 @@
 import { expect, test } from '@playwright/test';
 
-import { allowed, formatElapsed, LEGAL, parts, statusText } from '../../src/lib/format';
+import {
+  allowed,
+  BARS,
+  bars,
+  downloadText,
+  formatBytes,
+  formatElapsed,
+  type KeyPress,
+  LEGAL,
+  parts,
+  percent,
+  pushLevel,
+  shortcut,
+  SHORTCUTS,
+  statusText,
+} from '../../src/lib/format';
 import type { Phase, Snapshot } from '../../src/lib/types';
 
 const base: Snapshot = {
@@ -13,6 +28,7 @@ const base: Snapshot = {
   error: null,
   notice: null,
   modelError: null,
+  download: null,
 };
 
 test('recorded time reads m:ss, then h:mm:ss, rounded down', () => {
@@ -59,4 +75,112 @@ test('the status line says what to do next in every phase', () => {
     [{ phase: 'failed', error: 'Part 1 of 1 could not be transcribed.' }, 'The transcript is not ready.'],
   ];
   for (const [patch, want] of cases) expect(statusText({ ...base, ...patch }), JSON.stringify(patch)).toBe(want);
+});
+
+test('the waveform keeps the newest BARS levels, newest last, clamped to 0..1', () => {
+  expect(BARS).toBe(48);
+  expect(pushLevel([], 0.5)).toEqual([0.5]);
+  expect(pushLevel([0.1, 0.2], 0.3)).toEqual([0.1, 0.2, 0.3]);
+  expect(pushLevel([], 1.5)).toEqual([1]);
+  expect(pushLevel([], -0.2)).toEqual([0]);
+  const full = Array.from({ length: BARS }, (_, i) => i / 100);
+  const next = pushLevel(full, 0.9);
+  expect(next.length).toBe(BARS);
+  expect(next[0]).toBe(0.01);
+  expect(next.at(-1)).toBe(0.9);
+});
+
+test('the bars are the levels right-aligned, the empty slots at 0', () => {
+  expect(bars([])).toEqual(Array<number>(BARS).fill(0));
+  const drawn = bars([0.2, 0.7]);
+  expect(drawn.length).toBe(BARS);
+  expect(drawn.slice(-2)).toEqual([0.2, 0.7]);
+  expect(drawn.slice(0, -2).every((l) => l === 0)).toBe(true);
+  const many = Array.from({ length: BARS + 5 }, (_, i) => i);
+  expect(bars(many)).toEqual(many.slice(5));
+});
+
+const press = (key: string, mods: Partial<KeyPress> = {}): KeyPress => ({
+  key,
+  metaKey: false,
+  ctrlKey: false,
+  altKey: false,
+  shiftKey: false,
+  ...mods,
+});
+
+test('Space records, pauses and resumes; Return finishes; each only where the core allows it', () => {
+  const space = press(' ');
+  const enter = press('Enter');
+  const want: Record<Phase, [string | null, string | null]> = {
+    idle: [null, null],
+    ready: ['record', null],
+    recording: ['pause', 'done'],
+    paused: ['resume', 'done'],
+    transcribing: [null, null],
+    finished: [null, null],
+    failed: [null, null],
+  };
+  for (const phase of Object.keys(want) as Phase[]) {
+    expect([shortcut(space, phase, false), shortcut(enter, phase, false)], phase).toEqual(want[phase]);
+  }
+});
+
+test('Space and Return type in a text field, and only bare keys count', () => {
+  expect(shortcut(press(' '), 'ready', true)).toBeNull();
+  expect(shortcut(press('Enter'), 'recording', true)).toBeNull();
+  for (const mod of ['metaKey', 'ctrlKey', 'altKey', 'shiftKey'] as const) {
+    expect(shortcut(press(' ', { [mod]: true }), 'ready', false), mod).toBeNull();
+    expect(shortcut(press('Enter', { [mod]: true }), 'paused', false), mod).toBeNull();
+  }
+  expect(shortcut(press('a'), 'ready', false)).toBeNull();
+  expect(shortcut(press('n'), 'idle', false)).toBeNull();
+});
+
+test('Command-N is New wherever New is allowed, even in a text field', () => {
+  const cmdN = press('n', { metaKey: true });
+  expect(shortcut(cmdN, 'idle', false)).toBe('new');
+  expect(shortcut(cmdN, 'finished', true)).toBe('new');
+  expect(shortcut(press('N', { metaKey: true }), 'failed', false)).toBe('new');
+  expect(shortcut(cmdN, 'recording', false)).toBeNull();
+  expect(shortcut(press('n', { metaKey: true, shiftKey: true }), 'idle', false)).toBeNull();
+  expect(shortcut(press('n', { ctrlKey: true }), 'idle', false)).toBeNull();
+  expect(shortcut(press('m', { metaKey: true }), 'idle', false)).toBeNull();
+});
+
+test('each shortcut names its key for assistive tech and shows a hint', () => {
+  expect(SHORTCUTS).toEqual({
+    new: { aria: 'Meta+N', hint: '⌘N' },
+    record: { aria: 'Space', hint: 'Space' },
+    pause: { aria: 'Space', hint: 'Space' },
+    resume: { aria: 'Space', hint: 'Space' },
+    done: { aria: 'Enter', hint: '⏎' },
+  });
+});
+
+test('sizes read like Finder: powers of 1000, one decimal below 10', () => {
+  const cases: [number, string][] = [
+    [0, '0 B'],
+    [999, '999 B'],
+    [1_000, '1 kB'],
+    [1_500, '1.5 kB'],
+    [12_345, '12 kB'],
+    [999_600_000, '1 GB'],
+    [680_000_000, '680 MB'],
+    [1_624_555_275, '1.6 GB'],
+    [9_960_000_000, '10 GB'],
+    [5e15, '5000 TB'],
+  ];
+  for (const [bytes, want] of cases) expect(formatBytes(bytes), String(bytes)).toBe(want);
+});
+
+test('the download shows whole percent and bytes, and why Record waits', () => {
+  expect(percent({ receivedBytes: 0, totalBytes: 100 })).toBe(0);
+  expect(percent({ receivedBytes: 999, totalBytes: 1000 })).toBe(99);
+  expect(percent({ receivedBytes: 1000, totalBytes: 1000 })).toBe(100);
+  expect(percent({ receivedBytes: 2000, totalBytes: 1000 })).toBe(100);
+  expect(percent({ receivedBytes: 5, totalBytes: 0 })).toBe(0);
+  expect(downloadText({ receivedBytes: 680_000_000, totalBytes: 1_624_555_275 })).toBe(
+    'Downloading the speech model, needed once: 41% (680 MB of 1.6 GB). Record works when it is done.',
+  );
 });

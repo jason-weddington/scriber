@@ -8,7 +8,8 @@
     "text": "First thought.\n\nSecond thought.",
     "error": null,
     "notice": "Copied to the clipboard.",
-    "modelError": null
+    "modelError": null,
+    "download": null
   },
   "snapshotFailed": {
     "revision": 7,
@@ -19,6 +20,23 @@
     "text": "",
     "error": "Part 2 of 2 could not be transcribed: model exploded. Retry to try again.",
     "notice": null,
-    "modelError": "Model missing: run scripts/fetch-model.sh to download it to /models/ggml-large-v3-turbo.bin."
-  }
+    "modelError": "Could not download the speech model: the connection was reset.",
+    "download": null
+  },
+  "snapshotDownloading": {
+    "revision": 1,
+    "phase": "idle",
+    "recordedMs": 0,
+    "segments": 0,
+    "pending": 0,
+    "text": "",
+    "error": null,
+    "notice": null,
+    "modelError": null,
+    "download": {
+      "receivedBytes": 812277637,
+      "totalBytes": 1624555275
+    }
+  },
+  "level": 0.5
 }

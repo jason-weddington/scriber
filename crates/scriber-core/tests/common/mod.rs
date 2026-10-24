@@ -4,10 +4,11 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
+use std::io::{self, Read};
 
-use scriber_core::dictation::Job;
+use scriber_core::dictation::{Job, Outcome};
 use scriber_core::ports::{
-    Captured, Clipboard, Files, JobQueue, PortError, Ports, Recorder, Transcriber,
+    Captured, Clipboard, Downloader, Files, JobQueue, PortError, Ports, Recorder, Transcriber,
 };
 use scriber_core::store::{VOCABULARY, segment_index, segment_path};
 
@@ -52,17 +53,27 @@ impl Recorder for FakeRecorder {
 }
 
 /// A transcriber that answers from a queue ("segment N" when it is empty)
-/// and records every call's sample count and prompt.
+/// and records every call's sample count and prompt, and every warm-up.
 #[derive(Default)]
 pub(crate) struct FakeTranscriber {
     pub(crate) missing: RefCell<Option<String>>,
     pub(crate) answers: RefCell<VecDeque<Result<String, String>>>,
     pub(crate) calls: RefCell<Vec<(usize, Option<String>)>>,
+    pub(crate) warms: Cell<u32>,
+    pub(crate) warm_error: RefCell<Option<String>>,
 }
 
 impl Transcriber for FakeTranscriber {
     fn missing_model(&self) -> Option<String> {
         self.missing.borrow().clone()
+    }
+
+    fn warm(&self) -> Result<(), PortError> {
+        self.warms.set(self.warms.get().saturating_add(1));
+        match self.warm_error.borrow().clone() {
+            Some(e) => Err(PortError(e)),
+            None => Ok(()),
+        }
     }
 
     fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<String, PortError> {
@@ -87,6 +98,8 @@ pub(crate) struct FakeFiles {
     pub(crate) fail_read: Cell<bool>,
     pub(crate) fail_list: Cell<bool>,
     pub(crate) fail_remove: Cell<bool>,
+    pub(crate) fail_append: Cell<bool>,
+    pub(crate) fail_rename: Cell<bool>,
 }
 
 impl FakeFiles {
@@ -165,6 +178,79 @@ impl Files for FakeFiles {
         let _: Option<_> = self.files.borrow_mut().remove(path);
         Ok(())
     }
+
+    fn append(&self, path: &str, bytes: &[u8]) -> Result<(), PortError> {
+        if self.fail_append.get() {
+            return Err(PortError("disk full".to_string()));
+        }
+        let mut files = self.files.borrow_mut();
+        let file = files
+            .get_mut(path)
+            .ok_or_else(|| PortError("no such file".to_string()))?;
+        file.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn rename(&self, from: &str, to: &str) -> Result<(), PortError> {
+        if self.fail_rename.get() {
+            return Err(PortError("read-only volume".to_string()));
+        }
+        let mut files = self.files.borrow_mut();
+        let bytes = files
+            .remove(from)
+            .ok_or_else(|| PortError("no such file".to_string()))?;
+        let _: Option<_> = files.insert(to.to_string(), bytes);
+        Ok(())
+    }
+}
+
+/// A network that serves `blocks` for any URL, one per read, then fails the
+/// read with `error` if it is set; refuses the request with `refuse`; and
+/// records every URL asked for. `interrupt` makes the first read fail with
+/// `Interrupted`, which a reader is expected to retry.
+#[derive(Default)]
+pub(crate) struct FakeDownloader {
+    pub(crate) blocks: RefCell<Vec<Vec<u8>>>,
+    pub(crate) error: RefCell<Option<String>>,
+    pub(crate) refuse: RefCell<Option<String>>,
+    pub(crate) interrupt: Cell<bool>,
+    pub(crate) urls: RefCell<Vec<String>>,
+}
+
+/// The body [`FakeDownloader`] answers with.
+struct FakeBody(VecDeque<io::Result<Vec<u8>>>);
+
+impl Read for FakeBody {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let Some(next) = self.0.pop_front() else {
+            return Ok(0);
+        };
+        let bytes = next?;
+        // Every fake block fits the reader's buffer.
+        buffer
+            .iter_mut()
+            .zip(&bytes)
+            .for_each(|(to, from)| *to = *from);
+        Ok(bytes.len().min(buffer.len()))
+    }
+}
+
+impl Downloader for FakeDownloader {
+    fn open(&self, url: &str) -> Result<Box<dyn Read>, PortError> {
+        self.urls.borrow_mut().push(url.to_string());
+        if let Some(e) = self.refuse.borrow().clone() {
+            return Err(PortError(e));
+        }
+        let mut reads: VecDeque<io::Result<Vec<u8>>> = VecDeque::new();
+        if self.interrupt.get() {
+            reads.push_back(Err(io::ErrorKind::Interrupted.into()));
+        }
+        reads.extend(self.blocks.borrow().iter().cloned().map(Ok));
+        if let Some(e) = self.error.borrow().clone() {
+            reads.push_back(Err(io::Error::other(e)));
+        }
+        Ok(Box::new(FakeBody(reads)))
+    }
 }
 
 /// Records every write; fails while `fail` is set.
@@ -209,6 +295,9 @@ pub(crate) struct World {
     pub(crate) files: FakeFiles,
     pub(crate) clipboard: FakeClipboard,
     pub(crate) queue: FakeQueue,
+    pub(crate) downloader: FakeDownloader,
+    /// Every progress report a job made through [`World::run`].
+    pub(crate) progress: RefCell<Vec<u64>>,
 }
 
 impl World {
@@ -219,6 +308,14 @@ impl World {
             &self.files,
             &self.clipboard,
             &self.queue,
+            &self.downloader,
         )
+    }
+
+    /// Runs `job` against the fakes, keeping its progress reports.
+    pub(crate) fn run(&self, job: &Job) -> Outcome {
+        job.run(&self.ports(), &|bytes| {
+            self.progress.borrow_mut().push(bytes);
+        })
     }
 }
