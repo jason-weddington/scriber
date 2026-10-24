@@ -1,0 +1,19 @@
+# Build output, everywhere in the tree (apps/desktop is its own cargo
+# workspace, so a root-anchored /target would miss its target directory).
+target/
+node_modules/
+dist/
+test-results/
+playwright-report/
+apps/desktop/coverage/
+# svelte-check --tsgo writes its generated TypeScript here.
+.svelte-check/
+apps/desktop/src-tauri/gen/
+mutants.out*/
+*.profraw
+Cargo.lock.bak
+
+# Machine-local files: a private release guard, local notes, local env.
+*.local.*
+
+.DS_Store

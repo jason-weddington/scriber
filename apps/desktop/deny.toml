@@ -1,0 +1,83 @@
+# cargo-deny policy for the desktop app's OWN cargo workspace (this
+# directory). cargo-deny does not see this workspace from the root, so without
+# this file an advisory against tauri, wry or a plugin would never be reported.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Each is an unmaintained crate (not a vulnerability) reached only through
+# Tauri's Linux-only dependencies, which are not compiled for macOS
+# (`cargo tree -i <crate> --target aarch64-apple-darwin` finds nothing). Drop
+# an entry as soon as the Tauri release in Cargo.toml moves off it.
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, via gtk3-macros: the Linux-only GTK3 binding of wry and tauri" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant, via zbus: the Linux-only D-Bus dependency of tauri-plugin-single-instance" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names, via zbus: the Linux-only D-Bus dependency of tauri-plugin-single-instance" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, via zbus: the Linux-only D-Bus dependency of tauri-plugin-single-instance" },
+]
+
+[licenses]
+# Licenses a dependency may use.
+allow = [
+    "0BSD",
+    "AFL-2.1",
+    "AFL-3.0",
+    "Apache-1.1",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-2-Clause-Patent",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC-BY-2.0",
+    "CC-BY-2.5",
+    "CC-BY-3.0",
+    "CC-BY-4.0",
+    "CC0-1.0",
+    "FTL",
+    "ICU",
+    "IJG",
+    "ISC",
+    "ImageMagick",
+    "Libpng",
+    "MIT",
+    "MIT-CMU",
+    "MPL-2.0",
+    "MulanPSL-2.0",
+    "OFL-1.0",
+    "OFL-1.1",
+    "OLDAP-2.8",
+    "OpenSSL",
+    "PDDL-1.0",
+    "PHP-3.0",
+    "PHP-3.01",
+    "PSF-2.0",
+    "PostgreSQL",
+    "Python-2.0",
+    "Python-2.0.1",
+    "Ruby",
+    "Unicode-3.0",
+    "Unlicense",
+    "WTFPL",
+    "X11",
+    "Zlib",
+    "blessing",
+    "curl",
+    "libpng-2.0",
+]
+unused-allowed-license = "allow"
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+# Tauri's tree carries several versions of the same crate (syn, toml,
+# windows-sys, ...); nothing here can unify them.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,5 @@
+# Every test here finishes in milliseconds (the clock and the filesystem are
+# fakes), so a test still running after two minutes is hung or looping. Kill
+# it rather than let an unattended mutation run grow it without bound.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }

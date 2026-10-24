@@ -1,0 +1,4 @@
+# Always set the edition so a bare rustfmt (an editor, a hook) never falls
+# back to edition-2015 formatting rules.
+edition = "2024"
+max_width = 100

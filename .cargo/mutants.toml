@@ -1,0 +1,5 @@
+# Mutation testing (scripts/gate.sh): zero surviving mutants is the bar for
+# the whole core. A mutant that survives is a behaviour no test pins.
+examine_globs = ["crates/scriber-core/src/**/*.rs"]
+test_tool = "nextest"
+timeout_multiplier = 3.0

@@ -1,0 +1,7 @@
+packages:
+  - .
+
+# pnpm refuses versions younger than its minimum release age. vite 8.3.5 was
+# pinned while it was newer than that; drop the entry once it has aged.
+minimumReleaseAgeExclude:
+  - vite@8.3.5

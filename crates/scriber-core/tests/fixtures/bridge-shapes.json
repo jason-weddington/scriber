@@ -1,0 +1,21 @@
+{
+  "appInfo": {
+    "version": "1.2.3"
+  },
+  "scanProgress": {
+    "files": 2,
+    "bytes": 1200,
+    "folders": 1
+  },
+  "scanSummary": {
+    "root": "/Users/me/Pictures",
+    "files": 3,
+    "totalBytes": 1500,
+    "unreadableFolders": 1,
+    "extensions": [
+      { "extension": "jpg", "files": 2, "bytes": 1200 },
+      { "extension": "", "files": 1, "bytes": 300 }
+    ],
+    "elapsedMs": 42
+  }
+}

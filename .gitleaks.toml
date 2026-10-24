@@ -1,0 +1,14 @@
+# Secret scanning (scripts/gate.sh): the default rules, minus build output and
+# installed dependencies, which are not ours and are never committed.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "build output and dependencies"
+paths = [
+  '''(^|/)target/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)mutants\.out''',
+  '''(^|/)(dist|coverage|test-results|playwright-report|\.svelte-check)/''',
+  '''pnpm-lock\.yaml''',
+]

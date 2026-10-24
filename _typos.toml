@@ -1,0 +1,9 @@
+# Project vocabulary for the `typos` spell checker. Add real terms here rather
+# than rewording code to appease the checker.
+[default]
+# Git SHAs in backticks are not words.
+extend-ignore-re = ["`[0-9a-f]{7,40}`"]
+
+[files]
+# Machine-written files.
+extend-exclude = ["CHANGELOG.md", "*.lock", "pnpm-lock.yaml", "apps/desktop/src-tauri/icons/"]

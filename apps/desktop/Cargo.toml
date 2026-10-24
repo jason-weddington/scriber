@@ -1,0 +1,11 @@
+# The app's own VIRTUAL workspace root. The repo-root `cargo metadata` sees
+# only crates/*, and this file owns a separate member list and a separate
+# lockfile (apps/desktop/Cargo.lock). src-tauri carries no `[workspace]`
+# table; it resolves upward to THIS file.
+#
+# Deliberately outside the root workspace so Tauri's large dependency tree
+# never reaches the core's gates (coverage, mutants, machete, deny). The app
+# gets its own fmt, clippy and deny steps in scripts/gate.sh.
+[workspace]
+resolver = "3"
+members = ["src-tauri"]

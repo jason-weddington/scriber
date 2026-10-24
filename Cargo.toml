@@ -1,0 +1,76 @@
+# Virtual workspace root: the logic crates only.
+#
+# scriber-core holds every decision the app makes and performs no I/O itself.
+# The desktop shell lives in apps/desktop, which is its OWN cargo workspace
+# with its own lockfile, so Tauri's dependency tree never reaches these gates
+# (coverage, mutants, machete, deny).
+[workspace]
+resolver = "3"
+members = ["crates/scriber-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.99"
+
+# Centralised lint strictness. Member crates opt in with `[lints] workspace = true`.
+# Everything here is deny. Relax a lint only with a recorded reason beside it,
+# and prefer a local `#[expect(lint, reason = "...")]` over relaxing it here.
+# apps/desktop/src-tauri carries its own copy of this table.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unreachable_pub = "deny"
+unused_must_use = "deny"
+unused_results = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+# Panics: a panic in the core takes the whole app down. Errors are values.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+get_unwrap = "deny"
+# Numbers: no silent wrap, truncation or precision loss. Arithmetic goes
+# through checked_ or saturating_ operations.
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_precision_loss = "deny"
+# Fail closed: a new enum variant must be decided at every match.
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+# Exceptions carry a reason and fail once they are no longer needed.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+# Output and debugging leftovers.
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Ignored results and silent discards.
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
+# Clarity.
+shadow_unrelated = "deny"
+missing_assert_message = "deny"
+exit = "deny"
+tests_outside_test_module = "deny"
+
+# Overflow is a bug in every build, including release.
+[profile.dev]
+overflow-checks = true
+
+[profile.test]
+overflow-checks = true
+
+[profile.release]
+overflow-checks = true

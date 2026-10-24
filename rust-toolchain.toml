@@ -1,0 +1,6 @@
+# Pin the toolchain and components so every machine and every agent agrees on
+# exactly what counts as a warning (clippy lints drift between releases).
+# Bump deliberately, in its own commit, with the gate green.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]

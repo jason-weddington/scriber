@@ -1,0 +1,17 @@
+# Tests may unwrap, panic and index: a panic there is the failure report, not
+# a crash in the app.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+
+disallowed-methods = [
+  { path = "std::process::exit", reason = "return an error instead; exit skips destructors and RunEvent::Exit" },
+  { path = "std::env::set_var", reason = "process-global and racy in tests" },
+  { path = "std::env::remove_var", reason = "process-global and racy in tests" },
+]
+
+# Words that doc_markdown would otherwise demand backticks around.
+doc-valid-idents = ["JavaScript", "TypeScript", "macOS", ".."]

@@ -1,0 +1,75 @@
+# The Tauri 2 shell around scriber-core.
+#
+# NO `[workspace]` table here: this crate resolves upward to
+# apps/desktop/Cargo.toml (the app's virtual workspace root), never to the
+# repo root. It therefore inherits NONE of the root `[workspace.lints]`, so
+# it carries its own copy of the table below.
+#
+# Every command is a thin adapter: arguments in, an scriber-core call,
+# the result out. Logic that needs a test belongs in scriber-core.
+[package]
+name = "scriber-app"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+description = "Scriber desktop app: a Tauri 2 shell around scriber-core."
+publish = false
+
+[lib]
+name = "scriber_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+# The logic. A group of its own, so `cargo sort --grouped` keeps this order
+# whatever the app is named.
+scriber-core = { path = "../../../crates/scriber-core" }
+
+# Exact pins: `tauri build` refuses a crate whose major.minor differs from
+# @tauri-apps/api in package.json, and the plugins move with Tauri's minor.
+tauri = { version = "=2.12.4", features = [] }
+tauri-plugin-dialog = "=2.8.3"
+# One window at a time: a second launch focuses the first.
+tauri-plugin-single-instance = "=2.5.4"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.3", features = [] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unreachable_pub = "deny"
+unused_must_use = "deny"
+unused_results = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+get_unwrap = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_precision_loss = "deny"
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
+shadow_unrelated = "deny"
+missing_assert_message = "deny"
+exit = "deny"
+tests_outside_test_module = "deny"

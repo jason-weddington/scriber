@@ -1,0 +1,22 @@
+# Git hooks. Activate on a fresh clone with:  lefthook install
+#
+# The hooks call scripts/gate.sh and nothing else: the gate has ONE
+# definition, shared with agents and CI, so a hook can never check less (or
+# more) than `scripts/gate.sh full`. Every step CHECKS and never FIXES; when
+# a formatter check fails, run the formatter yourself and commit again. Never
+# skip a hook with --no-verify.
+
+commit-msg:
+  commands:
+    conventional:
+      run: cog verify --file {1}
+
+pre-commit:
+  commands:
+    gate:
+      run: bash scripts/gate.sh pre-commit
+
+pre-push:
+  commands:
+    gate:
+      run: bash scripts/gate.sh pre-push
