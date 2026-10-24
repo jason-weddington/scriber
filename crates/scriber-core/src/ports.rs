@@ -17,6 +17,12 @@ pub fn fail(e: impl std::fmt::Display) -> PortError {
     PortError(e.to_string())
 }
 
+impl From<crate::sync::Closed> for PortError {
+    fn from(_: crate::sync::Closed) -> Self {
+        Self("the engine has shut down".to_string())
+    }
+}
+
 /// Sound as the input device delivered it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Captured {
@@ -78,6 +84,13 @@ pub trait Transcriber {
     ///
     /// The model cannot be loaded or the transcription fails.
     fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<String, PortError>;
+
+    /// Frees the loaded model, first waiting for a load or transcription
+    /// already in progress to finish (calls still waiting for the model are
+    /// refused, not run). Afterwards `warm` and `transcribe` fail with a
+    /// [`PortError`] and never load the model again. Returns whether a loaded
+    /// model was freed (a second call returns false).
+    fn unload(&self) -> bool;
 }
 
 /// The app's data folder. Paths are relative to it and use `/`.

@@ -24,6 +24,9 @@ test('a fresh window offers only New, and shows the mock version', async ({ page
 });
 
 test('record, pause, resume, done: the transcript is copied and shown in paragraphs', async ({ page }) => {
+  // Running the fake clock through 105 s of animated level meter takes ~20 s
+  // under coverage, past the 30 s default once six workers share the host.
+  test.slow();
   await page.clock.install();
   await open(page);
   await press(page, 'New');

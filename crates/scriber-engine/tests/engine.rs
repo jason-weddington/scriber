@@ -7,14 +7,14 @@ mod common;
 mod tests {
     use std::net::TcpListener;
     use std::path::Path;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use scriber_engine::{
         Action, Clipboard, DictationError, Download, Engine, EngineConfig, EngineError, Event,
-        ModelSource, Phase, PortError, Source, level_sink,
+        ModelSource, Phase, PortError, ShutdownReport, Source, level_sink,
     };
     use tempfile::TempDir;
 
@@ -66,12 +66,14 @@ mod tests {
                 EngineError::Failed("it broke".into()).to_string(),
                 EngineError::Timeout.to_string(),
                 EngineError::NotStopped.to_string(),
+                EngineError::ShutDown.to_string(),
             ],
             [
                 "The speech model is already installed or downloading.",
                 "it broke",
                 "The transcript was not ready in time.",
                 "There is no stopped session to wait for.",
+                "The engine has shut down.",
             ],
             "sentences"
         );
@@ -477,6 +479,185 @@ mod tests {
         assert!(
             error.starts_with("Could not download the speech model: "),
             "{error}"
+        );
+    }
+
+    /// Waits, within [`PATIENCE`], until `count` reaches `want`.
+    fn reaches(count: &AtomicU32, want: u32) {
+        let started = Instant::now();
+        while count.load(Ordering::SeqCst) != want {
+            assert!(started.elapsed() < PATIENCE, "reached {want} in time");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn shutdown_frees_the_model_once_and_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        reaches(&fakes.transcriber.warms, 1);
+        let clone = engine.clone();
+        let later = ShutdownReport {
+            first: false,
+            paused_recording: false,
+            freed_model: false,
+        };
+        assert_eq!(
+            engine.shutdown(),
+            ShutdownReport {
+                first: true,
+                paused_recording: false,
+                freed_model: true,
+            },
+            "the first call frees the model"
+        );
+        assert_eq!(engine.shutdown(), later, "a second call");
+        assert_eq!(clone.shutdown(), later, "a call on a clone");
+        assert_eq!(
+            fakes.transcriber.unloads.load(Ordering::SeqCst),
+            1,
+            "freed once"
+        );
+    }
+
+    #[test]
+    fn actions_after_shutdown_are_refused() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        reaches(&fakes.transcriber.warms, 1);
+        let _ready = engine.act(Action::New, "").unwrap();
+        let before = engine.state();
+        let _report = engine.shutdown();
+        let refused = Err(EngineError::ShutDown);
+        assert_eq!(engine.record(), refused, "record");
+        assert_eq!(engine.pause(), refused, "pause");
+        assert_eq!(engine.resume(), refused, "resume");
+        assert_eq!(engine.stop(), refused, "stop");
+        assert_eq!(engine.discard(), refused, "discard");
+        assert_eq!(engine.retry(), refused, "retry");
+        assert_eq!(engine.download_model(), refused, "download");
+        assert_eq!(engine.act(Action::Copy, "x"), refused, "copy");
+        assert_eq!(
+            engine.wait(Duration::ZERO),
+            Err(EngineError::ShutDown),
+            "wait"
+        );
+        assert_eq!(
+            engine.stop_and_wait(Duration::ZERO),
+            Err(EngineError::ShutDown),
+            "stop and wait"
+        );
+        assert_eq!(engine.state(), before, "unchanged, and still answers");
+    }
+
+    #[test]
+    fn shutdown_while_recording_keeps_the_audio() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        reaches(&fakes.transcriber.warms, 1);
+        let _recording = engine.record().unwrap();
+        let asked = fakes.transcriber.asks.load(Ordering::SeqCst);
+        assert_eq!(
+            engine.shutdown(),
+            ShutdownReport {
+                first: true,
+                paused_recording: true,
+                freed_model: true,
+            },
+            "paused, then freed"
+        );
+        assert_eq!(
+            fakes.recorder.stops.load(Ordering::SeqCst),
+            1,
+            "the microphone stopped"
+        );
+        let s = engine.state();
+        assert_eq!(
+            (s.phase, s.segments, s.pending),
+            (Phase::Paused, 1, 0),
+            "paused, its segment's job refused"
+        );
+        assert!(
+            dir.path().join("segments/segment-0000.wav").is_file(),
+            "the audio is kept"
+        );
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            fakes.transcriber.asks.load(Ordering::SeqCst),
+            asked,
+            "nothing transcribed"
+        );
+        let (relaunched, _events) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            relaunched.state().phase,
+            Phase::Failed,
+            "the next launch offers a retry"
+        );
+    }
+
+    #[test]
+    fn shutdown_waits_for_a_transcription_in_flight() {
+        let dir = TempDir::new().unwrap();
+        let (transcriber, entered) = FakeTranscriber::default().entering();
+        let (transcriber, gate) = transcriber.gated();
+        let fakes = Fakes::with(transcriber);
+        let (engine, rx) = fakes.open(config(&dir));
+        reaches(&fakes.transcriber.warms, 1);
+        let _recording = engine.record().unwrap();
+        let _stopped = engine.stop().unwrap();
+        entered.recv_timeout(PATIENCE).unwrap();
+        let (report_tx, report_rx) = mpsc::channel();
+        let shutting = {
+            let engine = engine.clone();
+            thread::spawn(move || report_tx.send(engine.shutdown()).unwrap())
+        };
+        thread::sleep(Duration::from_millis(200));
+        assert!(report_rx.try_recv().is_err(), "shutdown waits");
+        assert_eq!(
+            fakes.transcriber.unloads.load(Ordering::SeqCst),
+            0,
+            "the model is still loaded"
+        );
+        gate.send(()).unwrap();
+        let report = report_rx.recv_timeout(PATIENCE).unwrap();
+        assert!(report.freed_model, "then frees it");
+        assert_eq!(
+            fakes.transcriber.unloads.load(Ordering::SeqCst),
+            1,
+            "freed once"
+        );
+        let _finished = until(&rx, |s| s.phase == Phase::Finished).unwrap();
+        shutting.join().unwrap();
+    }
+
+    #[test]
+    fn a_download_finishing_after_shutdown_never_warms() {
+        let dir = TempDir::new().unwrap();
+        let (mut fakes, c) = downloading(&dir);
+        let (downloader, gate) = fakes.downloader.clone().gated();
+        fakes.downloader = downloader;
+        let (engine, rx) = fakes.open(c);
+        // No event arrives before the gated request answers, so wait for
+        // the request itself.
+        reaches(&fakes.downloader.opens, 1);
+        assert!(engine.state().download.is_some(), "downloading");
+        let report = engine.shutdown();
+        assert!(!report.freed_model, "nothing was loaded");
+        gate.send(()).unwrap();
+        let _done = until(&rx, |s| s.download.is_none()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        let t = &fakes.transcriber;
+        assert_eq!(
+            (
+                t.asks.load(Ordering::SeqCst),
+                t.warms.load(Ordering::SeqCst),
+                t.unloads.load(Ordering::SeqCst)
+            ),
+            (0, 0, 0),
+            "never warmed, never loaded"
         );
     }
 }

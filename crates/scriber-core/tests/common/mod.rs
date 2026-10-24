@@ -87,6 +87,10 @@ impl Transcriber for FakeTranscriber {
             .unwrap_or_else(|| Ok(format!(" segment {n} ")))
             .map_err(PortError)
     }
+
+    fn unload(&self) -> bool {
+        false
+    }
 }
 
 /// A data folder held in a map from path to contents, with a switch to make

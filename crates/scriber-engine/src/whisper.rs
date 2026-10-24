@@ -7,7 +7,7 @@ use scriber_core::sync::LoadOnce;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 /// whisper.cpp, on Metal on macOS and on the CPU elsewhere; the model loads
-/// once (warm-up or first use) and stays.
+/// once (warm-up or first use) and stays until `unload`.
 pub struct Whisper(PathBuf, LoadOnce<WhisperContext>);
 
 impl Whisper {
@@ -37,6 +37,10 @@ impl Transcriber for Whisper {
     fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<String, PortError> {
         self.1
             .with(&mut || self.load(), &mut |m| decode(m, samples, prompt))
+    }
+
+    fn unload(&self) -> bool {
+        self.1.close()
     }
 }
 

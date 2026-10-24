@@ -25,6 +25,8 @@
 //! engine.record()?;
 //! // ... the user speaks ...
 //! let text = engine.stop_and_wait(Duration::from_secs(120))?;
+//! // On macOS, always before the process exits (see `Engine::shutdown`).
+//! let _report = engine.shutdown();
 //! # drop((rx, text));
 //! # Ok::<(), scriber_engine::EngineError>(())
 //! ```
@@ -35,6 +37,7 @@ mod net;
 mod whisper;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -125,6 +128,21 @@ pub enum EngineError {
     /// There is no stopped session to wait for.
     #[error("There is no stopped session to wait for.")]
     NotStopped,
+    /// The engine was shut down ([`Engine::shutdown`]); nothing more can be done with it.
+    #[error("The engine has shut down.")]
+    ShutDown,
+}
+
+/// What one [`Engine::shutdown`] call did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShutdownReport {
+    /// True only on the call that shut the engine down; later calls (on any
+    /// clone) answer false.
+    pub first: bool,
+    /// True only when this call paused a recording, saving its audio.
+    pub paused_recording: bool,
+    /// True only when this call freed a loaded speech model.
+    pub freed_model: bool,
 }
 
 /// Where the recorder reports the input level.
@@ -161,6 +179,11 @@ struct Jobs(Weak<Inner>);
 impl JobQueue for Jobs {
     fn send(&self, job: Job) -> Result<(), PortError> {
         let inner = self.0.upgrade().ok_or(fail("the engine has shut down"))?;
+        // Only ever called, and `shut` only ever set, with the session lock
+        // held: no job starts once shutdown has begun.
+        if inner.shut.load(Ordering::SeqCst) {
+            return Err(fail("the engine has shut down"));
+        }
         let thread = std::thread::Builder::new().name("scriber-job".to_string());
         let _job = thread
             .spawn(move || {
@@ -184,6 +207,8 @@ struct Inner {
     clipboard: Arc<dyn Clipboard + Send + Sync>,
     events: Arc<dyn Fn(Event) + Send + Sync>,
     queue: Jobs,
+    /// Set (with `dictation` held) by [`Engine::shutdown`].
+    shut: AtomicBool,
 }
 
 impl Inner {
@@ -288,6 +313,7 @@ impl Engine {
             clipboard,
             events,
             queue: Jobs(Weak::clone(weak)),
+            shut: AtomicBool::new(false),
         });
         let ports = inner.ports();
         // Launched with the lock held, so a job it queues cannot record its
@@ -312,10 +338,23 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// [`EngineError::Refused`]: the action is not allowed now.
+    /// [`EngineError::Refused`]: the action is not allowed now;
+    /// [`EngineError::ShutDown`]: the engine has shut down.
     pub fn act(&self, action: Action, text: &str) -> Result<Snapshot, EngineError> {
         let ports = self.0.ports();
-        Ok(lock(&self.0.dictation).apply(action, text, &ports)?)
+        let mut dictation = lock(&self.0.dictation);
+        self.refuse_if_shut()?;
+        Ok(dictation.apply(action, text, &ports)?)
+    }
+
+    /// [`EngineError::ShutDown`] once [`Self::shutdown`] has run; call with
+    /// the session lock held.
+    fn refuse_if_shut(&self) -> Result<(), EngineError> {
+        if self.0.shut.load(Ordering::SeqCst) {
+            Err(EngineError::ShutDown)
+        } else {
+            Ok(())
+        }
     }
 
     /// Starts recording: from idle or finished, a new session first (which
@@ -326,10 +365,11 @@ impl Engine {
     ///
     /// [`EngineError::Refused`]: recording, paused, transcribing or failed;
     /// the model is missing; the microphone fails (the session is then
-    /// ready).
+    /// ready). [`EngineError::ShutDown`]: the engine has shut down.
     pub fn record(&self) -> Result<Snapshot, EngineError> {
         let ports = self.0.ports();
         let mut dictation = lock(&self.0.dictation);
+        self.refuse_if_shut()?;
         match dictation.snapshot(&ports).phase {
             Phase::Idle | Phase::Finished => {
                 let _ready = dictation.apply(Action::New, "", &ports)?;
@@ -404,11 +444,14 @@ impl Engine {
     ///
     /// [`EngineError::Failed`] with the session's error;
     /// [`EngineError::Timeout`]; [`EngineError::NotStopped`] while idle,
-    /// ready, recording or paused.
+    /// ready, recording or paused; [`EngineError::ShutDown`] when called
+    /// after [`Self::shutdown`] (a waiter already blocked when it runs keeps
+    /// waiting for the transcription in flight or its timeout).
     pub fn wait(&self, timeout: Duration) -> Result<String, EngineError> {
         let deadline = Instant::now().checked_add(timeout);
         let ports = self.0.ports();
         let mut dictation = lock(&self.0.dictation);
+        self.refuse_if_shut()?;
         loop {
             let snapshot = dictation.snapshot(&ports);
             match snapshot.phase {
@@ -440,5 +483,39 @@ impl Engine {
     pub fn stop_and_wait(&self, timeout: Duration) -> Result<String, EngineError> {
         let _stopped = self.stop()?;
         self.wait(timeout)
+    }
+
+    /// Shuts the engine down, on this handle and every clone: refuses new
+    /// work, pauses a recording (stopping the microphone and saving the open
+    /// segment's audio, which the next launch offers to retry), then frees
+    /// the speech model. Idempotent: any later call, on any clone or thread,
+    /// returns only once the model is freed.
+    ///
+    /// On macOS a consumer MUST call this before the process exits.
+    /// whisper.cpp's Metal device is a C++ static freed at exit, and it
+    /// aborts the process (`GGML_ASSERT([rsets->data count] == 0)`) while a
+    /// whisper context is still alive. Dropping every `Engine` handle is NOT
+    /// enough, because a job thread may still hold the engine.
+    ///
+    /// It blocks for at most the one model load or transcription already
+    /// running, which finishes first; calls still waiting for the model are
+    /// refused. Never call it from the events callback: it deadlocks, like
+    /// every other method. Afterwards actions are refused with
+    /// [`EngineError::ShutDown`] while [`Self::state`] still answers, and a
+    /// transcription that finished during shutdown may still record its
+    /// outcome on its job thread.
+    #[must_use]
+    pub fn shutdown(&self) -> ShutdownReport {
+        let ports = self.0.ports();
+        let mut dictation = lock(&self.0.dictation);
+        let first = !self.0.shut.swap(true, Ordering::SeqCst);
+        let paused_recording = first && dictation.apply(Action::Pause, "", &ports).is_ok();
+        drop(dictation);
+        let freed_model = self.0.adapters.transcriber.unload();
+        ShutdownReport {
+            first,
+            paused_recording,
+            freed_model,
+        }
     }
 }

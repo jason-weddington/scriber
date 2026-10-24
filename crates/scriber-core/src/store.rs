@@ -16,6 +16,9 @@ pub const SEGMENTS: &str = "segments";
 /// shows it rather than offering to transcribe it again.
 pub const TRANSCRIPT: &str = "segments/transcript.txt";
 
+/// Where the transcript is written before it is renamed into place.
+const TRANSCRIPT_PARTIAL: &str = "segments/transcript.txt.partial";
+
 /// The glossary file.
 pub const VOCABULARY: &str = "vocabulary.txt";
 
@@ -89,13 +92,16 @@ pub fn clear(files: &dyn Files) -> Result<(), PortError> {
         .try_for_each(|name| files.remove(&format!("{SEGMENTS}/{name}")))
 }
 
-/// Keeps the session's transcript.
+/// Keeps the session's transcript, atomically: it is written beside
+/// [`TRANSCRIPT`] and then renamed over it, so a process that exits mid-save
+/// leaves either the whole transcript or none, never a truncated one.
 ///
 /// # Errors
 ///
-/// The file cannot be written.
+/// The file cannot be written or renamed into place.
 pub fn save_transcript(files: &dyn Files, text: &str) -> Result<(), PortError> {
-    files.write(TRANSCRIPT, text.as_bytes())
+    files.write(TRANSCRIPT_PARTIAL, text.as_bytes())?;
+    files.rename(TRANSCRIPT_PARTIAL, TRANSCRIPT)
 }
 
 /// The kept transcript, or `None` when there is none (or it is not UTF-8).

@@ -83,6 +83,14 @@ use std::time::Duration;
 
 use scriber_engine::{Engine, EngineConfig, Event};
 
+fn run(engine: &Engine) -> Result<(), scriber_engine::EngineError> {
+    engine.record()?;
+    std::thread::sleep(Duration::from_secs(5)); // the user speaks
+    let text = engine.stop_and_wait(Duration::from_secs(60))?;
+    println!("{text}");
+    Ok(())
+}
+
 fn main() -> Result<(), scriber_engine::EngineError> {
     let (tx, rx) = mpsc::channel::<Event>();
     let tx = Mutex::new(tx);
@@ -91,14 +99,14 @@ fn main() -> Result<(), scriber_engine::EngineError> {
     });
     let engine = Engine::open(EngineConfig::new("/path/to/my-app/scriber"), events);
     // The model downloads (1.6 GB) the first time; rx shows its progress.
-    engine.record()?;
-    std::thread::sleep(Duration::from_secs(5)); // the user speaks
-    let text = engine.stop_and_wait(Duration::from_secs(60))?;
-    println!("{text}");
+    let result = run(&engine);
+    let _report = engine.shutdown();
     drop(rx);
-    Ok(())
+    result
 }
 ```
+
+Call `engine.shutdown()` on every path before the process exits: on macOS whisper.cpp's Metal context aborts the process at exit unless the engine is shut down first (dropping the handles is not enough).
 
 `EngineConfig::model` takes `ModelSource::Local(path)` to use a model file already on disk (nothing is downloaded), or `ModelSource::Download(Source { url, bytes, sha256 })` for a mirror; the default downloads `large-v3-turbo` from Hugging Face. `docs/design.md` (Engine API) has the threading contract and the rest.
 

@@ -87,7 +87,15 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::dictation_act,
         ])
         .build(tauri::generate_context!())?;
-    // Quitting loses a transcription in flight, not its audio (design.md).
-    app.run(|_handle, _event| {});
+    // The engine is shut down on Exit (Cmd-Q, the menu Quit, the last window
+    // closed), which runs before AppKit's exit(), so the Whisper Metal
+    // context is freed first; freed at exit, it aborts (design.md).
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Exit = event
+            && let Some(engine) = handle.try_state::<Engine>()
+        {
+            let _report = engine.shutdown();
+        }
+    });
     Ok(())
 }

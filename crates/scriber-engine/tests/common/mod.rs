@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use scriber_core::sync::LoadOnce;
 use scriber_engine::{
     Adapters, Captured, Downloader, Engine, EngineConfig, Event, LevelSink, PortError, Recorder,
     Snapshot, Transcriber,
@@ -52,7 +53,9 @@ impl Recorder for FakeRecorder {
 
 /// A transcriber that answers from a queue ("hello world" when it is empty),
 /// optionally waiting for a message on `gate` before each answer. Its model
-/// is missing while `model` names a file that does not exist.
+/// is missing while `model` names a file that does not exist. Its "model"
+/// is a [`LoadOnce`], so `unload` behaves like the real adapter's: it waits
+/// for a transcription in progress, and nothing runs afterwards.
 #[derive(Clone, Default)]
 pub(crate) struct FakeTranscriber {
     pub(crate) model: Option<PathBuf>,
@@ -60,6 +63,13 @@ pub(crate) struct FakeTranscriber {
     pub(crate) gate: Option<Arc<Mutex<Receiver<()>>>>,
     pub(crate) warms: Arc<AtomicU32>,
     pub(crate) dropped: DropFlag,
+    pub(crate) once: Arc<LoadOnce<()>>,
+    /// Models freed by `unload`.
+    pub(crate) unloads: Arc<AtomicU32>,
+    /// Calls to `warm` or `transcribe`, refused or not.
+    pub(crate) asks: Arc<AtomicU32>,
+    /// Told when a transcription has the model, before its gate.
+    pub(crate) entered: Option<Arc<Mutex<Sender<()>>>>,
 }
 
 impl FakeTranscriber {
@@ -84,6 +94,16 @@ impl FakeTranscriber {
         };
         (gated, tx)
     }
+
+    /// Tells the returned receiver each time a transcription has the model.
+    pub(crate) fn entering(self) -> (Self, Receiver<()>) {
+        let (tx, rx) = mpsc::channel();
+        let entering = Self {
+            entered: Some(Arc::new(Mutex::new(tx))),
+            ..self
+        };
+        (entering, rx)
+    }
 }
 
 impl Transcriber for FakeTranscriber {
@@ -93,22 +113,42 @@ impl Transcriber for FakeTranscriber {
     }
 
     fn warm(&self) -> Result<(), PortError> {
-        let _before = self.warms.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        let _asked = self.asks.fetch_add(1, Ordering::SeqCst);
+        self.once.with(&mut || Ok(()), &mut |()| {
+            let _before = self.warms.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
     }
 
     fn transcribe(&self, _samples: &[f32], _prompt: Option<&str>) -> Result<String, PortError> {
-        if let Some(gate) = &self.gate {
-            // A closed gate (the test ended) lets the answer through.
-            let _opened = gate.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        let _asked = self.asks.fetch_add(1, Ordering::SeqCst);
+        self.once.with(&mut || Ok(()), &mut |()| {
+            if let Some(entered) = &self.entered {
+                let _sent = entered
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .send(());
+            }
+            if let Some(gate) = &self.gate {
+                // A closed gate (the test ended) lets the answer through.
+                let _opened = gate.lock().unwrap_or_else(PoisonError::into_inner).recv();
+            }
+            let next = self
+                .answers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop_front();
+            next.unwrap_or_else(|| Ok("hello world".to_string()))
+                .map_err(PortError)
+        })
+    }
+
+    fn unload(&self) -> bool {
+        let freed = self.once.close();
+        if freed {
+            let _before = self.unloads.fetch_add(1, Ordering::SeqCst);
         }
-        let next = self
-            .answers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop_front();
-        next.unwrap_or_else(|| Ok("hello world".to_string()))
-            .map_err(PortError)
+        freed
     }
 }
 
@@ -129,16 +169,34 @@ impl Drop for DropFlag {
     }
 }
 
-/// A network that serves `body` for any URL and counts the requests.
+/// A network that serves `body` for any URL and counts the requests,
+/// optionally waiting for a message on `gate` before answering.
 #[derive(Clone, Default)]
 pub(crate) struct FakeDownloader {
     pub(crate) body: Vec<u8>,
     pub(crate) opens: Arc<AtomicU32>,
+    pub(crate) gate: Option<Arc<Mutex<Receiver<()>>>>,
+}
+
+impl FakeDownloader {
+    /// Waits for a message on the returned sender before answering.
+    pub(crate) fn gated(self) -> (Self, Sender<()>) {
+        let (tx, rx) = mpsc::channel();
+        let gated = Self {
+            gate: Some(Arc::new(Mutex::new(rx))),
+            ..self
+        };
+        (gated, tx)
+    }
 }
 
 impl Downloader for FakeDownloader {
     fn open(&self, _url: &str) -> Result<Box<dyn Read>, PortError> {
         let _before = self.opens.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = &self.gate {
+            // A closed gate (the test ended) lets the answer through.
+            let _opened = gate.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        }
         Ok(Box::new(Cursor::new(self.body.clone())))
     }
 }

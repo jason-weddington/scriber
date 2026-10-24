@@ -133,4 +133,34 @@ mod tests {
             .insert(TRANSCRIPT.to_string(), vec![0xff]);
         assert_eq!(transcript(&files), None, "not UTF-8");
     }
+
+    #[test]
+    fn the_transcript_is_written_then_renamed_into_place() {
+        let files = FakeFiles::default();
+        save_transcript(&files, "said").unwrap();
+        let held = files.files.borrow();
+        assert_eq!(
+            held.get("segments/transcript.txt").map(Vec::as_slice),
+            Some(b"said".as_slice()),
+            "the whole transcript"
+        );
+        assert!(
+            !held.contains_key("segments/transcript.txt.partial"),
+            "no partial file left"
+        );
+    }
+
+    #[test]
+    fn a_transcript_that_cannot_be_renamed_into_place_is_an_error() {
+        let files = FakeFiles::default();
+        files.fail_rename.set(true);
+        assert!(
+            save_transcript(&files, "said").is_err(),
+            "the rename failed"
+        );
+        assert!(
+            !files.files.borrow().contains_key("segments/transcript.txt"),
+            "no transcript"
+        );
+    }
 }

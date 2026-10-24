@@ -21,6 +21,7 @@ cd apps/desktop && pnpm dev          # the frontend in a browser, on the mock
 bash scripts/install.sh              # release build, verify the signature, install to /Applications
 bash scripts/fetch-model.sh          # download the speech model into the app data folder (never in the gate)
 bash scripts/smoke.sh                # real-model check: `say` + ffmpeg + the app's Whisper adapter
+bash scripts/exit-check.sh [--control]   # Mac exit check: quitting with the model loaded must not abort
 ./release.sh                         # cut a release (cog bump --auto, tag, push)
 ```
 
