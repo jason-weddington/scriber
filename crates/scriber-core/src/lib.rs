@@ -9,7 +9,7 @@
 //! The feature is dictation: [`dictation::Dictation`] is the session's state
 //! machine, [`audio`] turns captured sound into 16 kHz mono and WAV files,
 //! [`transcript`] filters and joins what the transcriber heard,
-//! [`vocabulary`] builds the transcriber's prompt from the user's glossary,
+//! [`vocabulary`] builds the transcriber's prompt: a style sentence for punctuation, then the user's glossary,
 //! [`store`] lays out the data folder, [`level`] meters the microphone for
 //! the window's waveform, [`download`] fetches and verifies a missing speech
 //! model, and [`sync`] holds the model that loads once for every caller.

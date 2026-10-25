@@ -16,7 +16,7 @@ crates/scriber-core          all logic; no Tauri, no async runtime, no direct I/
   src/download.rs            the speech model's download: stream, verify size and SHA-256, rename
   src/sync.rs                a lock that survives a panic; the model that loads once for every caller
   src/transcript.rs          the silence and hallucination filters, paragraph joining
-  src/vocabulary.rs          the glossary prompt
+  src/vocabulary.rs          the transcriber prompt: style sentence plus glossary
   src/store.rs               the data folder's layout (segments, glossary, model path)
   src/model.rs               the values that cross the bridge (serde, camelCase)
   src/ports.rs               Recorder, Transcriber, Files, Clipboard, JobQueue, Downloader
@@ -112,7 +112,7 @@ In `crates/scriber-core/src/transcript.rs`, all constants pinned by tests:
 
 ### Glossary
 
-`vocabulary.txt` in the data folder, read at each New and Discard (and at launch for a recovered session). One term per line; surrounding whitespace is trimmed; blank lines and lines whose first non-blank character is `#` are ignored; control characters are removed from terms. The prompt is `Glossary: term1, term2, ...`, built in file order while it stays within 500 characters; the first term that would overflow ends the list. No terms, a missing file, an unreadable file or one that is not UTF-8 gives no prompt. In the smoke check the prompt turned "Talus" into "talos" and "Agent GTD" into "agent-gtd".
+`vocabulary.txt` in the data folder, read at each New and Discard (and at launch for a recovered session). One term per line; surrounding whitespace is trimmed; blank lines and lines whose first non-blank character is `#` are ignored; control characters are removed from terms. The prompt is the style sentence `Okay, here's what I need. First, check the board; then, once it's done, let me know.` followed, when there are terms, by one space and `Glossary: term1, term2, ...` with a period after the last term, built in file order while the whole prompt stays within 500 characters; the first term that would overflow ends the list. The style sentence uses part of that budget, leaving 404 characters for the terms, separators and trailing period after `Glossary: `, and terms past it are dropped in file order. No terms, a missing file, an unreadable file or one that is not UTF-8 gives the style sentence alone. Measured 2026-10-25 on a 44 s segment with ggml-large-v3-turbo: without a prompt long run-on stretches lost periods and commas, the style sentence plus a glossary restored them, and the style sentence alone produced "gonna". With a glossary-only prompt the smoke check turned "Talus" into "talos" and "Agent GTD" into "agent-gtd".
 
 ### Delivery
 

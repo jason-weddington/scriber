@@ -1,6 +1,10 @@
-//! The transcriber's initial prompt, built from the user's glossary file
+//! The transcriber's initial prompt: a fixed style sentence that primes punctuation, then the user's glossary file
 //! (`vocabulary.txt` in the app's data folder). Naming the terms up front
 //! makes Whisper spell project names and jargon the way the user does.
+
+/// A punctuated sentence the prompt always starts with, so Whisper writes periods and commas. Measured against real audio: do not edit.
+pub const STYLE: &str =
+    "Okay, here's what I need. First, check the board; then, once it's done, let me know.";
 
 /// What the prompt starts with.
 pub const PREFIX: &str = "Glossary: ";
@@ -12,17 +16,18 @@ pub const SEPARATOR: &str = ", ";
 /// tokens of prompt; 500 characters stays well inside that.
 pub const MAX_PROMPT_CHARS: usize = 500;
 
-/// The prompt for a glossary file's contents: `Glossary: a, b, c`.
+/// The prompt for a glossary file's contents: "<STYLE> Glossary: a, b, c.", or [`STYLE`] alone when there are no terms.
 ///
 /// One term per line, surrounding whitespace trimmed. Blank lines and lines
 /// whose first non-blank character is `#` are ignored, and control
 /// characters are removed from terms. Terms are added in file order while
-/// the prompt stays within [`MAX_PROMPT_CHARS`]; the first term that would
-/// overflow it ends the list. No terms gives no prompt.
+/// the whole prompt (style sentence included) stays within
+/// [`MAX_PROMPT_CHARS`]; the first term that would overflow it ends the
+/// list. No terms gives the style sentence alone.
 #[must_use]
-pub fn prompt(file: &str) -> Option<String> {
-    let mut prompt = String::from(PREFIX);
-    let mut length = PREFIX.chars().count();
+pub fn prompt(file: &str) -> String {
+    let mut prompt = format!("{STYLE} {PREFIX}");
+    let mut length = prompt.chars().count();
     let mut terms = 0usize;
     let cleaned = file
         .lines()
@@ -35,7 +40,7 @@ pub fn prompt(file: &str) -> Option<String> {
         let grown = length
             .saturating_add(separator.chars().count())
             .saturating_add(term.chars().count());
-        if grown > MAX_PROMPT_CHARS {
+        if grown.saturating_add(1) > MAX_PROMPT_CHARS {
             break;
         }
         prompt.push_str(separator);
@@ -43,5 +48,9 @@ pub fn prompt(file: &str) -> Option<String> {
         length = grown;
         terms = terms.saturating_add(1);
     }
-    (terms > 0).then_some(prompt)
+    if terms == 0 {
+        return STYLE.to_string();
+    }
+    prompt.push('.');
+    prompt
 }

@@ -10,6 +10,7 @@ mod tests {
     };
     use scriber_core::model::{Action, Phase, Snapshot};
     use scriber_core::ports::{Captured, PortError};
+    use scriber_core::vocabulary::STYLE;
 
     use crate::common::{World, speech};
 
@@ -382,8 +383,8 @@ mod tests {
         assert_eq!(
             *w.transcriber.calls.borrow(),
             [
-                (16_000, Some("Glossary: talos, agent-gtd".to_string())),
-                (16_000, None),
+                (16_000, Some(format!("{STYLE} Glossary: talos, agent-gtd."))),
+                (16_000, Some(STYLE.to_string())),
             ],
             "samples and prompt per call"
         );
@@ -812,8 +813,28 @@ mod tests {
         );
         assert_eq!(
             w.transcriber.calls.borrow()[0].1.as_deref(),
-            Some("Glossary: talos"),
+            Some(format!("{STYLE} Glossary: talos.").as_str()),
             "with the glossary"
+        );
+    }
+
+    #[test]
+    fn a_recovered_session_without_a_glossary_still_gets_the_style_sentence() {
+        let w = World::default();
+        w.files.set_vocabulary(None);
+        for i in [0u32, 2] {
+            w.files.put_segment(i, encode_wav(&speech(1_600)));
+        }
+        let p = w.ports();
+        let mut d = idle(&w);
+        let jobs = d.retry(&p).unwrap();
+        for job in &jobs {
+            finish(&mut d, &w, job);
+        }
+        assert_eq!(
+            w.transcriber.calls.borrow()[0].1.as_deref(),
+            Some(STYLE),
+            "the style sentence alone"
         );
     }
 

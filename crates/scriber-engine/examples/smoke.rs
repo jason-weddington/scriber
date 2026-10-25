@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use scriber_core::audio::decode_wav;
 use scriber_core::transcript::{is_silent, keep};
+use scriber_core::vocabulary::prompt;
 use scriber_engine::{Transcriber, Whisper};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,13 +37,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let first = Instant::now();
     let heard = whisper.transcribe(&samples, None)?;
     let first = first.elapsed();
-    writeln!(out, "first transcription after the warm-up: {first:.2?}")?;
+    writeln!(
+        out,
+        "first transcription after the warm-up, no prompt: {first:.2?}"
+    )?;
     writeln!(out, "text: {:?}", keep(samples.len(), &heard))?;
 
-    let warm = Instant::now();
-    let second = whisper.transcribe(&samples, Some("Glossary: Scriber, talos, agent-gtd"))?;
-    let warm = warm.elapsed();
-    writeln!(out, "warm, with a glossary prompt: {warm:.2?}")?;
-    writeln!(out, "text: {:?}", keep(samples.len(), &second))?;
+    let style = prompt("");
+    let glossary = prompt("Scriber\ntalos\nagent-gtd");
+    let runs = [
+        ("style sentence only", &style),
+        ("style sentence and a glossary", &glossary),
+    ];
+    for (label, p) in runs {
+        writeln!(out, "prompt: {p:?}")?;
+        let start = Instant::now();
+        let again = whisper.transcribe(&samples, Some(p.as_str()))?;
+        let elapsed = start.elapsed();
+        writeln!(out, "{label}: {elapsed:.2?}")?;
+        writeln!(out, "text: {:?}", keep(samples.len(), &again))?;
+    }
     Ok(())
 }

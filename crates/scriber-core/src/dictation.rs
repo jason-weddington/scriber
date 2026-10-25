@@ -332,7 +332,7 @@ impl Dictation {
                 .iter()
                 .map(|i| (*i, Slot::Failed("interrupted".to_string())))
                 .collect();
-            this.prompt = store::vocabulary(ports.files).as_deref().and_then(prompt);
+            this.prompt = Some(prompt(&store::vocabulary(ports.files).unwrap_or_default()));
             this.phase = Phase::Failed;
             this.error = Some(format!(
                 "The last session was not transcribed. Retry to transcribe its {} recorded {}, or start a new session.",
@@ -428,7 +428,7 @@ impl Dictation {
         self.slots.clear();
         self.next_index = 0;
         self.recorded_ms = 0;
-        self.prompt = store::vocabulary(ports.files).as_deref().and_then(prompt);
+        self.prompt = Some(prompt(&store::vocabulary(ports.files).unwrap_or_default()));
         self.text.clear();
         self.error = None;
         self.notice = None;
