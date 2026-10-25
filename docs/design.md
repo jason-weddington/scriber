@@ -15,7 +15,7 @@ crates/scriber-core          all logic; no Tauri, no async runtime, no direct I/
   src/level.rs               the live input level: 50 ms RMS windows in dBFS, the recorder's tap
   src/download.rs            the speech model's download: stream, verify size and SHA-256, rename
   src/sync.rs                a lock that survives a panic; the model that loads once for every caller
-  src/transcript.rs          the silence and hallucination filters, paragraph joining
+  src/transcript.rs          the silence, hallucination and no-letter filters, paragraph joining
   src/vocabulary.rs          the transcriber prompt: style sentence plus glossary
   src/store.rs               the data folder's layout (segments, glossary, model path)
   src/model.rs               the values that cross the bridge (serde, camelCase)
@@ -108,7 +108,7 @@ In `crates/scriber-core/src/transcript.rs`, all constants pinned by tests:
 
 - **Silence.** A segment is silent when no 100 ms window (1,600 samples) reaches an RMS of 0.01 (-40 dBFS). A silent segment is never sent to the transcriber. Windowing keeps a few words in a long quiet segment from being averaged away.
 - **Hallucinations.** Whisper invents text for silence and noise. A segment shorter than 10 s whose whole text, trimmed and ignoring ASCII case, is one of "Thank you.", "Thank you", "Thank you very much.", "Thanks for watching!", "Thanks for watching.", "Thank you for watching.", "Thank you for watching!", "Bye.", "you", "[BLANK_AUDIO]", "(silence)" or "Subtitles by the Amara.org community" is treated as silent. The same words inside longer text, or in a segment of 10 s or more, are kept.
-- Text is trimmed; empty text is treated as silent.
+- **No letters or digits.** Text is trimmed; empty text, and text with no letter or digit (no char for which `char::is_alphanumeric` is true), is treated as silent at any segment length. Measured 2026-10-25: a 1.5 s noise thump above the silence level transcribed as "you" without a prompt and as "." with the style prompt.
 
 ### Glossary
 

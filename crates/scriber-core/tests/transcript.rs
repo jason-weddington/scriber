@@ -113,6 +113,33 @@ mod tests {
     }
 
     #[test]
+    fn text_without_a_letter_or_digit_is_dropped_at_any_length() {
+        for n in [16_000, SHORT_SEGMENT] {
+            for t in [".", "...", " . ", "?!", "-", "\u{2014}"] {
+                assert_eq!(keep(n, t), None, "{t:?} at {n} samples");
+            }
+        }
+    }
+
+    #[test]
+    fn text_with_a_letter_or_digit_is_kept_trimmed() {
+        for n in [16_000, SHORT_SEGMENT] {
+            for (heard, kept) in [
+                ("1.", "1."),
+                ("\u{e9}.", "\u{e9}."),
+                ("OK.", "OK."),
+                (" OK. ", "OK."),
+            ] {
+                assert_eq!(
+                    keep(n, heard),
+                    Some(kept.to_string()),
+                    "{heard:?} at {n} samples"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn segments_join_as_paragraphs_in_order() {
         assert_eq!(
             join(["one", "two", "three"]),

@@ -134,7 +134,7 @@ impl Job {
     }
 
     /// Does the work. A silent segment is not sent to the transcriber, and a
-    /// hallucination is dropped (see [`crate::transcript`]). A download
+    /// hallucination or text with no letter or digit is dropped (see [`crate::transcript`]). A download
     /// calls `progress` with the bytes received as each whole percent
     /// arrives (see [`download::fetch`]). The warm-up's outcome changes
     /// nothing: a model that failed to load is loaded again by the first

@@ -2,7 +2,9 @@
 //!
 //! Whisper invents text for silence ("Thank you.") rather than returning
 //! nothing, so a silent segment is never sent to it, and a short segment
-//! whose whole text is a known invention is dropped.
+//! whose whole text is a known invention is dropped. Text with no letter or
+//! digit is dropped at any length: Whisper primed with the punctuated style
+//! prompt returns punctuation such as "." for noise.
 
 /// The silence test looks at windows of this many samples (100 ms).
 pub const SILENCE_WINDOW: usize = 1_600;
@@ -50,14 +52,15 @@ pub fn is_silent(samples: &[f32]) -> bool {
 }
 
 /// The text worth keeping from a segment of `samples` samples that the
-/// transcriber heard as `heard`: trimmed, and `None` when nothing is left or
-/// the segment is short and the text is a known hallucination.
+/// transcriber heard as `heard`: trimmed, and `None` when the text has no
+/// letter or digit (at any length; the style prompt makes Whisper return "."
+/// for noise) or the segment is short and the text is a known hallucination.
 #[must_use]
 pub fn keep(samples: usize, heard: &str) -> Option<String> {
     let text = heard.trim();
     let invented =
         samples < SHORT_SEGMENT && HALLUCINATIONS.iter().any(|h| h.eq_ignore_ascii_case(text));
-    (!text.is_empty() && !invented).then(|| text.to_string())
+    (text.chars().any(char::is_alphanumeric) && !invented).then(|| text.to_string())
 }
 
 /// Segment texts, in recording order, as one transcript.

@@ -369,6 +369,32 @@ mod tests {
     }
 
     #[test]
+    fn a_punctuation_only_segment_leaves_no_paragraph() {
+        let w = World::default();
+        {
+            let mut answers = w.transcriber.answers.borrow_mut();
+            answers.push_back(Ok("Hello.".to_string()));
+            answers.push_back(Ok(" . ".to_string()));
+            answers.push_back(Ok("Goodbye.".to_string()));
+        }
+        let p = w.ports();
+        let (mut d, mut jobs) = at(&w, Phase::Paused);
+        for _ in 0..2 {
+            d.resume(&p).unwrap();
+            jobs.push(d.pause(&p).unwrap().unwrap());
+        }
+        let _none = d.done(&p).unwrap();
+        for job in &jobs {
+            finish(&mut d, &w, job);
+        }
+        assert_eq!(
+            snap(&d, &w).text,
+            "Hello.\n\nGoodbye.",
+            "the punctuation-only segment leaves no paragraph"
+        );
+    }
+
+    #[test]
     fn the_glossary_becomes_the_prompt_and_is_reread_for_each_session() {
         let w = World::default();
         w.files.set_vocabulary(Some("talos\nagent-gtd\n"));
