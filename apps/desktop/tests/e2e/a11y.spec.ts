@@ -100,6 +100,32 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
+    test('the library open and empty', async ({ page }) => {
+      await open(page);
+      await expect(page.getByRole('navigation', { name: 'Recordings' })).toContainText('No recordings yet.');
+      await expectNoViolations(page);
+    });
+
+    test('the library open with entries', async ({ page }) => {
+      await open(page, { library: '3' });
+      await expect(page.locator('#library li')).toHaveCount(3);
+      await expectNoViolations(page);
+    });
+
+    test('a library entry selected', async ({ page }) => {
+      await open(page, { library: '3' });
+      await page.locator('#library li').nth(1).getByRole('button').click();
+      await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue('This is preloaded recording number 2.');
+      await expectNoViolations(page);
+    });
+
+    test('the settings panel open', async ({ page }) => {
+      await open(page, { library: '3' });
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await expect(page.getByRole('switch')).toBeVisible();
+      await expectNoViolations(page);
+    });
+
     test('session unreadable', async ({ page }) => {
       await open(page, { fail: 'dictation_state' });
       await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();

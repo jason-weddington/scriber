@@ -177,3 +177,30 @@ test('keys before the session has loaded do nothing', async ({ page }) => {
   await expect(status(page)).toHaveText('Click New to start a dictation.');
   expect(await acts(page)).toEqual([]);
 });
+
+test('Space on the focused summaries switch toggles it and sends no action', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await button(page, 'Settings').click();
+  const toggle = page.getByRole('switch', { name: 'Summarize recordings with local AI (Ollama)' });
+  await toggle.focus();
+  await key(page, 'Space');
+  await expect(toggle).not.toBeChecked();
+  expect(await acts(page)).toEqual(['new']);
+});
+
+test('Space and Return while a library entry is shown send no action', async ({ page }) => {
+  await open(page, { library: '1' });
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await page.locator('#library li').first().getByRole('button').click();
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue('This is preloaded recording number 1.');
+  await page.locator('body').click({ position: { x: 300, y: 200 } });
+  await key(page, 'Space');
+  await key(page, 'Enter');
+  expect(await acts(page)).toEqual(['new']);
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  expect(await acts(page), 'ready: ⌘N only goes back').toEqual(['new']);
+});

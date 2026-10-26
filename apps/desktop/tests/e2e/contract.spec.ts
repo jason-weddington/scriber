@@ -79,6 +79,16 @@ const CALLS: Call[] = [
   { fn: 'act', args: ['pause'], command: 'dictation_act', sent: { action: 'pause', text: '' } },
   { fn: 'act', args: ['copy', 'Edited.'], command: 'dictation_act', sent: { action: 'copy', text: 'Edited.' } },
   { fn: 'act', args: ['downloadModel'], command: 'dictation_act', sent: { action: 'downloadModel', text: '' } },
+  { fn: 'libraryList', args: [], command: 'library_list', sent: {} },
+  { fn: 'libraryGet', args: ['20261026-140309'], command: 'library_get', sent: { id: '20261026-140309' } },
+  { fn: 'libraryCopy', args: ['20261026-140309'], command: 'library_copy', sent: { id: '20261026-140309' } },
+  { fn: 'settingsGet', args: [], command: 'settings_get', sent: {} },
+  {
+    fn: 'settingsSet',
+    args: [{ summaries: false, libraryOpen: true }],
+    command: 'settings_set',
+    sent: { settings: { summaries: false, libraryOpen: true } },
+  },
 ];
 
 const SNAPSHOT = {
@@ -92,6 +102,7 @@ const SNAPSHOT = {
   notice: null,
   modelError: null,
   download: null,
+  libraryRevision: 0,
 };
 
 test.describe('bridge.ts against the Rust command signatures', () => {

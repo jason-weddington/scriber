@@ -35,7 +35,7 @@ function synthetic(n: number): number {
 
 test('the waveform appears while recording, newest bar on the right, as loud as the input', async ({ page }) => {
   await page.clock.install({ time: 0 });
-  await open(page);
+  await open(page, { libraryOpen: '0' });
   await page.clock.pauseAt(60_000);
   await press(page, 'New');
   await expect(page.locator('.meter')).toHaveCount(0);
@@ -75,7 +75,7 @@ test('the waveform appears while recording, newest bar on the right, as loud as 
 
 test('the waveform keeps the newest bars as it scrolls', async ({ page }) => {
   await page.clock.install({ time: 0 });
-  await open(page);
+  await open(page, { libraryOpen: '0' });
   await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
   await expect(page.locator('.wave')).toHaveAttribute('data-slots', '232');
@@ -89,7 +89,7 @@ test('the waveform keeps the newest bars as it scrolls', async ({ page }) => {
 test('a narrow window draws fewer bars', async ({ page }) => {
   await page.setViewportSize({ width: 520, height: 640 });
   await page.clock.install({ time: 0 });
-  await open(page);
+  await open(page, { libraryOpen: '0' });
   await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
   await expect.poll(() => page.locator('.wave').evaluate((e) => e.clientWidth)).toBe(488);
@@ -100,7 +100,7 @@ test('a narrow window draws fewer bars', async ({ page }) => {
 test('the bars are red while recording and grey while paused', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
   await page.clock.install({ time: 0 });
-  await open(page);
+  await open(page, { libraryOpen: '0' });
   await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
   await page.clock.runFor(LEVEL_MS * 3);
@@ -111,7 +111,7 @@ test('the bars are red while recording and grey while paused', async ({ page }) 
 
 test('Pause freezes the waveform, Resume carries on, Discard and New clear it', async ({ page }) => {
   await page.clock.install({ time: 0 });
-  await open(page);
+  await open(page, { libraryOpen: '0' });
   await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
   await page.clock.runFor(LEVEL_MS * 6);
@@ -138,7 +138,7 @@ test('Pause freezes the waveform, Resume carries on, Discard and New clear it', 
 test('with reduced motion, one level bar replaces the scrolling waveform', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.clock.install({ time: 0 });
-  await open(page);
+  await open(page, { libraryOpen: '0' });
   await page.clock.pauseAt(60_000);
   await press(page, 'New', 'Record');
   await page.clock.runFor(LEVEL_MS * 3);
@@ -149,7 +149,7 @@ test('with reduced motion, one level bar replaces the scrolling waveform', async
 });
 
 test('the waveform is hidden from screen readers, which hear a status instead', async ({ page }) => {
-  await open(page);
+  await open(page, { libraryOpen: '0' });
   await press(page, 'New', 'Record');
   await expect(page.locator('.wave')).toHaveAttribute('aria-hidden', 'true');
   await expect(page.locator('.level')).toHaveAttribute('aria-hidden', 'true');

@@ -13,13 +13,18 @@
 //! [`store`] lays out the data folder, [`level`] meters the microphone for
 //! the window's waveform, [`download`] fetches and verifies a missing speech
 //! model, and [`sync`] holds the model that loads once for every caller.
+//! With the library on, [`library`] keeps every finished session (titled by
+//! its start, summarized by a local model or an excerpt, its audio
+//! compressed) and [`settings`] holds the user's settings.
 
 pub mod audio;
 pub mod dictation;
 pub mod download;
 pub mod level;
+pub mod library;
 pub mod model;
 pub mod ports;
+pub mod settings;
 pub mod store;
 pub mod sync;
 pub mod transcript;

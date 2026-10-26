@@ -1,6 +1,6 @@
 # Scriber
 
-A macOS dictation app built with Rust, Tauri 2 and Svelte 5. Click New, Record, talk, Pause, think, Resume, talk more, then Done: the transcript appears in the window and is already on the clipboard. Transcription is local, with whisper.cpp (`large-v3-turbo`) on the GPU through Metal; nothing leaves the Mac. `docs/design.md` has the details.
+A macOS dictation app built with Rust, Tauri 2 and Svelte 5. Click New, Record, talk, Pause, think, Resume, talk more, then Done: the transcript appears in the window and is already on the clipboard. Transcription is local, with whisper.cpp (`large-v3-turbo`) on the GPU through Metal; nothing leaves the Mac. Every finished dictation is kept in a library, a drawer on the left of the window, titled by when it started, with a one-sentence summary and its audio as M4A. `docs/design.md` has the details.
 
 ## Prerequisites
 
@@ -40,6 +40,12 @@ bash scripts/fetch-model.sh
 The app downloads `ggml-large-v3-turbo.bin` (1.6 GB) itself the first time it launches without it, showing the progress, and verifies its size and SHA-256 before using it; Record works once it is done. The script does the same from a terminal, into `~/Library/Application Support/com.jasonweddington.scriber/models/`, where the app looks for it. `bash scripts/smoke.sh` then checks the real model end to end: it speaks a sentence with `say`, converts it with ffmpeg and prints what the engine's Whisper adapter hears, with timings.
 
 An optional glossary, `vocabulary.txt` in the same folder (one term per line, `#` comments), steers the spelling of names and jargon.
+
+## The recording library
+
+Each finished dictation with a transcript is kept in `library/<id>/` in the same folder: its transcript, its audio (AAC in M4A, made with macOS's `afconvert`; kept as WAV if that fails) and an `entry.json` with its title (the session's start, `2026-10-26 14:03:09`) and summary. The drawer lists them newest first; select one to read or copy its transcript, and New (or ⌘N) goes back to the recorder. The Library button in the band shows and hides the drawer.
+
+Summaries come from a local [Ollama](https://ollama.com) server, if one is running at `http://127.0.0.1:11434` with the `qwen3.8:27b-mlx` model (`ollama pull qwen3.8:27b-mlx`). Until a summary arrives, or when Ollama is not running, an entry shows the first words of its transcript instead. The switch "Summarize recordings with local AI (Ollama)" in the Settings panel (the gear) turns summaries off for new recordings. Nothing is sent anywhere but that local server.
 
 ## Develop
 
@@ -108,6 +114,8 @@ fn main() -> Result<(), scriber_engine::EngineError> {
 ```
 
 Call `engine.shutdown()` on every path before the process exits: on macOS whisper.cpp's Metal context aborts the process at exit unless the engine is shut down first (dropping the handles is not enough).
+
+The recording library is off by default in the engine; set `EngineConfig::library` to keep finished sessions (and `ollama_url` and `summary_model` to point the summaries elsewhere), then read it with `engine.library()`, `library_transcript(id)` and `library_copy(id)`.
 
 `EngineConfig::model` takes `ModelSource::Local(path)` to use a model file already on disk (nothing is downloaded), or `ModelSource::Download(Source { url, bytes, sha256 })` for a mirror; the default downloads `large-v3-turbo` from Hugging Face. `docs/design.md` (Engine API) has the threading contract and the rest.
 

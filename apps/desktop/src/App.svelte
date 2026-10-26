@@ -2,10 +2,24 @@
   // The dictation screen: New, Record, Pause, Resume, Done; the transcript
   // appears in an editable box and is already on the clipboard. Every rule
   // lives in the core; this file shows its snapshot and sends the user's
-  // actions. Patterns: docs/tauri-design-notes.md.
+  // actions. Patterns: docs/tauri-design-notes.md. The library drawer on the
+  // left lists past dictations; selecting one shows it in place of the
+  // recorder until New.
   import { onMount } from 'svelte';
 
-  import { act, appVersion, dictationState, errorText, onDictationChanged, onLevel } from './lib/bridge';
+  import {
+    act,
+    appVersion,
+    dictationState,
+    errorText,
+    libraryCopy,
+    libraryGet,
+    libraryList,
+    onDictationChanged,
+    onLevel,
+    settingsGet,
+    settingsSet,
+  } from './lib/bridge';
   import {
     allowed,
     bars,
@@ -18,7 +32,9 @@
     SHORTCUTS,
     statusText,
   } from './lib/format';
-  import type { Action, Snapshot } from './lib/types';
+  import LibraryDrawer from './lib/LibraryDrawer.svelte';
+  import SettingsPanel from './lib/SettingsPanel.svelte';
+  import type { Action, LibraryEntry, Settings, Snapshot } from './lib/types';
 
   let snapshot = $state<Snapshot | null>(null);
   let loadError = $state<string | null>(null);
@@ -43,8 +59,26 @@
   // focused element match it.)
   let pointerDown = false;
   let focusFromPointer = false;
-  // Where Space and Return type rather than act.
-  const TEXT_FIELDS = 'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset])';
+  // Where Space and Return type rather than act (a switch toggles on Space).
+  const TEXT_FIELDS =
+    'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
+
+  // The settings, as last read or chosen; the defaults until they load.
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true });
+  let settingsOpen = $state(false);
+  let settingsError = $state<string | null>(null);
+  // A failure to save the drawer's open state, shown in the band.
+  let toggleError = $state<string | null>(null);
+  let entries = $state<LibraryEntry[]>([]);
+  let libraryError = $state<string | null>(null);
+  // The highest libraryRevision the list has been fetched for.
+  let listedRevision = -1;
+  // Which fetch is the latest, so a slow earlier answer cannot overwrite it.
+  let listing = 0;
+  // The library entry shown in place of the recorder, if any.
+  let entry = $state<{ id: string; title: string; transcript: string | null } | null>(null);
+  let entryError = $state<string | null>(null);
+  let entryCopied = $state(false);
 
   const elapsed = $derived(
     snapshot === null ? 0 : snapshot.recordedMs + (recordingSince === null ? 0 : Math.max(0, now - recordingSince)),
@@ -60,6 +94,85 @@
     if (next.phase !== 'recording' && next.phase !== 'paused') levels = [];
     if (next.phase === 'finished' && (snapshot?.phase !== 'finished' || snapshot.text !== next.text)) draft = next.text;
     snapshot = next;
+    if (next.libraryRevision > listedRevision) void list(next.libraryRevision);
+  }
+
+  /** Fetches the library for `revision`; only the latest fetch is kept. */
+  async function list(revision: number): Promise<void> {
+    listedRevision = Math.max(listedRevision, revision);
+    listing += 1;
+    const mine = listing;
+    try {
+      const got = await libraryList();
+      if (mine !== listing) return;
+      entries = got;
+      libraryError = null;
+    } catch (e) {
+      if (mine === listing) libraryError = errorText(e);
+    }
+  }
+
+  function toggleLibrary(): void {
+    settings = { ...settings, libraryOpen: !settings.libraryOpen };
+    settingsSet(settings).then(
+      () => {
+        toggleError = null;
+      },
+      (e: unknown) => {
+        toggleError = errorText(e);
+      },
+    );
+  }
+
+  function setSummaries(on: boolean): void {
+    settings = { ...settings, summaries: on };
+    settingsSet(settings).then(
+      () => {
+        settingsError = null;
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
+      },
+    );
+  }
+
+  /** Whether library entry `id` is the one shown (another may have been chosen meanwhile). */
+  function showing(id: string): boolean {
+    return entry !== null && entry.id === id;
+  }
+
+  /** Shows library entry `chosen` in place of the recorder. */
+  async function select(chosen: LibraryEntry): Promise<void> {
+    entry = { id: chosen.id, title: chosen.title, transcript: null };
+    entryError = null;
+    entryCopied = false;
+    try {
+      const transcript = await libraryGet(chosen.id);
+      if (showing(chosen.id)) entry = { id: chosen.id, title: chosen.title, transcript };
+    } catch (e) {
+      if (showing(chosen.id)) entryError = errorText(e);
+    }
+  }
+
+  function pick(chosen: LibraryEntry): void {
+    void select(chosen);
+  }
+
+  async function copyEntry(id: string): Promise<void> {
+    entryCopied = false;
+    try {
+      await libraryCopy(id);
+      entryError = null;
+      entryCopied = true;
+    } catch (e) {
+      entryError = errorText(e);
+    }
+  }
+
+  /** New: back to the recorder from an entry, and a new session when the phase allows one. */
+  function newPressed(): void {
+    entry = null;
+    if (can('new')) void run('new');
   }
 
   /** A level from the microphone; one that arrives after Pause is dropped, so the waveform freezes. */
@@ -93,6 +206,14 @@
   onMount(() => {
     void onDictationChanged(accept);
     void onLevel(hear);
+    void list(0);
+    // Unreadable settings leave the defaults, silently.
+    settingsGet().then(
+      (s) => {
+        settings = s;
+      },
+      () => undefined,
+    );
     void load();
     // The footer stays empty when the version cannot be read.
     appVersion().then(
@@ -145,6 +266,18 @@
   // Return for itself. A held key's repeats are swallowed.
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === 'Tab') pointerDown = false;
+    if (e.key === 'Escape' && settingsOpen) {
+      settingsOpen = false;
+      return;
+    }
+    if (entry !== null) {
+      // An entry is shown: only ⌘N (back to the recorder) acts.
+      if (shortcut(e, 'idle', true) === 'new') {
+        e.preventDefault();
+        if (!e.repeat) newPressed();
+      }
+      return;
+    }
     if (snapshot === null) return;
     const action = shortcut(e, snapshot.phase, ownsKeys(e.target));
     if (action === null) return;
@@ -173,24 +306,28 @@
 />
 
 <div class="window">
-  <header class="band" data-tauri-drag-region>
-    <h1 data-tauri-drag-region>Dictation</h1>
-    {#if snapshot !== null && snapshot.phase !== 'idle'}
-      <span class="time" class:live={snapshot.phase === 'recording'} title="Recorded time" data-tauri-drag-region>
-        <span class="visually-hidden">Recorded&nbsp;</span>{formatElapsed(elapsed)}
-      </span>
-    {/if}
-    <button type="button" onclick={() => run('new')} disabled={!can('new')} aria-keyshortcuts={SHORTCUTS.new?.aria}>
-      New<kbd aria-hidden="true">{SHORTCUTS.new?.hint}</kbd>
-    </button>
-  </header>
-
+  <!-- The recorder (or an entry) comes first in the document, so Tab reaches
+       its controls before the band's; the grid shows the band on top. -->
   <main>
-    {#if loadError !== null}
+    {#if entry !== null}
+      <h2 class="entry-heading">{entry.title}</h2>
+      {#if entryError !== null}
+        <p class="error" role="alert">{entryError}</p>
+      {/if}
+      {#if entry.transcript !== null}
+        <div class="transcript">
+          <div class="transcript-head">
+            <label for="entry-transcript">Transcript</label>
+            <button type="button" class="primary" onclick={() => copyEntry(entry?.id ?? '')}>Copy</button>
+          </div>
+          <textarea id="entry-transcript" readonly value={entry.transcript}></textarea>
+        </div>
+        <p class="entry-status" aria-live="polite">{entryCopied ? 'Copied to the clipboard.' : ''}</p>
+      {/if}
+    {:else if loadError !== null}
       <p class="error" role="alert">Could not read the session: {loadError}</p>
       <button type="button" onclick={load}>Try again</button>
-    {:else if snapshot !== null}
-      {#if snapshot.download !== null}
+    {:else if snapshot !== null}      {#if snapshot.download !== null}
         <div class="download">
           <p class="download-text" id="download-text">{downloadText(snapshot.download)}</p>
           <progress max="100" value={percent(snapshot.download)} aria-labelledby="download-text"></progress>
@@ -272,6 +409,61 @@
       {/if}
     {/if}
   </main>
+
+  <LibraryDrawer
+    {entries}
+    open={settings.libraryOpen}
+    selected={entry?.id ?? null}
+    error={libraryError}
+    onselect={pick}
+  />
+
+  <header class="band" data-tauri-drag-region>
+    <button
+      type="button"
+      class="icon"
+      aria-label="Library"
+      aria-expanded={settings.libraryOpen}
+      aria-controls="library"
+      onclick={toggleLibrary}
+    >
+      <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
+        <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" />
+        <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" />
+      </svg>
+    </button>
+    <h1 data-tauri-drag-region>Dictation</h1>
+    {#if toggleError !== null}
+      <p class="error" role="alert">{toggleError}</p>
+    {/if}
+    {#if snapshot !== null && snapshot.phase !== 'idle' && entry === null}
+      <span class="time" class:live={snapshot.phase === 'recording'} title="Recorded time" data-tauri-drag-region>
+        <span class="visually-hidden">Recorded&nbsp;</span>{formatElapsed(elapsed)}
+      </span>
+    {/if}
+    <button type="button" onclick={newPressed} disabled={entry === null && !can('new')} aria-keyshortcuts={SHORTCUTS.new?.aria}>
+      New<kbd aria-hidden="true">{SHORTCUTS.new?.hint}</kbd>
+    </button>
+    <button
+      type="button"
+      class="icon"
+      aria-label="Settings"
+      aria-expanded={settingsOpen}
+      aria-controls="settings"
+      onclick={() => {
+        settingsOpen = !settingsOpen;
+      }}
+    >
+      <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
+        <circle cx="8" cy="8" r="2.5" fill="none" stroke="currentColor" />
+        <path
+          d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"
+          stroke="currentColor"
+        />
+      </svg>
+    </button>
+    <SettingsPanel {settings} open={settingsOpen} error={settingsError} onsummaries={setSummaries} />
+  </header>
 
   {#if version !== ''}
     <footer>Version {version}</footer>

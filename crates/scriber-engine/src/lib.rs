@@ -9,6 +9,15 @@
 //! no Tauri. The Scriber desktop app (`apps/desktop/src-tauri`) is one thin
 //! client over this crate.
 //!
+//! With [`EngineConfig::library`] on, every finished session with a
+//! transcript is kept in the data folder's recording library
+//! ([`Engine::library`]): titled by its start in local time, its audio
+//! encoded as M4A by macOS's `afconvert` (kept as WAV where that is
+//! missing) and summarized in one sentence by a local Ollama server (an
+//! excerpt of the transcript where that is unreachable). It is off by
+//! default, so an app that embeds the engine keeps no audio it did not ask
+//! for.
+//!
 //! ```rust,no_run
 //! use std::sync::{Arc, Mutex, mpsc};
 //! use std::time::Duration;
@@ -31,9 +40,12 @@
 //! # Ok::<(), scriber_engine::EngineError>(())
 //! ```
 
+mod clock;
 mod device;
+mod encode;
 mod files;
 mod net;
+mod ollama;
 mod whisper;
 
 use std::path::PathBuf;
@@ -42,18 +54,24 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use scriber_core::dictation::{Dictation, Job, work};
-use scriber_core::ports::{JobQueue, Ports};
+use scriber_core::library;
+use scriber_core::ports::{JobQueue, Library, Ports};
+use scriber_core::settings;
 use scriber_core::store::MODEL;
 use scriber_core::sync::lock;
 
+pub use clock::LocalClock;
 pub use device::CpalRecorder;
+pub use encode::{AFCONVERT, Afconvert};
 pub use files::DataDir;
 pub use net::HttpDownloader;
+pub use ollama::{Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT};
 pub use scriber_core::dictation::DictationError;
 pub use scriber_core::download::Source;
-pub use scriber_core::model::{Action, Download, Phase, Snapshot};
+pub use scriber_core::model::{Action, Download, LibraryEntry, Phase, Settings, Snapshot};
 pub use scriber_core::ports::{
-    Captured, Clipboard, Downloader, Files, PortError, Recorder, Transcriber, fail,
+    Captured, Clipboard, Clock, Downloader, Encoder, Files, LocalTime, PortError, Recorder,
+    Summarizer, Transcriber, fail,
 };
 pub use whisper::Whisper;
 
@@ -77,6 +95,12 @@ impl Default for ModelSource {
     }
 }
 
+/// The local Ollama server that summarizes library entries.
+pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
+
+/// The Ollama model that summarizes library entries.
+pub const DEFAULT_SUMMARY_MODEL: &str = "qwen3.8:27b-mlx";
+
 /// How to open an [`Engine`].
 pub struct EngineConfig {
     /// The data folder: the session's audio, its transcript, the glossary
@@ -87,15 +111,27 @@ pub struct EngineConfig {
     /// Where a finished transcript is copied; `None` copies it nowhere
     /// (the snapshot's notice still says "Copied to the clipboard.").
     pub clipboard: Option<Arc<dyn Clipboard + Send + Sync>>,
+    /// Whether finished sessions are kept in the recording library
+    /// (`library/` in the data folder, see [`Engine::library`]).
+    pub library: bool,
+    /// The Ollama server that summarizes library entries.
+    pub ollama_url: String,
+    /// The Ollama model that summarizes library entries.
+    pub summary_model: String,
 }
 
 impl EngineConfig {
-    /// The default model, downloaded into `data_dir`, and no clipboard.
+    /// The default model, downloaded into `data_dir`, no clipboard, and no
+    /// library ([`DEFAULT_OLLAMA_URL`] and [`DEFAULT_SUMMARY_MODEL`] for
+    /// when it is turned on).
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
             model: ModelSource::default(),
             clipboard: None,
+            library: false,
+            ollama_url: DEFAULT_OLLAMA_URL.to_string(),
+            summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
         }
     }
 }
@@ -131,6 +167,13 @@ pub enum EngineError {
     /// The engine was shut down ([`Engine::shutdown`]); nothing more can be done with it.
     #[error("The engine has shut down.")]
     ShutDown,
+    /// The id names no entry in the recording library (or the library is
+    /// off).
+    #[error("That recording is no longer in the library.")]
+    NotInLibrary,
+    /// The settings could not be saved, for this reason.
+    #[error("Could not save the settings: {0}.")]
+    Settings(String),
 }
 
 /// What one [`Engine::shutdown`] call did.
@@ -148,8 +191,9 @@ pub struct ShutdownReport {
 /// Where the recorder reports the input level.
 pub type LevelSink = Arc<dyn Fn(f64) + Send + Sync>;
 
-/// The engine's adapters for the microphone, the transcriber and the
-/// network ([`Engine::with_adapters`] takes others, e.g. fakes).
+/// The engine's adapters for the microphone, the transcriber, the network
+/// and the recording library ([`Engine::with_adapters`] takes others, e.g.
+/// fakes).
 pub struct Adapters {
     /// The microphone.
     pub recorder: Box<dyn Recorder + Send + Sync>,
@@ -157,6 +201,12 @@ pub struct Adapters {
     pub transcriber: Box<dyn Transcriber + Send + Sync>,
     /// The network, for the model's download.
     pub downloader: Box<dyn Downloader + Send + Sync>,
+    /// The local time, naming each library entry.
+    pub clock: Box<dyn Clock + Send + Sync>,
+    /// Compresses each library entry's audio.
+    pub encoder: Box<dyn Encoder + Send + Sync>,
+    /// Summarizes each library entry.
+    pub summarizer: Box<dyn Summarizer + Send + Sync>,
 }
 
 /// A level sink that reports each level to `events` as [`Event::Level`].
@@ -209,20 +259,31 @@ struct Inner {
     queue: Jobs,
     /// Set (with `dictation` held) by [`Engine::shutdown`].
     shut: AtomicBool,
+    /// Whether finished sessions are kept in the library.
+    library: bool,
 }
 
 impl Inner {
     fn ports(&self) -> Ports<'_> {
         let a = &self.adapters;
         let files: &dyn Files = &self.files;
-        Ports::new(
+        let ports = Ports::new(
             &*a.recorder,
             &*a.transcriber,
             files,
             &*self.clipboard,
             &self.queue,
             &*a.downloader,
-        )
+        );
+        if self.library {
+            ports.with_library(Library {
+                clock: &*a.clock,
+                encoder: &*a.encoder,
+                summarizer: &*a.summarizer,
+            })
+        } else {
+            ports
+        }
     }
 }
 
@@ -260,12 +321,18 @@ impl Engine {
             ModelSource::Local(path) => path.clone(),
             ModelSource::Download(_) => config.data_dir.join(MODEL),
         };
+        let data_dir = config.data_dir.clone();
+        let ollama_url = config.ollama_url.clone();
+        let summary_model = config.summary_model.clone();
         Self::with_adapters(
             config,
             move |level| Adapters {
                 recorder: Box::new(CpalRecorder::new(level)),
                 transcriber: Box::new(Whisper::new(path)),
                 downloader: Box::new(HttpDownloader::default()),
+                clock: Box::new(LocalClock),
+                encoder: Box::new(Afconvert::new(PathBuf::from(AFCONVERT), data_dir)),
+                summarizer: Box::new(Ollama::new(&ollama_url, &summary_model)),
             },
             events,
         )
@@ -279,7 +346,8 @@ impl Engine {
     /// use std::sync::Arc;
     ///
     /// use scriber_engine::{
-    ///     Adapters, CpalRecorder, Engine, EngineConfig, HttpDownloader, Whisper,
+    ///     AFCONVERT, Adapters, Afconvert, CpalRecorder, Engine, EngineConfig, HttpDownloader,
+    ///     LocalClock, Ollama, Whisper,
     /// };
     ///
     /// let engine = Engine::with_adapters(
@@ -288,6 +356,9 @@ impl Engine {
     ///         recorder: Box::new(CpalRecorder::new(level)),
     ///         transcriber: Box::new(Whisper::new("/path/to/model.bin".into())),
     ///         downloader: Box::new(HttpDownloader::default()),
+    ///         clock: Box::new(LocalClock),
+    ///         encoder: Box::new(Afconvert::new(AFCONVERT.into(), "/path/to/data".into())),
+    ///         summarizer: Box::new(Ollama::new("http://127.0.0.1:11434", "qwen3.8:27b-mlx")),
     ///     },
     ///     Arc::new(|_event| {}),
     /// );
@@ -303,6 +374,9 @@ impl Engine {
             data_dir,
             model,
             clipboard,
+            library,
+            ollama_url: _,
+            summary_model: _,
         } = config;
         let clipboard = clipboard.unwrap_or_else(|| Arc::new(NoClipboard));
         let inner = Arc::new_cyclic(|weak| Inner {
@@ -314,6 +388,7 @@ impl Engine {
             events,
             queue: Jobs(Weak::clone(weak)),
             shut: AtomicBool::new(false),
+            library,
         });
         let ports = inner.ports();
         // Launched with the lock held, so a job it queues cannot record its
@@ -517,5 +592,63 @@ impl Engine {
             paused_recording,
             freed_model,
         }
+    }
+
+    /// The recording library, newest first; empty when the library is off.
+    /// It does not wait for the session.
+    #[must_use]
+    pub fn library(&self) -> Vec<LibraryEntry> {
+        if self.0.library {
+            library::list(&self.0.files)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The transcript of library entry `id`.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::NotInLibrary`]: the id names no entry, its transcript
+    /// is unreadable, or the library is off.
+    pub fn library_transcript(&self, id: &str) -> Result<String, EngineError> {
+        if !self.0.library {
+            return Err(EngineError::NotInLibrary);
+        }
+        library::transcript(&self.0.files, id).ok_or(EngineError::NotInLibrary)
+    }
+
+    /// Puts library entry `id`'s transcript on the clipboard.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::library_transcript`]'s; [`EngineError::Refused`] with
+    /// [`DictationError::Clipboard`] when the clipboard cannot be written.
+    pub fn library_copy(&self, id: &str) -> Result<(), EngineError> {
+        let text = self.library_transcript(id)?;
+        self.0
+            .clipboard
+            .write(&text)
+            .map_err(|e| EngineError::Refused(DictationError::Clipboard(e)))
+    }
+
+    /// The user's settings (the defaults where none are saved).
+    #[must_use]
+    pub fn settings(&self) -> Settings {
+        settings::load(&self.0.files)
+    }
+
+    /// Saves the user's settings and answers with what was saved.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::Settings`]: the file cannot be written;
+    /// [`EngineError::ShutDown`]: the engine has shut down.
+    pub fn set_settings(&self, s: Settings) -> Result<Settings, EngineError> {
+        if self.0.shut.load(Ordering::SeqCst) {
+            return Err(EngineError::ShutDown);
+        }
+        settings::save(&self.0.files, &s).map_err(|e| EngineError::Settings(e.to_string()))?;
+        Ok(s)
     }
 }

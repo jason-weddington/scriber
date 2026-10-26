@@ -11,10 +11,15 @@ publish = false
 # The logic. A group of its own, so `cargo sort --grouped` keeps it first.
 scriber-core = { path = "../scriber-core" }
 
+# The local time a library entry is named after.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Audio capture from the default input device.
 cpal = "0.18.2"
+# The Ollama request and reply, for a library entry's summary.
+serde_json = "1"
 thiserror = "2"
-# The speech model's download when it is missing: HTTPS, blocking, on a job
+# The speech model's download when it is missing, and the local Ollama
+# summary (plain HTTP to 127.0.0.1): HTTPS, blocking, on a job
 # thread. native-tls is Security.framework on macOS, so the download trusts
 # the system's roots; ureq's default bundles Mozilla's (webpki-roots, under
 # CDLA-Permissive-2.0, which deny.toml does not allow).

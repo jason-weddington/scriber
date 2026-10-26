@@ -13,12 +13,16 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use scriber_engine::{
-        Action, Clipboard, DictationError, Download, Engine, EngineConfig, EngineError, Event,
-        ModelSource, Phase, PortError, ShutdownReport, Source, level_sink,
+        Action, Clipboard, DEFAULT_OLLAMA_URL, DEFAULT_SUMMARY_MODEL, DictationError, Download,
+        Engine, EngineConfig, EngineError, Event, LibraryEntry, ModelSource, Phase, PortError,
+        Settings, ShutdownReport, Source, level_sink,
     };
     use tempfile::TempDir;
 
-    use crate::common::{FakeDownloader, FakeTranscriber, Fakes, PATIENCE, events, until};
+    use crate::common::{
+        FakeDownloader, FakeSummarizer, FakeTranscriber, Fakes, PATIENCE, RecordingClipboard,
+        events, until,
+    };
 
     /// The SHA-256 of b"abcd".
     const ABCD: &str = "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589";
@@ -658,6 +662,230 @@ mod tests {
             ),
             (0, 0, 0),
             "never warmed, never loaded"
+        );
+    }
+
+    fn library_config(dir: &TempDir) -> EngineConfig {
+        EngineConfig {
+            library: true,
+            ..config(dir)
+        }
+    }
+
+    #[test]
+    fn the_library_is_off_by_default_with_ollama_defaults() {
+        let c = EngineConfig::new("/data");
+        assert!(!c.library, "off");
+        assert_eq!(c.ollama_url, "http://127.0.0.1:11434", "url");
+        assert_eq!(c.summary_model, "qwen3.8:27b-mlx", "model");
+        assert_eq!(
+            (DEFAULT_OLLAMA_URL, DEFAULT_SUMMARY_MODEL),
+            ("http://127.0.0.1:11434", "qwen3.8:27b-mlx"),
+            "the constants"
+        );
+        assert_eq!(
+            [
+                EngineError::NotInLibrary.to_string(),
+                EngineError::Settings("disk full".into()).to_string(),
+            ],
+            [
+                "That recording is no longer in the library.",
+                "Could not save the settings: disk full.",
+            ],
+            "sentences"
+        );
+    }
+
+    #[test]
+    fn a_finished_session_is_listed_then_summarized() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, rx) = fakes.open(library_config(&dir));
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "text"
+        );
+        let listed = engine.library();
+        assert_eq!(listed.len(), 1, "one entry: {listed:?}");
+        assert_eq!(
+            listed.first().unwrap().title,
+            "2026-10-26 14:03:09",
+            "titled by the clock"
+        );
+        let _summarized = until(&rx, |s| s.library_revision == 2).unwrap();
+        assert_eq!(
+            engine.library(),
+            [LibraryEntry {
+                id: "20261026-140309".to_string(),
+                title: "2026-10-26 14:03:09".to_string(),
+                summary: "A dictated note.".to_string(),
+            }],
+            "the summary"
+        );
+        assert_eq!(
+            engine.library_transcript("20261026-140309").unwrap(),
+            "hello world",
+            "the transcript"
+        );
+    }
+
+    #[test]
+    fn a_slow_summary_never_holds_up_the_next_session() {
+        let dir = TempDir::new().unwrap();
+        let (summarizer, gate) = FakeSummarizer::gated();
+        let fakes = Fakes {
+            summarizer,
+            ..Fakes::default()
+        };
+        let (engine, _rx) = fakes.open(library_config(&dir));
+        for _ in 0..2 {
+            let _recording = engine.record().unwrap();
+            assert_eq!(
+                engine.stop_and_wait(PATIENCE).unwrap(),
+                "hello world",
+                "text"
+            );
+        }
+        let listed = engine.library();
+        assert_eq!(
+            listed.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["20261026-140309-2", "20261026-140309"],
+            "both listed while the summaries wait"
+        );
+        assert!(
+            listed.iter().all(|e| e.summary == "hello world"),
+            "with their excerpts: {listed:?}"
+        );
+        drop(gate);
+    }
+
+    #[test]
+    fn with_the_library_off_nothing_is_kept() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        let _recording = engine.record().unwrap();
+        let _text = engine.stop_and_wait(PATIENCE).unwrap();
+        assert_eq!(engine.library(), [], "nothing listed");
+        assert!(!dir.path().join("library").exists(), "no library folder");
+        assert_eq!(
+            engine.library_transcript("20261026-140309"),
+            Err(EngineError::NotInLibrary),
+            "no transcript"
+        );
+    }
+
+    #[test]
+    fn an_id_outside_the_library_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(library_config(&dir));
+        write(&dir, "segments/transcript.txt", b"current");
+        for id in ["../segments", "20261026-140309"] {
+            assert_eq!(
+                engine.library_transcript(id),
+                Err(EngineError::NotInLibrary),
+                "{id}"
+            );
+            assert_eq!(
+                engine.library_copy(id),
+                Err(EngineError::NotInLibrary),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn library_copy_puts_the_transcript_on_the_clipboard() {
+        let dir = TempDir::new().unwrap();
+        let board = RecordingClipboard::default();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            clipboard: Some(Arc::new(board.clone())),
+            ..library_config(&dir)
+        });
+        write(
+            &dir,
+            "library/20261026-090000/transcript.txt",
+            b"kept words",
+        );
+        engine.library_copy("20261026-090000").unwrap();
+        assert_eq!(*board.writes.lock().unwrap(), ["kept words"], "copied");
+    }
+
+    #[test]
+    fn a_library_copy_the_clipboard_refuses_is_an_error() {
+        struct Broken;
+        impl Clipboard for Broken {
+            fn write(&self, _text: &str) -> Result<(), PortError> {
+                Err(PortError("pasteboard unavailable".to_string()))
+            }
+        }
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            clipboard: Some(Arc::new(Broken)),
+            ..library_config(&dir)
+        });
+        write(
+            &dir,
+            "library/20261026-090000/transcript.txt",
+            b"kept words",
+        );
+        assert_eq!(
+            engine.library_copy("20261026-090000"),
+            Err(EngineError::Refused(DictationError::Clipboard(PortError(
+                "pasteboard unavailable".to_string()
+            )))),
+            "refused"
+        );
+    }
+
+    #[test]
+    fn settings_round_trip_through_the_data_folder() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        let defaults = Settings {
+            summaries: true,
+            library_open: true,
+        };
+        assert_eq!(engine.settings(), defaults, "the defaults");
+        let off = Settings {
+            summaries: false,
+            library_open: true,
+        };
+        assert_eq!(engine.set_settings(off), Ok(off), "saved");
+        assert_eq!(engine.settings(), off, "read back");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("settings.json")).unwrap(),
+            r#"{"summaries":false,"library_open":true}"#,
+            "snake_case on disk"
+        );
+        let _report = engine.shutdown();
+        assert_eq!(
+            engine.set_settings(defaults),
+            Err(EngineError::ShutDown),
+            "refused after shutdown"
+        );
+        assert_eq!(engine.settings(), off, "still readable after shutdown");
+    }
+
+    #[test]
+    fn settings_that_cannot_be_saved_are_an_error() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        std::fs::create_dir_all(dir.path().join("settings.json")).unwrap();
+        let saved = engine.set_settings(Settings {
+            summaries: false,
+            library_open: false,
+        });
+        assert!(
+            matches!(&saved, Err(EngineError::Settings(_))),
+            "an error: {saved:?}"
         );
     }
 }

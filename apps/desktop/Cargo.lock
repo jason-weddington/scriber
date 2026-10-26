@@ -3449,6 +3449,7 @@ name = "scriber-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "sha2",
  "thiserror 2.0.21",
 ]
@@ -3457,8 +3458,10 @@ dependencies = [
 name = "scriber-engine"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cpal",
  "scriber-core",
+ "serde_json",
  "thiserror 2.0.21",
  "ureq",
  "whisper-rs",

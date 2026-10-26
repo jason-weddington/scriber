@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use scriber_engine::{
-    Action, Clipboard, Engine, EngineConfig, Event, ModelSource, PortError, Snapshot, fail,
+    Action, Clipboard, Engine, EngineConfig, Event, LibraryEntry, PortError, Settings, Snapshot,
+    fail,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -28,7 +29,7 @@ impl Clipboard for SystemClipboard {
 /// The bridge's commands, in a module: `#[tauri::command]` code trips a lint.
 #[expect(clippy::unreachable, reason = "macro expansion")]
 mod commands {
-    use super::{Action, Engine, Snapshot, State};
+    use super::{Action, Engine, LibraryEntry, Settings, Snapshot, State};
 
     /// `dictation_state`: the session as it stands (never an error).
     #[tauri::command]
@@ -44,6 +45,44 @@ mod commands {
         text: String,
     ) -> Result<Snapshot, String> {
         engine.act(action, &text).map_err(|e| e.to_string())
+    }
+
+    /// `library_list`: the recording library, newest first.
+    #[tauri::command]
+    pub(crate) async fn library_list(
+        engine: State<'_, Engine>,
+    ) -> Result<Vec<LibraryEntry>, String> {
+        Ok(engine.library())
+    }
+
+    /// `library_get`: one library entry's transcript.
+    #[tauri::command]
+    pub(crate) async fn library_get(
+        engine: State<'_, Engine>,
+        id: String,
+    ) -> Result<String, String> {
+        engine.library_transcript(&id).map_err(|e| e.to_string())
+    }
+
+    /// `library_copy`: one library entry's transcript, onto the clipboard.
+    #[tauri::command]
+    pub(crate) async fn library_copy(engine: State<'_, Engine>, id: String) -> Result<(), String> {
+        engine.library_copy(&id).map_err(|e| e.to_string())
+    }
+
+    /// `settings_get`: the user's settings.
+    #[tauri::command]
+    pub(crate) async fn settings_get(engine: State<'_, Engine>) -> Result<Settings, String> {
+        Ok(engine.settings())
+    }
+
+    /// `settings_set`: saves the user's settings and answers with them.
+    #[tauri::command]
+    pub(crate) async fn settings_set(
+        engine: State<'_, Engine>,
+        settings: Settings,
+    ) -> Result<Settings, String> {
+        engine.set_settings(settings).map_err(|e| e.to_string())
     }
 }
 
@@ -75,9 +114,9 @@ pub fn run() -> Result<(), tauri::Error> {
                 Event::State(s) => handle.emit(DICTATION_EVENT, s).unwrap_or_default(),
             });
             let config = EngineConfig {
-                data_dir: app.path().app_data_dir()?,
-                model: ModelSource::default(),
+                library: true,
                 clipboard: Some(Arc::new(SystemClipboard(app.handle().clone()))),
+                ..EngineConfig::new(app.path().app_data_dir()?)
             };
             let _first = app.manage(Engine::open(config, events));
             Ok(())
@@ -85,6 +124,11 @@ pub fn run() -> Result<(), tauri::Error> {
         .invoke_handler(tauri::generate_handler![
             commands::dictation_state,
             commands::dictation_act,
+            commands::library_list,
+            commands::library_get,
+            commands::library_copy,
+            commands::settings_get,
+            commands::settings_set,
         ])
         .build(tauri::generate_context!())?;
     // The engine is shut down on Exit (Cmd-Q, the menu Quit, the last window

@@ -9,7 +9,8 @@
     "error": null,
     "notice": "Copied to the clipboard.",
     "modelError": null,
-    "download": null
+    "download": null,
+    "libraryRevision": 3
   },
   "snapshotFailed": {
     "revision": 7,
@@ -21,7 +22,8 @@
     "error": "Part 2 of 2 could not be transcribed: model exploded. Retry to try again.",
     "notice": null,
     "modelError": "Could not download the speech model: the connection was reset.",
-    "download": null
+    "download": null,
+    "libraryRevision": 0
   },
   "snapshotDownloading": {
     "revision": 1,
@@ -36,7 +38,17 @@
     "download": {
       "receivedBytes": 812277637,
       "totalBytes": 1624555275
-    }
+    },
+    "libraryRevision": 0
+  },
+  "libraryEntry": {
+    "id": "20261026-140309",
+    "title": "2026-10-26 14:03:09",
+    "summary": "A note about the board."
+  },
+  "settings": {
+    "summaries": true,
+    "libraryOpen": true
   },
   "level": 0.5
 }

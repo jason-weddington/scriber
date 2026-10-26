@@ -20,8 +20,10 @@ use std::sync::Mutex;
 
 use crate::audio::{decode_wav, duration_ms, encode_wav, to_mono_16k};
 use crate::download::{self, Source};
+use crate::library::{self, clean_summary, entry_path, valid_id};
 use crate::model::{Action, Download, Phase, Snapshot};
-use crate::ports::{PortError, Ports};
+use crate::ports::{Library, PortError, Ports};
+use crate::settings;
 use crate::store;
 use crate::sync::lock;
 use crate::transcript::{is_silent, join, keep};
@@ -84,8 +86,9 @@ pub const NOTHING_HEARD: &str = "No speech was heard. If you spoke, check that S
 
 /// Work for the worker: one segment to transcribe, made by Pause, Done or
 /// Retry; the speech model's warm-up, queued at launch and after a
-/// download; or the model's download, queued at launch when it is missing
-/// and by [`Action::DownloadModel`].
+/// download; the model's download, queued at launch when it is missing
+/// and by [`Action::DownloadModel`]; or, with the library on, a new library
+/// entry's audio to encode and its summary to write.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job(Work);
 
@@ -102,6 +105,10 @@ enum Work {
         samples: Vec<f32>,
         prompt: Option<String>,
     },
+    /// Encode library entry `id`'s audio.wav as audio.m4a.
+    Encode { id: String },
+    /// Summarize library entry `id`, whose transcript is `text`.
+    Summary { id: String, text: String },
 }
 
 /// Which job an outcome is for.
@@ -110,6 +117,8 @@ enum Mark {
     Warm,
     Download,
     Segment { session: u64, index: u32 },
+    Encode,
+    Summary,
 }
 
 impl Job {
@@ -130,6 +139,8 @@ impl Job {
                 session: *session,
                 index: *index,
             },
+            Work::Encode { .. } => Mark::Encode,
+            Work::Summary { .. } => Mark::Summary,
         }
     }
 
@@ -138,7 +149,10 @@ impl Job {
     /// calls `progress` with the bytes received as each whole percent
     /// arrives (see [`download::fetch`]). The warm-up's outcome changes
     /// nothing: a model that failed to load is loaded again by the first
-    /// segment, which reports the failure.
+    /// segment, which reports the failure. An encode replaces the entry's
+    /// audio.wav with audio.m4a, keeping the WAV when encoding fails; a
+    /// summary replaces the entry's excerpt with the model's sentence, and
+    /// leaves it when the model fails or says nothing.
     #[must_use]
     pub fn run(&self, ports: &Ports<'_>, progress: &dyn Fn(u64)) -> Outcome {
         let result = match &self.0 {
@@ -158,12 +172,59 @@ impl Job {
                 .transcribe(samples, prompt.as_deref())
                 .map(|heard| keep(samples.len(), &heard))
                 .map_err(|e| e.to_string()),
+            Work::Encode { id } => encode(id, ports).map(|()| None),
+            Work::Summary { id, text } => summarize(id, text, ports).map(Some),
         };
         Outcome {
             mark: self.mark(),
             result,
         }
     }
+}
+
+/// Why a library job did nothing, when the library is off.
+const LIBRARY_OFF: &str = "the library is off";
+
+/// Why a library job did nothing, for an id that is not an entry's.
+const NOT_IN_LIBRARY: &str = "not in the library";
+
+/// The library's ports, for a job on entry `id`.
+fn library_for<'a>(id: &str, ports: &Ports<'a>) -> Result<Library<'a>, String> {
+    let library = ports.library.ok_or(LIBRARY_OFF)?;
+    if valid_id(id) {
+        Ok(library)
+    } else {
+        Err(NOT_IN_LIBRARY.to_string())
+    }
+}
+
+/// Encodes entry `id`'s audio.wav as audio.m4a, removing whichever of the
+/// two is not kept (ignoring a failure to remove it).
+fn encode(id: &str, ports: &Ports<'_>) -> Result<(), String> {
+    let library = library_for(id, ports)?;
+    let (wav, m4a) = (entry_path(id, "audio.wav"), entry_path(id, "audio.m4a"));
+    match library.encoder.to_m4a(&wav, &m4a) {
+        Ok(()) => {
+            let _removed = ports.files.remove(&wav);
+            Ok(())
+        }
+        Err(e) => {
+            let _removed = ports.files.remove(&m4a);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Asks the model for entry `id`'s summary and writes it into the entry.
+fn summarize(id: &str, text: &str, ports: &Ports<'_>) -> Result<String, String> {
+    let library = library_for(id, ports)?;
+    let raw = library
+        .summarizer
+        .summarize(text)
+        .map_err(|e| e.to_string())?;
+    let summary = clean_summary(&raw).ok_or("the summary was empty")?;
+    library::set_summary(ports.files, id, &summary).map_err(|e| e.to_string())?;
+    Ok(summary)
 }
 
 /// A job's result, for [`Dictation::complete`].
@@ -193,6 +254,20 @@ pub fn work(shared: &Mutex<Dictation>, job: &Job, ports: &Ports<'_>, report: &dy
     let progress = |bytes| report(lock(shared).progress(bytes, ports));
     let outcome = job.run(ports, &progress);
     report(lock(shared).complete(outcome, ports));
+}
+
+/// The session's start kept in [`store::STARTED`], if it is a title.
+fn started(ports: &Ports<'_>) -> Option<String> {
+    let bytes = ports.files.read(store::STARTED).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let text = text.trim();
+    let shape = "DDDD-DD-DD DD:DD:DD";
+    let fits = text.chars().count() == shape.len()
+        && text.chars().zip(shape.chars()).all(|(c, s)| match s {
+            'D' => c.is_ascii_digit(),
+            other => c == other,
+        });
+    fits.then(|| text.to_string())
 }
 
 /// A segment's state.
@@ -228,6 +303,11 @@ pub struct Dictation {
     revision: u64,
     /// The speech model's download.
     fetch: Fetch,
+    /// The session's start, as a library title, once it has recorded with
+    /// the library on.
+    started: Option<String>,
+    /// Bumped by every entry added to the library and every summary written.
+    library_revision: u64,
     /// What the download fetches: the model, except in tests; `None` when
     /// the model is a local file ([`Self::launch_local`]).
     source: Option<Source>,
@@ -321,7 +401,10 @@ impl Dictation {
     /// [`DictationError::LocalModel`].
     #[must_use]
     pub fn recover(ports: &Ports<'_>) -> Self {
-        let mut this = Self::default();
+        let mut this = Self {
+            started: started(ports),
+            ..Self::default()
+        };
         let stored = store::stored(ports.files).unwrap_or_default();
         if let Some(text) = store::transcript(ports.files) {
             this.slots = stored.iter().map(|i| (*i, Slot::Heard(None))).collect();
@@ -371,6 +454,7 @@ impl Dictation {
                 }),
                 Fetch::Idle | Fetch::Failed(_) => None,
             },
+            library_revision: self.library_revision,
         }
     }
 
@@ -432,6 +516,7 @@ impl Dictation {
         self.text.clear();
         self.error = None;
         self.notice = None;
+        self.started = None;
         self.phase = Phase::Ready;
     }
 
@@ -500,7 +585,16 @@ impl Dictation {
     ///
     /// Illegal unless ready; the model is missing; the microphone fails.
     pub fn record(&mut self, ports: &Ports<'_>) -> Result<(), DictationError> {
-        self.start(Action::Record, Phase::Ready, ports)
+        self.start(Action::Record, Phase::Ready, ports)?;
+        if let Some(lib) = ports.library
+            && self.started.is_none()
+        {
+            let title = library::title(&lib.clock.now());
+            // Losing it only means the entry is titled when it is archived.
+            let _kept = ports.files.write(store::STARTED, title.as_bytes());
+            self.started = Some(title);
+        }
+        Ok(())
     }
 
     /// Resume: starts another segment.
@@ -609,7 +703,8 @@ impl Dictation {
 
     /// Records a job's result and answers with the new snapshot. An
     /// outcome from a session that has since been discarded, for a segment
-    /// that is not pending, or from the warm-up, is ignored.
+    /// that is not pending, from the warm-up or from an encode, is ignored;
+    /// a summary written bumps the library's revision.
     pub fn complete(&mut self, outcome: Outcome, ports: &Ports<'_>) -> Snapshot {
         self.record_outcome(outcome, ports);
         self.snapshot(ports)
@@ -617,9 +712,14 @@ impl Dictation {
 
     fn record_outcome(&mut self, outcome: Outcome, ports: &Ports<'_>) {
         match outcome.mark {
-            Mark::Warm => {}
+            Mark::Warm | Mark::Encode => {}
             Mark::Download => self.downloaded(outcome.result, ports),
             Mark::Segment { session, index } => self.heard(session, index, outcome.result, ports),
+            Mark::Summary => {
+                if let Ok(Some(_)) = outcome.result {
+                    self.bump_library();
+                }
+            }
         }
     }
 
@@ -699,6 +799,47 @@ impl Dictation {
                 Err(e) => format!("Could not copy to the clipboard: {e}. Use Copy to try again."),
             }
         });
+        self.archive(ports);
+    }
+
+    fn bump_library(&mut self) {
+        self.library_revision = self.library_revision.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// With the library on, keeps the finished session (unless it heard
+    /// nothing) as a new entry, removes its segments' audio, and queues the
+    /// entry's encoding and, when summaries are on, its summary. When the
+    /// entry cannot be written the segments stay and nothing else changes.
+    fn archive(&mut self, ports: &Ports<'_>) {
+        let Some(lib) = ports.library else {
+            return;
+        };
+        if self.text.is_empty() {
+            return;
+        }
+        let title = self
+            .started
+            .clone()
+            .unwrap_or_else(|| library::title(&lib.clock.now()));
+        let Ok(archived) = library::archive(ports.files, &title, &self.text) else {
+            return;
+        };
+        store::remove_segments(ports.files);
+        self.bump_library();
+        let mut jobs = Vec::new();
+        if archived.audio {
+            jobs.push(Job(Work::Encode {
+                id: archived.id.clone(),
+            }));
+        }
+        if settings::load(ports.files).summaries {
+            jobs.push(Job(Work::Summary {
+                id: archived.id,
+                text: self.text.clone(),
+            }));
+        }
+        self.queue(jobs, ports);
     }
 
     /// Copy: puts `text` (the transcript as the user edited it) on the

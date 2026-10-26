@@ -2,8 +2,13 @@
 //!
 //! ```text
 //! vocabulary.txt                 the user's glossary (optional)
+//! settings.json                  the user's settings (crate::settings)
 //! segments/segment-0000.wav      the current session's audio, one file per segment
 //! segments/transcript.txt        the session's transcript, once it has one
+//! segments/started.txt           the session's start, `2026-10-26 14:03:09`, with the library on
+//! library/<id>/entry.json        a recording in the library (crate::library): its title and summary
+//! library/<id>/transcript.txt    its transcript
+//! library/<id>/audio.m4a         its audio (audio.wav until encoded, or when encoding fails)
 //! models/ggml-large-v3-turbo.bin the speech model (read by the transcriber, not here)
 //! ```
 
@@ -15,6 +20,10 @@ pub const SEGMENTS: &str = "segments";
 /// The finished session's transcript, kept beside its audio so a relaunch
 /// shows it rather than offering to transcribe it again.
 pub const TRANSCRIPT: &str = "segments/transcript.txt";
+
+/// When the session started, as a library title (`2026-10-26 14:03:09`),
+/// written at its first Record when the library is on.
+pub const STARTED: &str = "segments/started.txt";
 
 /// Where the transcript is written before it is renamed into place.
 const TRANSCRIPT_PARTIAL: &str = "segments/transcript.txt.partial";
@@ -78,18 +87,33 @@ pub fn stored(files: &dyn Files) -> Result<Vec<u32>, PortError> {
     Ok(indices)
 }
 
-/// Deletes every stored segment and the transcript, and nothing else.
+/// The file name of a path in [`SEGMENTS`].
+fn name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Deletes every stored segment, the transcript and the session's start,
+/// and nothing else.
 ///
 /// # Errors
 ///
 /// The folder cannot be read or a file cannot be deleted.
 pub fn clear(files: &dyn Files) -> Result<(), PortError> {
-    let transcript = TRANSCRIPT.rsplit('/').next().unwrap_or(TRANSCRIPT);
+    let session = [name(TRANSCRIPT), name(STARTED)];
     files
         .list(SEGMENTS)?
         .iter()
-        .filter(|name| segment_index(name).is_some() || name.as_str() == transcript)
-        .try_for_each(|name| files.remove(&format!("{SEGMENTS}/{name}")))
+        .filter(|n| segment_index(n).is_some() || session.contains(&n.as_str()))
+        .try_for_each(|n| files.remove(&format!("{SEGMENTS}/{n}")))
+}
+
+/// Deletes every stored segment's audio, keeping the transcript and the
+/// session's start: what is left once a session is in the library. A file
+/// that cannot be deleted, or a folder that cannot be read, is left.
+pub fn remove_segments(files: &dyn Files) {
+    for index in stored(files).unwrap_or_default() {
+        let _removed = files.remove(&segment_path(index));
+    }
 }
 
 /// Keeps the session's transcript, atomically: it is written beside

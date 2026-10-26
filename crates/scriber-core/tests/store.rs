@@ -7,9 +7,11 @@ mod common;
 mod tests {
     use scriber_core::ports::PortError;
     use scriber_core::store::{
-        MODEL, SEGMENTS, TRANSCRIPT, VOCABULARY, clear, load, save, save_transcript, segment_index,
-        segment_path, stored, transcript, vocabulary,
+        MODEL, SEGMENTS, STARTED, TRANSCRIPT, VOCABULARY, clear, load, remove_segments, save,
+        save_transcript, segment_index, segment_path, stored, transcript, vocabulary,
     };
+
+    use scriber_core::ports::Files as _;
 
     use crate::common::FakeFiles;
 
@@ -19,6 +21,7 @@ mod tests {
         assert_eq!(VOCABULARY, "vocabulary.txt", "glossary");
         assert_eq!(MODEL, "models/ggml-large-v3-turbo.bin", "model");
         assert_eq!(TRANSCRIPT, "segments/transcript.txt", "transcript");
+        assert_eq!(STARTED, "segments/started.txt", "session start");
         assert_eq!(segment_path(7), "segments/segment-0007.wav", "zero-padded");
         assert_eq!(
             segment_path(12_345),
@@ -64,6 +67,7 @@ mod tests {
             .insert("segments/notes.txt".to_string(), b"keep".to_vec());
         files.set_vocabulary(Some("talos"));
         save_transcript(&files, "said").unwrap();
+        files.write(STARTED, b"2026-10-26 08:00:00").unwrap();
         assert_eq!(
             transcript(&files).as_deref(),
             Some("said"),
@@ -78,6 +82,7 @@ mod tests {
         clear(&files).unwrap();
         assert_eq!(stored(&files).unwrap(), Vec::<u32>::new(), "all gone");
         assert_eq!(transcript(&files), None, "the transcript too");
+        assert!(files.read(STARTED).is_err(), "and the session's start");
         let left: Vec<String> = files.files.borrow().keys().cloned().collect();
         assert_eq!(
             left,
@@ -162,5 +167,34 @@ mod tests {
             !files.files.borrow().contains_key("segments/transcript.txt"),
             "no transcript"
         );
+    }
+
+    #[test]
+    fn remove_segments_keeps_the_transcript_and_the_start() {
+        let files = FakeFiles::default();
+        save(&files, 0, b"zero").unwrap();
+        save(&files, 3, b"three").unwrap();
+        save_transcript(&files, "said").unwrap();
+        files.write(STARTED, b"2026-10-26 08:00:00").unwrap();
+        remove_segments(&files);
+        let left: Vec<String> = files.files.borrow().keys().cloned().collect();
+        assert_eq!(
+            left,
+            ["segments/started.txt", "segments/transcript.txt"],
+            "only the segments' audio is gone"
+        );
+    }
+
+    #[test]
+    fn remove_segments_ignores_failures() {
+        let files = FakeFiles::default();
+        save(&files, 0, b"zero").unwrap();
+        files.fail_remove.set(true);
+        remove_segments(&files);
+        assert_eq!(files.segments(), 1, "a stuck file stays");
+        files.fail_remove.set(false);
+        files.fail_list.set(true);
+        remove_segments(&files);
+        assert_eq!(files.segments(), 1, "an unreadable folder keeps its files");
     }
 }

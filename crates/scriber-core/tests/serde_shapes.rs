@@ -12,7 +12,7 @@ mod tests {
     use serde::de::DeserializeOwned;
     use serde_json::{Value, json};
 
-    use scriber_core::model::{Action, Download, Phase, Snapshot};
+    use scriber_core::model::{Action, Download, LibraryEntry, Phase, Settings, Snapshot};
 
     const FIXTURE: &str = include_str!("fixtures/bridge-shapes.json");
 
@@ -52,6 +52,7 @@ mod tests {
                 notice: Some("Copied to the clipboard.".to_string()),
                 model_error: None,
                 download: None,
+                library_revision: 3,
             },
         );
         round_trip(
@@ -72,6 +73,7 @@ mod tests {
                     "Could not download the speech model: the connection was reset.".to_string(),
                 ),
                 download: None,
+                library_revision: 0,
             },
         );
         round_trip(
@@ -90,7 +92,61 @@ mod tests {
                     received_bytes: 812_277_637,
                     total_bytes: 1_624_555_275,
                 }),
+                library_revision: 0,
             },
+        );
+    }
+
+    #[test]
+    fn library_entry_and_settings() {
+        round_trip(
+            "libraryEntry",
+            &LibraryEntry {
+                id: "20261026-140309".to_string(),
+                title: "2026-10-26 14:03:09".to_string(),
+                summary: "A note about the board.".to_string(),
+            },
+        );
+        round_trip(
+            "settings",
+            &Settings {
+                summaries: true,
+                library_open: true,
+            },
+        );
+    }
+
+    /// The fixture's `key` with `extra` added, and with `drop` removed.
+    fn altered(key: &str, drop: &str) -> (Value, Value) {
+        let mut extra = fixture(key);
+        let _: Option<Value> = extra
+            .as_object_mut()
+            .unwrap()
+            .insert("extra".to_string(), json!(1));
+        let mut missing = fixture(key);
+        let _: Option<Value> = missing.as_object_mut().unwrap().remove(drop);
+        (extra, missing)
+    }
+
+    #[test]
+    fn library_entry_and_settings_refuse_unknown_and_missing_fields() {
+        let (extra, missing) = altered("libraryEntry", "summary");
+        assert!(
+            serde_json::from_value::<LibraryEntry>(extra).is_err(),
+            "entry: unknown field"
+        );
+        assert!(
+            serde_json::from_value::<LibraryEntry>(missing).is_err(),
+            "entry: missing field"
+        );
+        let (settings_extra, settings_missing) = altered("settings", "libraryOpen");
+        assert!(
+            serde_json::from_value::<Settings>(settings_extra).is_err(),
+            "settings: unknown field"
+        );
+        assert!(
+            serde_json::from_value::<Settings>(settings_missing).is_err(),
+            "settings: missing field"
         );
     }
 

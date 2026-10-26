@@ -4,8 +4,8 @@ macOS dictation app: Rust core, Tauri 2 shell, Svelte 5 frontend. New, Record, P
 
 ## Layout
 
-- `crates/scriber-core` (root cargo workspace): all logic. No Tauri, no async runtime, no direct I/O: every effect is a trait in `src/ports.rs`. Fakes for every port are in `tests/common`.
-- `crates/scriber-engine` (root cargo workspace): the core plus the real adapters (cpal, whisper-rs, `std::fs`, ureq) and a std-thread job queue, behind a small `Engine` API that any Rust app can depend on. No Tauri, no async runtime. Its fakes are in its own `tests/common`.
+- `crates/scriber-core` (root cargo workspace): all logic. No Tauri, no async runtime, no direct I/O: every effect is a trait in `src/ports.rs`. Fakes for every port are in `tests/common`. The recording library (`library.rs`, `settings.rs`) adds the `Clock`, `Encoder` and `Summarizer` ports, which travel together in `ports::Library` and are only used with the library on.
+- `crates/scriber-engine` (root cargo workspace): the core plus the real adapters (cpal, whisper-rs, `std::fs`, ureq, chrono, afconvert, Ollama over ureq) and a std-thread job queue, behind a small `Engine` API that any Rust app can depend on. No Tauri, no async runtime. Its fakes are in its own `tests/common`. The gate never needs Ollama or afconvert: the Ollama adapter is tested against an in-process HTTP stub and the afconvert adapter against stub scripts; the lead checks the real ones on the Mac.
 - `apps/desktop/src-tauri`: its OWN cargo workspace (`apps/desktop/Cargo.toml`, own `Cargo.lock`). A thin client over the engine: the clipboard adapter, the two events and one `#[tauri::command]` per contract entry, each forwarding to the `Engine`.
 - `apps/desktop/src`: Svelte 5 + TypeScript. `src/lib/bridge.ts` is the only file that imports `@tauri-apps/*`; outside Tauri it answers from `src/lib/mock.ts`.
 - `apps/desktop/tests/unit` (pure TS) and `tests/e2e` (the app in Chromium against the mock), both Playwright.

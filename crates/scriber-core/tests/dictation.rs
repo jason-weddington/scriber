@@ -12,7 +12,11 @@ mod tests {
     use scriber_core::ports::{Captured, PortError};
     use scriber_core::vocabulary::STYLE;
 
-    use crate::common::{World, speech};
+    use scriber_core::library::{entry_path, list};
+    use scriber_core::ports::Files as _;
+    use scriber_core::store::STARTED;
+
+    use crate::common::{World, at as time, speech};
 
     fn idle(w: &World) -> Dictation {
         Dictation::recover(&w.ports())
@@ -185,6 +189,7 @@ mod tests {
                 notice: None,
                 model_error: None,
                 download: None,
+                library_revision: 0,
             },
             "idle"
         );
@@ -1029,5 +1034,211 @@ mod tests {
             Phase::Finished,
             "nothing to retry"
         );
+    }
+
+    /// New, Record, Pause, then Resume and Pause for each further part,
+    /// Done, and every segment transcribed, all with the library on.
+    fn library_session(w: &World, d: &mut Dictation, parts: usize) -> Snapshot {
+        let p = w.library_ports();
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let mut jobs = vec![d.pause(&p).unwrap().unwrap()];
+        for _ in 1..parts {
+            d.resume(&p).unwrap();
+            jobs.push(d.pause(&p).unwrap().unwrap());
+        }
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        for job in &jobs {
+            let _: Snapshot = d.complete(w.run(job), &p);
+        }
+        d.snapshot(&p)
+    }
+
+    fn library_ids(w: &World) -> Vec<String> {
+        list(&w.files).into_iter().map(|e| e.id).collect()
+    }
+
+    #[test]
+    fn with_the_library_off_nothing_is_kept_for_it() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let job = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        let s = d.complete(w.run(&job), &p);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.library_revision, 0, "no library change");
+        let files = w.files.files.borrow();
+        assert!(
+            files.keys().all(|k| !k.starts_with("library/")),
+            "nothing under library/"
+        );
+        assert!(!files.contains_key(STARTED), "no started.txt");
+        assert!(w.queue.jobs.borrow().is_empty(), "no library job");
+        assert_eq!(w.files.segments(), 1, "the segment stays");
+    }
+
+    #[test]
+    fn the_entry_is_titled_by_the_first_record() {
+        let w = World::default();
+        w.clock
+            .script(&[time(9, 0, 0), time(9, 5, 0), time(9, 10, 0)]);
+        let mut d = idle(&w);
+        let _: Snapshot = library_session(&w, &mut d, 2);
+        assert_eq!(library_ids(&w), ["20261026-090000"], "T1");
+        assert_eq!(
+            list(&w.files).first().unwrap().title,
+            "2026-10-26 09:00:00",
+            "titled T1"
+        );
+        assert_eq!(
+            w.files.read(STARTED).unwrap(),
+            b"2026-10-26 09:00:00",
+            "kept for a relaunch"
+        );
+    }
+
+    #[test]
+    fn discard_forgets_the_sessions_start() {
+        let w = World::default();
+        w.clock.script(&[time(9, 0, 0), time(9, 5, 0)]);
+        let p = w.library_ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        d.discard(&p).unwrap();
+        assert!(w.files.read(STARTED).is_err(), "started.txt is cleared");
+        d.record(&p).unwrap();
+        let job = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        let _: Snapshot = d.complete(w.run(&job), &p);
+        assert_eq!(library_ids(&w), ["20261026-090500"], "the new start");
+    }
+
+    #[test]
+    fn a_session_start_that_cannot_be_kept_still_titles_the_entry() {
+        let w = World::default();
+        w.clock.script(&[time(9, 0, 0), time(9, 5, 0)]);
+        let p = w.library_ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        w.files.fail_write.set(true);
+        d.record(&p).unwrap();
+        w.files.fail_write.set(false);
+        assert!(w.files.read(STARTED).is_err(), "not kept");
+        let job = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        let _: Snapshot = d.complete(w.run(&job), &p);
+        assert_eq!(library_ids(&w), ["20261026-090000"], "still T1");
+    }
+
+    /// A failed session from a previous run, with `started` in started.txt.
+    fn leftover(w: &World, started: Option<&[u8]>) -> Dictation {
+        w.files.put_segment(0, encode_wav(&speech(16_000)));
+        w.files.put_segment(1, encode_wav(&speech(8_000)));
+        if let Some(bytes) = started {
+            w.files.write(STARTED, bytes).unwrap();
+        }
+        let p = w.library_ports();
+        let mut d = Dictation::recover(&p);
+        let jobs = d.retry(&p).unwrap();
+        for job in &jobs {
+            let _: Snapshot = d.complete(w.run(job), &p);
+        }
+        d
+    }
+
+    #[test]
+    fn a_recovered_session_is_titled_by_its_kept_start() {
+        let w = World::default();
+        w.clock.script(&[time(14, 0, 0)]);
+        let d = leftover(&w, Some(b" 2026-10-26 08:00:00\n"));
+        assert_eq!(library_ids(&w), ["20261026-080000"], "the kept start");
+        let s = d.snapshot(&w.library_ports());
+        assert_eq!(s.library_revision, 1, "archived once");
+        let audio = decode_wav(
+            &w.files
+                .read(&entry_path("20261026-080000", "audio.wav"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(audio.len(), 24_000, "both parts");
+    }
+
+    #[test]
+    fn a_damaged_or_missing_start_titles_by_the_clock() {
+        for started in [
+            None,
+            Some(&b"garbage"[..]),
+            Some(b"2026-10-26 08:00:0"),
+            Some(b"2026-10-26 08:00:000"),
+            Some(b"2026-10-26T08:00:00"),
+            Some(b"2026-1a-26 08:00:00"),
+            Some(&[0xff, 0xfe]),
+        ] {
+            let w = World::default();
+            w.clock.script(&[time(14, 0, 0)]);
+            let _: Dictation = leftover(&w, started);
+            assert_eq!(
+                library_ids(&w),
+                ["20261026-140000"],
+                "{started:?}: the time at archive"
+            );
+        }
+    }
+
+    #[test]
+    fn the_library_revision_outlives_new() {
+        let w = World::default();
+        let mut d = idle(&w);
+        assert_eq!(library_session(&w, &mut d, 1).library_revision, 1, "one");
+        let s = library_session(&w, &mut d, 1);
+        assert_eq!(s.library_revision, 2, "two");
+        assert_eq!(library_ids(&w).len(), 2, "two entries");
+    }
+
+    #[test]
+    fn a_relaunch_after_an_archive_is_finished_with_no_parts() {
+        let w = World::default();
+        let mut d = idle(&w);
+        let done = library_session(&w, &mut d, 2);
+        let p = w.library_ports();
+        let again = Dictation::recover(&p);
+        let s = again.snapshot(&p);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, done.text, "the transcript");
+        assert_eq!(s.segments, 0, "no parts left");
+        assert_eq!(s.library_revision, 0, "a fresh count");
+        assert_eq!(library_ids(&w).len(), 1, "not archived again");
+    }
+
+    #[test]
+    fn a_queue_that_refuses_the_library_jobs_still_archives() {
+        let w = World::default();
+        let mut d = idle(&w);
+        let p = w.library_ports();
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let job = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        w.queue.fail.set(true);
+        let s = d.complete(w.run(&job), &p);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.notice.as_deref(), Some(COPIED), "copied");
+        assert_eq!(s.library_revision, 1, "archived");
+        assert_eq!(
+            list(&w.files).first().unwrap().summary,
+            "segment 0",
+            "with the excerpt"
+        );
+        assert!(
+            w.files
+                .read(&entry_path("20261026-140309", "audio.wav"))
+                .is_ok(),
+            "and its audio"
+        );
+        assert!(w.queue.jobs.borrow().is_empty(), "nothing queued");
     }
 }

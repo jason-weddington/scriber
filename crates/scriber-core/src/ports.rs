@@ -175,6 +175,62 @@ pub trait JobQueue {
     fn send(&self, job: Job) -> Result<(), PortError>;
 }
 
+/// A moment in the Mac's local wall-clock time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTime {
+    /// The year, e.g. 2026.
+    pub year: i32,
+    /// The month, 1 to 12.
+    pub month: u32,
+    /// The day of the month, 1 to 31.
+    pub day: u32,
+    /// The hour, 0 to 23.
+    pub hour: u32,
+    /// The minute, 0 to 59.
+    pub minute: u32,
+    /// The second, 0 to 59.
+    pub second: u32,
+}
+
+/// The clock, for naming a library entry after its session's start.
+pub trait Clock {
+    /// The local wall-clock time now.
+    fn now(&self) -> LocalTime;
+}
+
+/// Audio compression, for a library entry's audio.
+pub trait Encoder {
+    /// Encodes the WAV file at `wav` as AAC in an M4A file at `m4a`; both
+    /// paths are relative to the data folder, as for [`Files`].
+    ///
+    /// # Errors
+    ///
+    /// The encoder is missing or fails.
+    fn to_m4a(&self, wav: &str, m4a: &str) -> Result<(), PortError>;
+}
+
+/// A local language model, for a library entry's one-sentence summary.
+pub trait Summarizer {
+    /// The model's raw answer for `transcript`; cleaning it is the core's
+    /// job ([`crate::library::clean_summary`]).
+    ///
+    /// # Errors
+    ///
+    /// The model cannot be reached or answers with an error.
+    fn summarize(&self, transcript: &str) -> Result<String, PortError>;
+}
+
+/// The ports only the recording library needs ([`crate::library`]).
+#[derive(Clone, Copy)]
+pub struct Library<'a> {
+    /// Names each entry after its session's start.
+    pub clock: &'a dyn Clock,
+    /// Compresses each entry's audio.
+    pub encoder: &'a dyn Encoder,
+    /// Writes each entry's summary.
+    pub summarizer: &'a dyn Summarizer,
+}
+
 /// Every port a session action needs, borrowed for the length of one call.
 #[derive(Clone, Copy)]
 pub struct Ports<'a> {
@@ -191,6 +247,8 @@ pub struct Ports<'a> {
     pub queue: &'a dyn JobQueue,
     /// The network, for the model's download.
     pub downloader: &'a dyn Downloader,
+    /// The recording library's ports; `None` keeps no library.
+    pub library: Option<Library<'a>>,
 }
 
 impl<'a> Ports<'a> {
@@ -212,6 +270,16 @@ impl<'a> Ports<'a> {
             clipboard,
             queue,
             downloader,
+            library: None,
+        }
+    }
+
+    /// These ports, keeping finished sessions in the recording library.
+    #[must_use]
+    pub fn with_library(self, library: Library<'a>) -> Self {
+        Self {
+            library: Some(library),
+            ..self
         }
     }
 }

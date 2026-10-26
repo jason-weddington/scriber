@@ -12,16 +12,23 @@
 //   ?clipboard=fail       the clipboard cannot be written
 //   ?leftover=<n>         launch finds n segments of an unfinished session
 //   ?long=1               each segment is heard as a long paragraph
-//   ?fail=<call>          that call rejects: "dictation_state", "app_version" or an action
+//   ?fail=<call>          that call rejects: "dictation_state", "app_version", an action,
+//                         "library_list", "library_get", "library_copy", "settings_get" or "settings_set"
 //   ?hold=<call>          that call is held from launch (see hold below)
+//   ?library=<n>          the recording library starts with n entries (see preloaded)
+//   ?summaries=off        summaries start off in the settings
+//   ?libraryOpen=0        the library drawer starts closed in the settings
+//   ?ollama=down          the summarizer fails, so each entry keeps its excerpt
 // A test can hold a call so the UI is seen mid-call, and release it:
-//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download') ... release(...)
-// ('download' holds each step of the model's download.) While recording the
+//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize') ... release(...)
+// ('download' holds each step of the model's download; 'summarize' holds
+// each new library entry's summary.) A finished session with a transcript is
+// archived into the library like the core does it (crates/scriber-core/src/library.rs). While recording the
 // mock emits a synthetic input level every LEVEL_MS, like the core's 50 ms
 // windows. Segment durations and the level and download timers run on
 // Date.now() and setTimeout, so Playwright's clock controls them.
 
-import type { Action, Download, Phase, Snapshot } from './types';
+import type { Action, Download, LibraryEntry, Phase, Settings, Snapshot } from './types';
 
 /** The version the mock reports, so a mock can never pass for the real app. */
 export const MOCK_VERSION = '0.0.0-mock';
@@ -73,6 +80,73 @@ const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
   failed: ['new', 'discard', 'retry'],
 };
 
+/** The core's NotInLibrary sentence (crates/scriber-engine/src/lib.rs). */
+export const NOT_IN_LIBRARY = 'That recording is no longer in the library.';
+
+/** What the mock summarizer answers for every entry. */
+export const MOCK_SUMMARY = 'A dictated note.';
+
+/** The core's whitespace (`char::is_whitespace`): JavaScript's \s plus U+0085, without U+FEFF. */
+function isSpace(c: string): boolean {
+  return c !== '\uFEFF' && /[\s\u0085]/u.test(c);
+}
+
+/** Every whitespace run as one space, trimmed. */
+function collapse(text: string): string {
+  const words: string[] = [];
+  let word = '';
+  for (const c of Array.from(text)) {
+    if (isSpace(c)) {
+      if (word !== '') words.push(word);
+      word = '';
+    } else word += c;
+  }
+  if (word !== '') words.push(word);
+  return words.join(' ');
+}
+
+/** The core's excerpt (library.rs): whole up to 30 characters, else cut and followed by "...". */
+export function excerpt(text: string): string {
+  const chars = Array.from(collapse(text));
+  if (chars.length <= 30) return chars.join('');
+  const head = chars.slice(0, 30);
+  const space = head.lastIndexOf(' ');
+  const kept = head.slice(0, space >= 20 ? space : 30);
+  while (kept.length > 0 && (isSpace(kept.at(-1) ?? '') || ',;:-.'.includes(kept.at(-1) ?? ''))) kept.pop();
+  return `${kept.join('')}...`;
+}
+
+/** The core's title (library.rs): `date` in local time as `YYYY-MM-DD HH:MM:SS`. */
+export function title(date: Date): string {
+  const two = (n: number): string => String(n).padStart(2, '0');
+  const day = `${String(date.getFullYear()).padStart(4, '0')}-${two(date.getMonth() + 1)}-${two(date.getDate())}`;
+  return `${day} ${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
+}
+
+/** The core's base_id: `2026-10-26 14:03:09` becomes `20261026-140309`. */
+export function baseId(t: string): string {
+  return t.replace(/[-:]/g, '').replace(' ', '-');
+}
+
+/** The core's list order: by base id, then by suffix (none counts as 1), newest first. */
+function newestFirst(a: LibraryEntry, b: LibraryEntry): number {
+  const key = (id: string): [string, number] => [id.slice(0, 15), Number(id.slice(16) || '1')];
+  const [ab, an] = key(a.id);
+  const [bb, bn] = key(b.id);
+  return ab === bb ? bn - an : ab < bb ? 1 : -1;
+}
+
+/** Preloaded entry `k` (0-based, newest first): 2026-10-26 09:00:00 local, minus k minutes. */
+export function preloaded(k: number): LibraryEntry & { transcript: string } {
+  const t = title(new Date(new Date(2026, 9, 26, 9, 0, 0).getTime() - k * 60_000));
+  return {
+    id: baseId(t),
+    title: t,
+    summary: `Preloaded recording number ${String(k + 1)}.`,
+    transcript: `This is preloaded recording number ${String(k + 1)}.`,
+  };
+}
+
 export function refusal(action: Action, phase: Phase): string {
   return `Cannot ${ACTION_NAMES[action]} while ${phase}.`;
 }
@@ -113,13 +187,15 @@ type Slot = { state: 'pending' } | { state: 'heard'; text: string | null } | { s
 
 /** What a test reaches through `window.__mockBridge`. */
 export interface MockHandle {
-  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe' or 'download') wait until `release(name)`. */
+  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download' or 'summarize') wait until `release(name)`. */
   hold(name: string): void;
   release(name: string): void;
   /** Every text the mock clipboard was given, in order. */
   readonly copied: string[];
   /** Every action the window asked for, in order, whether or not it was allowed. */
   readonly acts: Action[];
+  /** Every settings_set call's settings, in order, whether or not it failed. */
+  readonly saved: Settings[];
 }
 
 declare global {
@@ -140,7 +216,14 @@ export class Mock {
   private readonly acts: Action[] = [];
   private readonly held = new Map<string, { promise: Promise<void>; open: () => void }>();
   private readonly copied: string[] = [];
+  private readonly saved: Settings[] = [];
   private readonly attempts = new Map<number, number>();
+  private readonly ollamaDown: boolean;
+  private entries: (LibraryEntry & { transcript: string })[] = [];
+  private libraryRevision = 0;
+  private settings: Settings;
+  /** Date.now() at the session's first Record, else null. */
+  private started: number | null = null;
 
   private phase: Phase = 'idle';
   private slots: Slot[] = [];
@@ -172,6 +255,9 @@ export class Mock {
     this.clipboardFails = params.get('clipboard') === 'fail';
     this.long = params.get('long') === '1';
     this.failing = params.get('fail');
+    this.ollamaDown = params.get('ollama') === 'down';
+    this.settings = { summaries: params.get('summaries') !== 'off', libraryOpen: params.get('libraryOpen') !== '0' };
+    this.entries = Array.from({ length: Number(params.get('library') ?? '0') }, (_, k) => preloaded(k));
     const left = Number(params.get('leftover') ?? '0');
     if (left > 0) {
       this.slots = Array.from({ length: left }, () => ({ state: 'failed', reason: 'interrupted' }));
@@ -197,6 +283,7 @@ export class Mock {
       },
       copied: this.copied,
       acts: this.acts,
+      saved: this.saved,
     };
   }
 
@@ -218,6 +305,7 @@ export class Mock {
       notice: this.notice,
       modelError: this.modelError(),
       download: this.received === null ? null : ({ receivedBytes: this.received, totalBytes: MODEL_BYTES } satisfies Download),
+      libraryRevision: this.libraryRevision,
     };
   }
 
@@ -235,6 +323,46 @@ export class Mock {
     await this.gate('dictation_state');
     if (this.failing === 'dictation_state') throw new Error('Mock failure: dictation_state');
     return this.snapshot();
+  }
+
+  /** Rejects when `?fail=<name>` names this call. */
+  private check(name: string): void {
+    if (this.failing === name) throw new Error(`Mock failure: ${name}`);
+  }
+
+  async libraryList(): Promise<LibraryEntry[]> {
+    await this.gate('library_list');
+    this.check('library_list');
+    return [...this.entries].sort(newestFirst).map(({ id, title: t, summary }) => ({ id, title: t, summary }));
+  }
+
+  async libraryGet(id: string): Promise<string> {
+    await this.gate('library_get');
+    this.check('library_get');
+    const entry = this.entries.find((e) => e.id === id);
+    if (entry === undefined) throw new Error(NOT_IN_LIBRARY);
+    return entry.transcript;
+  }
+
+  async libraryCopy(id: string): Promise<void> {
+    const text = await this.libraryGet(id);
+    this.check('library_copy');
+    if (this.clipboardFails) throw new Error('Could not copy to the clipboard: pasteboard unavailable');
+    this.copied.push(text);
+  }
+
+  async settingsGet(): Promise<Settings> {
+    await this.gate('settings_get');
+    this.check('settings_get');
+    return { ...this.settings };
+  }
+
+  async settingsSet(settings: Settings): Promise<Settings> {
+    this.saved.push({ ...settings });
+    await this.gate('settings_set');
+    this.check('settings_set');
+    this.settings = { ...settings };
+    return { ...this.settings };
   }
 
   onChange(cb: (s: Snapshot) => void): () => void {
@@ -275,6 +403,7 @@ export class Mock {
       case 'record':
       case 'resume':
         if (!this.modelPresent) throw new Error(this.modelError() ?? DOWNLOADING);
+        if (action === 'record') this.started ??= Date.now();
         this.since = Date.now();
         this.notice = null;
         this.phase = 'recording';
@@ -325,6 +454,7 @@ export class Mock {
     this.text = '';
     this.error = null;
     this.notice = null;
+    this.started = null;
     this.phase = 'ready';
   }
 
@@ -410,5 +540,30 @@ export class Mock {
       this.copied.push(this.text);
       this.notice = COPIED;
     }
+    if (this.text !== '') this.archive();
+  }
+
+  /** The core's archive: a new entry titled by the session's start, with the excerpt; then the summary. */
+  private archive(): void {
+    const t = title(new Date(this.started ?? Date.now()));
+    const base = baseId(t);
+    let id = base;
+    for (let n = 2; this.entries.some((e) => e.id === id); n++) id = `${base}-${String(n)}`;
+    this.entries.push({ id, title: t, summary: excerpt(this.text), transcript: this.text });
+    this.libraryRevision += 1;
+    this.revision += 1;
+    if (this.settings.summaries) void this.summarize(id);
+  }
+
+  /** The summary job: off the transcription path, keyed by id. */
+  private async summarize(id: string): Promise<void> {
+    await Promise.resolve();
+    await this.gate('summarize');
+    const entry = this.entries.find((e) => e.id === id);
+    if (this.ollamaDown || entry === undefined) return;
+    entry.summary = MOCK_SUMMARY;
+    this.libraryRevision += 1;
+    this.revision += 1;
+    this.announce();
   }
 }

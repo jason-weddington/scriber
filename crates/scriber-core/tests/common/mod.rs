@@ -8,7 +8,8 @@ use std::io::{self, Read};
 
 use scriber_core::dictation::{Job, Outcome};
 use scriber_core::ports::{
-    Captured, Clipboard, Downloader, Files, JobQueue, PortError, Ports, Recorder, Transcriber,
+    Captured, Clipboard, Clock, Downloader, Encoder, Files, JobQueue, Library, LocalTime,
+    PortError, Ports, Recorder, Summarizer, Transcriber,
 };
 use scriber_core::store::{VOCABULARY, segment_index, segment_path};
 
@@ -291,6 +292,83 @@ impl JobQueue for FakeQueue {
     }
 }
 
+/// A clock that answers scripted times in turn, repeating the last one; with
+/// none scripted it answers 2026-10-26 14:03:09.
+#[derive(Default)]
+pub(crate) struct FakeClock {
+    pub(crate) times: RefCell<VecDeque<LocalTime>>,
+}
+
+/// 2026-10-26 at `hour`:`minute`:`second`.
+pub(crate) fn at(hour: u32, minute: u32, second: u32) -> LocalTime {
+    LocalTime {
+        year: 2026,
+        month: 10,
+        day: 26,
+        hour,
+        minute,
+        second,
+    }
+}
+
+impl FakeClock {
+    /// Answers `times` in turn, then the last one forever.
+    pub(crate) fn script(&self, times: &[LocalTime]) {
+        *self.times.borrow_mut() = times.iter().copied().collect();
+    }
+}
+
+impl Clock for FakeClock {
+    fn now(&self) -> LocalTime {
+        let mut times = self.times.borrow_mut();
+        if times.len() > 1 {
+            times.pop_front().unwrap_or_else(|| at(14, 3, 9))
+        } else {
+            times.front().copied().unwrap_or_else(|| at(14, 3, 9))
+        }
+    }
+}
+
+/// Records every encode asked for; fails while `fail` is set. Writes
+/// nothing.
+#[derive(Default)]
+pub(crate) struct FakeEncoder {
+    pub(crate) calls: RefCell<Vec<(String, String)>>,
+    pub(crate) fail: Cell<bool>,
+}
+
+impl Encoder for FakeEncoder {
+    fn to_m4a(&self, wav: &str, m4a: &str) -> Result<(), PortError> {
+        self.calls
+            .borrow_mut()
+            .push((wav.to_string(), m4a.to_string()));
+        if self.fail.get() {
+            Err(PortError("afconvert is missing".to_string()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Answers scripted summaries in turn ("A summary." when none is left) and
+/// records every transcript it is given.
+#[derive(Default)]
+pub(crate) struct FakeSummarizer {
+    pub(crate) answers: RefCell<VecDeque<Result<String, String>>>,
+    pub(crate) transcripts: RefCell<Vec<String>>,
+}
+
+impl Summarizer for FakeSummarizer {
+    fn summarize(&self, transcript: &str) -> Result<String, PortError> {
+        self.transcripts.borrow_mut().push(transcript.to_string());
+        self.answers
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or_else(|| Ok("A summary.".to_string()))
+            .map_err(PortError)
+    }
+}
+
 /// Every fake, owned together.
 #[derive(Default)]
 pub(crate) struct World {
@@ -300,6 +378,9 @@ pub(crate) struct World {
     pub(crate) clipboard: FakeClipboard,
     pub(crate) queue: FakeQueue,
     pub(crate) downloader: FakeDownloader,
+    pub(crate) clock: FakeClock,
+    pub(crate) encoder: FakeEncoder,
+    pub(crate) summarizer: FakeSummarizer,
     /// Every progress report a job made through [`World::run`].
     pub(crate) progress: RefCell<Vec<u64>>,
 }
@@ -316,9 +397,23 @@ impl World {
         )
     }
 
+    /// [`Self::ports`] with the recording library on.
+    pub(crate) fn library_ports(&self) -> Ports<'_> {
+        self.ports().with_library(Library {
+            clock: &self.clock,
+            encoder: &self.encoder,
+            summarizer: &self.summarizer,
+        })
+    }
+
     /// Runs `job` against the fakes, keeping its progress reports.
     pub(crate) fn run(&self, job: &Job) -> Outcome {
-        job.run(&self.ports(), &|bytes| {
+        self.run_with(job, &self.ports())
+    }
+
+    /// Runs `job` against `ports`, keeping its progress reports.
+    pub(crate) fn run_with(&self, job: &Job, ports: &Ports<'_>) -> Outcome {
+        job.run(ports, &|bytes| {
             self.progress.borrow_mut().push(bytes);
         })
     }

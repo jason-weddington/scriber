@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use scriber_core::sync::LoadOnce;
 use scriber_engine::{
-    Adapters, Captured, Downloader, Engine, EngineConfig, Event, LevelSink, PortError, Recorder,
-    Snapshot, Transcriber,
+    Adapters, Captured, Clipboard, Clock, Downloader, Encoder, Engine, EngineConfig, Event,
+    LevelSink, LocalTime, PortError, Recorder, Snapshot, Summarizer, Transcriber,
 };
 
 /// How long a test waits for anything.
@@ -201,12 +201,88 @@ impl Downloader for FakeDownloader {
     }
 }
 
+/// A clock that always reads 2026-10-26 14:03:09.
+#[derive(Clone, Default)]
+pub(crate) struct FakeClock;
+
+impl Clock for FakeClock {
+    fn now(&self) -> LocalTime {
+        LocalTime {
+            year: 2026,
+            month: 10,
+            day: 26,
+            hour: 14,
+            minute: 3,
+            second: 9,
+        }
+    }
+}
+
+/// An encoder that counts its calls and writes nothing.
+#[derive(Clone, Default)]
+pub(crate) struct FakeEncoder {
+    pub(crate) calls: Arc<AtomicU32>,
+}
+
+impl Encoder for FakeEncoder {
+    fn to_m4a(&self, _wav: &str, _m4a: &str) -> Result<(), PortError> {
+        let _before = self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// A summarizer that answers "A dictated note.", optionally waiting for a
+/// message on `gate` first.
+#[derive(Clone, Default)]
+pub(crate) struct FakeSummarizer {
+    pub(crate) gate: Option<Arc<Mutex<Receiver<()>>>>,
+}
+
+impl FakeSummarizer {
+    /// Waits for a message on the returned sender before each answer.
+    pub(crate) fn gated() -> (Self, Sender<()>) {
+        let (tx, rx) = mpsc::channel();
+        let gated = Self {
+            gate: Some(Arc::new(Mutex::new(rx))),
+        };
+        (gated, tx)
+    }
+}
+
+impl Summarizer for FakeSummarizer {
+    fn summarize(&self, _transcript: &str) -> Result<String, PortError> {
+        if let Some(gate) = &self.gate {
+            // A closed gate (the test ended) lets the answer through.
+            let _opened = gate.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        }
+        Ok("A dictated note.".to_string())
+    }
+}
+
+/// A clipboard that keeps every write.
+#[derive(Clone, Default)]
+pub(crate) struct RecordingClipboard {
+    pub(crate) writes: Arc<Mutex<Vec<String>>>,
+}
+
+impl Clipboard for RecordingClipboard {
+    fn write(&self, text: &str) -> Result<(), PortError> {
+        self.writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(text.to_string());
+        Ok(())
+    }
+}
+
 /// Every fake, and the engine's events.
 #[derive(Default)]
 pub(crate) struct Fakes {
     pub(crate) recorder: FakeRecorder,
     pub(crate) transcriber: FakeTranscriber,
     pub(crate) downloader: FakeDownloader,
+    pub(crate) encoder: FakeEncoder,
+    pub(crate) summarizer: FakeSummarizer,
 }
 
 impl Fakes {
@@ -227,6 +303,7 @@ impl Fakes {
             self.transcriber.clone(),
             self.downloader.clone(),
         );
+        let (encoder, summarizer) = (self.encoder.clone(), self.summarizer.clone());
         let engine = Engine::with_adapters(
             config,
             move |level| {
@@ -238,6 +315,9 @@ impl Fakes {
                     recorder: Box::new(recorder),
                     transcriber: Box::new(transcriber),
                     downloader: Box::new(downloader),
+                    clock: Box::new(FakeClock),
+                    encoder: Box::new(encoder),
+                    summarizer: Box::new(summarizer),
                 }
             },
             events(tx),

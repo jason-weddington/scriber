@@ -32,6 +32,7 @@ const base: Snapshot = {
   notice: null,
   modelError: null,
   download: null,
+  libraryRevision: 0,
 };
 
 test('recorded time reads m:ss, then h:mm:ss, rounded down', () => {

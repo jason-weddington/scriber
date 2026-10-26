@@ -32,4 +32,24 @@ export interface Snapshot {
   modelError: string | null;
   /** The speech model's download, while it runs. */
   download: Download | null;
+  /** Grows whenever the recording library gains an entry or a summary; the window lists it again. */
+  libraryRevision: number;
+}
+
+/** One recording in the library, as the drawer lists it. */
+export interface LibraryEntry {
+  /** The entry's folder name: its start, `20261026-140309`, with `-2` and so on after a collision. */
+  id: string;
+  /** Its start in local time: `2026-10-26 14:03:09`. */
+  title: string;
+  /** One sentence: the local model's summary, or an excerpt of the transcript. */
+  summary: string;
+}
+
+/** The user's settings. */
+export interface Settings {
+  /** Whether new recordings are summarized by the local model (Ollama). */
+  summaries: boolean;
+  /** Whether the library drawer is open. */
+  libraryOpen: boolean;
 }

@@ -109,6 +109,9 @@ pub struct Snapshot {
     pub model_error: Option<String>,
     /// The speech model's download, while it runs.
     pub download: Option<Download>,
+    /// Grows whenever the recording library gains an entry or an entry's
+    /// summary is replaced, so the window knows to list it again.
+    pub library_revision: u64,
 }
 
 /// How far the speech model's download has got.
@@ -119,4 +122,28 @@ pub struct Download {
     pub received_bytes: u64,
     /// The model's size in bytes.
     pub total_bytes: u64,
+}
+
+/// One recording in the library, as the window lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LibraryEntry {
+    /// The entry's folder name: its session's start, `20261026-140309`,
+    /// with `-2`, `-3` and so on after a collision.
+    pub id: String,
+    /// Its session's start in local time: `2026-10-26 14:03:09`.
+    pub title: String,
+    /// One sentence: the local model's summary, or an excerpt of the
+    /// transcript.
+    pub summary: String,
+}
+
+/// The user's settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Settings {
+    /// Whether new library entries are summarized by the local model.
+    pub summaries: bool,
+    /// Whether the window shows the library drawer.
+    pub library_open: bool,
 }

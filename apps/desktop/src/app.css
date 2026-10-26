@@ -45,17 +45,27 @@ body {
   overflow: hidden;
 }
 
-/* A column: the band, the scrolling main area, the footer. */
+/* The band on top, the library drawer on the left, the recorder (or an
+   entry) beside it, the footer below. The document order differs (main
+   first, so Tab reaches the recorder's controls first); the grid places
+   each part. */
 .window {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: var(--band-height) minmax(0, 1fr) auto;
+  grid-template-areas:
+    'band band'
+    'library main'
+    'footer footer';
   height: 100%;
 }
 
 /* The top band holds the pane's controls and drags the window; it starts
    after the traffic lights (titleBarStyle Overlay in tauri.conf.json). */
 .band {
-  flex: 0 0 var(--band-height);
+  grid-area: band;
+  position: relative;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -102,8 +112,10 @@ button:focus-visible {
 }
 
 main {
-  flex: 1 1 auto;
+  grid-area: main;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   padding: 16px;
@@ -252,7 +264,7 @@ progress {
 
 textarea {
   flex: 1 1 auto;
-  min-height: 4rem;
+  min-height: 0;
   resize: none;
   overflow-y: auto;
   padding: 10px 12px;
@@ -270,9 +282,133 @@ textarea:focus-visible {
 }
 
 footer {
-  flex: 0 0 auto;
+  grid-area: footer;
   padding: 6px 16px;
   color: var(--muted);
   font-size: 12px;
   border-top: 1px solid var(--line);
+}
+
+/* A button that is only an icon (its name is its aria-label). */
+button.icon {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 8px;
+}
+
+.band .error {
+  font-size: 12px;
+}
+
+/* The library drawer: a fixed-width column whose list scrolls inside it. */
+.library {
+  grid-area: library;
+  width: 220px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+
+.library[hidden] {
+  display: none;
+}
+
+.library .empty,
+.library .error {
+  margin: 0;
+  padding: 12px 16px;
+}
+
+.library .empty {
+  color: var(--muted);
+}
+
+.library ul {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+}
+
+.library li {
+  flex-shrink: 0;
+}
+
+.library li button {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+}
+
+.library li button[aria-current='true'] {
+  background: var(--line);
+}
+
+.entry-title {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-summary {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* An entry shown in the main pane. */
+.entry-heading {
+  flex-shrink: 0;
+  margin: 0;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-status {
+  flex-shrink: 0;
+  margin: 0;
+  min-height: 1.2em;
+}
+
+/* The settings panel drops down from the band's gear. */
+.settings {
+  position: absolute;
+  top: calc(var(--band-height) - 4px);
+  right: 12px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: calc(100vw - 24px);
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 15%);
+  user-select: none;
+}
+
+.settings[hidden] {
+  display: none;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.switch input {
+  accent-color: var(--accent);
 }

@@ -11,19 +11,24 @@ import {
   DOWNLOAD_STEPS,
   DOWNLOADING,
   downloadFailed,
+  excerpt,
   heard,
   join,
   LEVEL_MS,
   leftover,
   Mock,
+  MOCK_SUMMARY,
   MOCK_VERSION,
   MODEL_BYTES,
   modelMissing,
   NO_DOWNLOAD,
+  NOT_IN_LIBRARY,
   NOTHING_HEARD,
   partFailed,
+  preloaded,
   refusal,
   syntheticLevel,
+  title,
 } from '../../src/lib/mock';
 import type { Action, Phase, Snapshot } from '../../src/lib/types';
 
@@ -125,6 +130,22 @@ test.describe('the mock speaks the Rust JSON shapes', () => {
     }
   });
 
+  test('a library entry and the settings have the fixture keys and types', async () => {
+    const mock = new Mock('?library=2');
+    const [entry] = await mock.libraryList();
+    const settings = await mock.settingsGet();
+    for (const [name, value] of [
+      ['libraryEntry', entry],
+      ['settings', settings],
+    ] as const) {
+      const allowedTypes = types([shapes[name] ?? {}]);
+      expect(Object.keys(value ?? {}).sort(), `${name} keys`).toEqual([...allowedTypes.keys()].sort());
+      for (const [k, v] of Object.entries(value ?? {})) {
+        expect(allowedTypes.get(k)?.has(typeof v), `${name} ${k}`).toBe(true);
+      }
+    }
+  });
+
   test('a level is a number from 0 to 1, as in the fixture', () => {
     expect(typeof shapes.level).toBe('number');
     const all = Array.from({ length: 200 }, (_, n) => syntheticLevel(n));
@@ -153,7 +174,9 @@ test('the legal actions are the core table, in the mock and in the buttons', asy
       const before = mock.snapshot();
       const attempt = mock.act(action, 'edited');
       if (CORE_LEGAL[phase].includes(action)) {
-        await expect(attempt, `${action} from ${phase}`).resolves.toMatchObject({ revision: before.revision + 1 });
+        // One for the action, and one more when it archived a finished session into the library.
+        const after = await attempt;
+        expect(after.revision - before.revision, `${action} from ${phase}`).toBe(1 + after.libraryRevision - before.libraryRevision);
       } else {
         await expect(attempt, `${action} from ${phase}`).rejects.toThrow(
           `Cannot ${CORE_ACTION_NAMES[action]} while ${phase}.`,
@@ -303,4 +326,108 @@ test('the mock logs every action asked for, allowed or not', async () => {
   await mock.act('new', '');
   await expect(mock.act('pause', '')).rejects.toThrow();
   expect(mock.handle.acts).toEqual(['new', 'pause']);
+});
+
+// ---- the recording library -----------------------------------------------------
+
+test('excerpts follow the core rule (library.rs)', () => {
+  const a = (n: number): string => 'a'.repeat(n);
+  const b = (n: number): string => 'b'.repeat(n);
+  const cases: [string, string][] = [
+    ['  Hello\n\n world  ', 'Hello world'],
+    ['abcdefghij abcdefghij abcdefgh', 'abcdefghij abcdefghij abcdefgh'],
+    ['This is part 1 of the dictation.', 'This is part 1 of the...'],
+    ["Okay, here's what I need. First, check the board; then, once it's done, let me know.", "Okay, here's what I need..."],
+    [`${a(19)} ${b(20)}`, `${a(19)} ${b(10)}...`],
+    [`${a(20)} ${b(20)}`, `${a(20)}...`],
+    ['Supercalifragilisticexpialidocious is long', 'Supercalifragilisticexpialidoc...'],
+    ['Abcdefghijklmnopqrstuvwxyzabc, more', 'Abcdefghijklmnopqrstuvwxyzabc...'],
+    ['é'.repeat(31), `${'é'.repeat(30)}...`],
+    [`${a(29)}😀bbb`, `${a(29)}😀...`],
+  ];
+  for (const [text, want] of cases) expect(excerpt(text), JSON.stringify(text)).toBe(want);
+  expect(excerpt('a\u0085b'), 'U+0085 is whitespace').toBe('a b');
+  expect(excerpt('a\uFEFFb'), 'U+FEFF is not').toBe('a\uFEFFb');
+});
+
+test('titles are local time, zero-padded', () => {
+  expect(title(new Date(2026, 0, 5, 9, 3, 7))).toBe('2026-01-05 09:03:07');
+  expect(title(new Date(2026, 11, 31, 23, 59, 59))).toBe('2026-12-31 23:59:59');
+  expect(preloaded(1)).toEqual({
+    id: '20261026-085900',
+    title: '2026-10-26 08:59:00',
+    summary: 'Preloaded recording number 2.',
+    transcript: 'This is preloaded recording number 2.',
+  });
+});
+
+/** A whole session in the mock: New, Record, Done, transcribed. */
+async function session(mock: Mock): Promise<void> {
+  await mock.act('new', '');
+  await mock.act('record', '');
+  await mock.act('done', '');
+  await settled();
+}
+
+test('a finished session is archived with its excerpt, then summarized', async () => {
+  const mock = new Mock('');
+  mock.handle.hold('summarize');
+  const events: Snapshot[] = [];
+  mock.onChange((s) => events.push(s));
+  await session(mock);
+  expect(mock.snapshot().libraryRevision).toBe(1);
+  const [entry] = await mock.libraryList();
+  expect(entry?.summary).toBe('This is part 1 of the...');
+  expect(await mock.libraryGet(entry?.id ?? '')).toBe(heard(0, false));
+  mock.handle.release('summarize');
+  await settled();
+  expect((await mock.libraryList())[0]?.summary).toBe(MOCK_SUMMARY);
+  expect(events.at(-1)?.libraryRevision).toBe(2);
+});
+
+test('colliding ids take a suffix and list newest first', async () => {
+  const mock = new Mock('?summaries=off');
+  for (let i = 0; i < 3; i++) await session(mock);
+  const ids = (await mock.libraryList()).map((e) => e.id);
+  expect(ids).toHaveLength(3);
+  expect(ids[1]).toBe(`${ids[2] ?? ''}-2`);
+  expect(ids[0]).toBe(`${ids[2] ?? ''}-3`);
+  expect(mock.snapshot().libraryRevision).toBe(3);
+});
+
+test('summaries off, or Ollama down, keep the excerpt; nothing is archived from an empty session', async () => {
+  for (const params of ['?summaries=off', '?ollama=down']) {
+    const mock = new Mock(params);
+    await session(mock);
+    await settled();
+    expect((await mock.libraryList())[0]?.summary, params).toBe('This is part 1 of the...');
+  }
+  const silent = new Mock('?mic=silent');
+  await session(silent);
+  expect(await silent.libraryList()).toEqual([]);
+});
+
+test('settings round-trip, and the library calls fail on request', async () => {
+  const mock = new Mock('?libraryOpen=0&summaries=off');
+  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false });
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true })).toEqual({ summaries: true, libraryOpen: true });
+  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true });
+  await expect(mock.libraryGet('../segments')).rejects.toThrow(NOT_IN_LIBRARY);
+  for (const call of ['library_list', 'library_get', 'library_copy', 'settings_get', 'settings_set'] as const) {
+    const failing = new Mock(`?fail=${call}&library=1`);
+    const attempt = {
+      library_list: () => failing.libraryList(),
+      library_get: () => failing.libraryGet('20261026-090000'),
+      library_copy: () => failing.libraryCopy('20261026-090000'),
+      settings_get: () => failing.settingsGet(),
+      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true }),
+    }[call];
+    await expect(attempt(), call).rejects.toThrow(`Mock failure: ${call}`);
+  }
+  const copying = new Mock('?library=1');
+  await copying.libraryCopy('20261026-090000');
+  expect(copying.handle.copied).toEqual(['This is preloaded recording number 1.']);
+  await expect(new Mock('?library=1&clipboard=fail').libraryCopy('20261026-090000')).rejects.toThrow(
+    'Could not copy to the clipboard: pasteboard unavailable',
+  );
 });

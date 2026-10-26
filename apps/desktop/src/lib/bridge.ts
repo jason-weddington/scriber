@@ -14,7 +14,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 import { Mock } from './mock';
-import type { Action, Snapshot } from './types';
+import type { Action, LibraryEntry, Settings, Snapshot } from './types';
 
 /** The event src-tauri emits when a job changes the snapshot (DICTATION_EVENT in lib.rs). */
 export const DICTATION_EVENT = 'dictation-changed';
@@ -66,6 +66,36 @@ export async function dictationState(): Promise<Snapshot> {
 export async function act(action: Action, text = ''): Promise<Snapshot> {
   if (!underTauri()) return mock().act(action, text);
   return invoke<Snapshot>('dictation_act', { action, text });
+}
+
+/** The recording library, newest first. */
+export async function libraryList(): Promise<LibraryEntry[]> {
+  if (!underTauri()) return mock().libraryList();
+  return invoke<LibraryEntry[]>('library_list');
+}
+
+/** One library entry's transcript. */
+export async function libraryGet(id: string): Promise<string> {
+  if (!underTauri()) return mock().libraryGet(id);
+  return invoke<string>('library_get', { id });
+}
+
+/** Puts one library entry's transcript on the clipboard. */
+export async function libraryCopy(id: string): Promise<void> {
+  if (!underTauri()) return mock().libraryCopy(id);
+  return invoke<undefined>('library_copy', { id });
+}
+
+/** The user's settings. */
+export async function settingsGet(): Promise<Settings> {
+  if (!underTauri()) return mock().settingsGet();
+  return invoke<Settings>('settings_get');
+}
+
+/** Saves the user's settings; resolves to what was saved. */
+export async function settingsSet(settings: Settings): Promise<Settings> {
+  if (!underTauri()) return mock().settingsSet(settings);
+  return invoke<Settings>('settings_set', { settings });
 }
 
 /** Subscribes to background changes (a segment transcribed, the model's download). Resolves to the unsubscribe function. */
