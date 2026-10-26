@@ -1,4 +1,4 @@
-# Mutation testing (scripts/gate.sh): zero surviving mutants is the bar for
+# Mutation testing (scripts/gate.sh release, run by release.sh): zero surviving mutants is the bar for
 # the whole core and the engine. A mutant that survives is a behaviour no
 # test pins.
 examine_globs = ["crates/scriber-core/src/**/*.rs", "crates/scriber-engine/src/**/*.rs"]

@@ -1,14 +1,15 @@
 # Quality gates
 
-The rule: **start strict, relax only on evidence.** Every check starts at its strictest setting, and a relaxation needs a recorded reason next to it. Quality is enforced by deterministic checks that run on every commit, because an agent (or a person) that writes code fast needs a verdict that does not depend on anyone's attention. This file says what each gate catches and what it costs; `scripts/gate.sh` is the definition.
+The rule: **start strict, relax only on evidence.** Every check starts at its strictest setting, and a relaxation needs a recorded reason next to it. Quality is enforced by deterministic checks that run on every commit (mutation testing, the slowest check, runs only in `gate.sh release`, from release.sh), because an agent (or a person) that writes code fast needs a verdict that does not depend on anyone's attention. This file says what each gate catches and what it costs; `scripts/gate.sh` is the definition.
 
 ## One gate, every surface
 
-`scripts/gate.sh <mode>` is the only definition of the gate. lefthook calls it for the git hooks (`pre-commit`, `pre-push`), and CI or an agent harness calls `gate.sh full`. Because every surface runs the same script, an agent driven by commit hooks and one driven by a gate command are held to exactly the same bar, and the hooks cannot drift from CI. Steps run in order and stop at the first failure, naming the step.
+`scripts/gate.sh <mode>` is the only definition of the gate. lefthook calls it for the git hooks (`pre-commit`, `pre-push`), CI or an agent harness calls `gate.sh full`, and release.sh calls `gate.sh release`. Because every surface runs the same script, an agent driven by commit hooks and one driven by a gate command are held to exactly the same bar, and the hooks cannot drift from CI. Steps run in order and stop at the first failure, naming the step.
 
 - `pre-commit`: the per-commit checks, fast enough to run on every commit.
-- `pre-push`: pre-commit plus the slow ones (coverage, doctests, mutation testing on the change, audits, e2e).
-- `full`: everything, never skipped, for CI and agent harnesses; mutation testing covers the whole core.
+- `pre-push`: pre-commit plus the slow ones (coverage, doctests, audits, e2e; no mutation testing).
+- `full`: everything except mutation testing, never skipped, for CI and agent harnesses.
+- `release`: full plus mutation testing over the whole core and engine; release.sh runs it.
 
 ### Hooks check, never fix
 
@@ -33,14 +34,13 @@ A change that touches only `docs/**` and top-level `*.md` skips clippy, tests, c
 | Frontend: `pnpm install --frozen-lockfile`, `svelte-check --fail-on-warnings`, `eslint --max-warnings 0`, unit tests | Type errors and warnings in templates, lint debt, a lockfile that disagrees with `package.json` | Tens of seconds |
 | Rust line coverage floor (pre-push) | Code that no test executes | A test run in the warm tree |
 | Doctests (pre-push) | Documentation examples that no longer compile; nextest does not run doctests | Seconds to a minute |
-| `cargo mutants --in-diff`, zero survivors (pre-push) | Tests that pass without checking anything on the code just changed | Minutes |
-| `cargo mutants` over the core and the engine, zero survivors (full) | The same, over everything, so nothing escapes for long | Longest step |
+| `cargo mutants` over the core and the engine, zero survivors (release) | The same, over everything, so nothing escapes for long | Longest step |
 | `cargo machete`, `cargo deny check`, `pnpm audit --prod` | Unused dependencies, licences, advisories, unexpected registries, vulnerable frontend packages | Seconds |
 | Playwright e2e with axe, frontend coverage floor, `vite build` | UI regressions against the mock, accessibility violations, untested frontend code, a bundle that does not build | Minutes |
 
 ### Why these are worth their cost
 
-**Mutation testing** is the one gate whose cost deserves care. Coverage proves a line ran, not that anything asserted on it; a mutant (a flipped comparison, a deleted statement) that survives proves the tests would pass with the logic broken. Zero survivors is the only bar that does not erode: any tolerated number invites the next one. It is slow, so pre-push scopes it to the diff against the merge-base (untracked files included, so an agent's uncommitted work is covered), and only `full` runs the whole core. An unknown base falls back to a full run rather than skipping. Mutation copies of the tree go under `target/` rather than the system temp directory, so concurrent gates cannot fill a small tmpfs, and run few jobs in parallel.
+**Mutation testing** is the one gate whose cost deserves care. Coverage proves a line ran, not that anything asserted on it; a mutant (a flipped comparison, a deleted statement) that survives proves the tests would pass with the logic broken. Zero survivors is the only bar that does not erode: any tolerated number invites the next one. It is slow, so it runs only as the last check before a release (`gate.sh release`, from release.sh), over the whole core and engine. Mutation copies of the tree go under `target/` rather than the system temp directory, so concurrent gates cannot fill a small tmpfs, and run few jobs in parallel.
 
 **The time-zone and locale rerun** runs the whole core suite a second time under an unusual zone (a 45-minute offset with its own DST rules) and a decimal-comma locale. Code that formats or parses dates, numbers or sorted strings works on the author's machine and fails on a user's; the rerun catches it on the author's machine. The cost is one more test run, paid only because the suite is fast.
 

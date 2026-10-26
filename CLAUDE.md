@@ -14,7 +14,8 @@ macOS dictation app: Rust core, Tauri 2 shell, Svelte 5 frontend. New, Record, P
 
 ```sh
 bash scripts/gate.sh pre-commit      # what every commit must pass (~10 s warm)
-bash scripts/gate.sh full            # everything: coverage, mutants, audits, e2e, build
+bash scripts/gate.sh full            # everything but mutation testing: coverage, audits, e2e, build
+bash scripts/gate.sh release         # full plus mutation testing over the whole core; release.sh runs it
 cargo nextest run --workspace        # core and engine tests while iterating
 cd apps/desktop && pnpm test         # frontend unit + e2e while iterating
 cd apps/desktop && pnpm dev          # the frontend in a browser, on the mock
@@ -22,7 +23,7 @@ bash scripts/install.sh              # release build, verify the signature, inst
 bash scripts/fetch-model.sh          # download the speech model into the app data folder (never in the gate)
 bash scripts/smoke.sh                # real-model check: `say` + ffmpeg + the app's Whisper adapter
 bash scripts/exit-check.sh [--control]   # Mac exit check: quitting with the model loaded must not abort
-./release.sh                         # cut a release (cog bump --auto, tag, push)
+./release.sh                         # gate.sh release (full + mutants), then cog bump --auto, tag, push
 ```
 
 ## Rules
@@ -30,7 +31,7 @@ bash scripts/exit-check.sh [--control]   # Mac exit check: quitting with the mod
 - **`scripts/gate.sh` is the definition of done.** The hooks call it, and so should you before you say anything is finished. Run `bash scripts/gate.sh full` for a change of any size.
 - **Hooks check, never fix.** When `fmt` or `cargo-sort` fails, run `cargo fmt --all` or `cargo sort --workspace --grouped` yourself (in both workspaces) and commit again. Never commit with `--no-verify`.
 - **Coverage floors only go up.** They are literals at the top of `scripts/gate.sh` (Rust lines, at least 98; frontend lines). When coverage climbs, raise them; never lower one to get a change through.
-- **Zero surviving mutants** in the core. A survivor is a behaviour no test pins: add the test.
+- **Zero surviving mutants** in the core and the engine, checked by `gate.sh release`, which release.sh runs; a survivor found there blocks the release and gets a test.
 - **No `#[allow(...)]`.** Use `#[expect(lint, reason = "...")]`, which fails once it is no longer needed.
 - **No logic in `src-tauri`**, and no `@tauri-apps` import outside `bridge.ts`. `scripts/check-architecture.sh` enforces both.
 - **The mock answers like the core.** When a core rule or JSON shape changes, change `mock.ts`, `tests/unit/mock.spec.ts` and `crates/scriber-core/tests/fixtures/bridge-shapes.json` with it.

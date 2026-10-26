@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # The ONE definition of the quality gate (docs/quality-gates.md). lefthook
-# calls it for the git hooks, and an agent harness or CI calls `full`, so
-# hooks and agents are held to the same bar and cannot drift.
+# calls it for the git hooks, an agent harness or CI calls `full`, and
+# release.sh calls `release`, so hooks, agents and releases are held to the
+# same bar and cannot drift.
 #
-#   scripts/gate.sh pre-commit   per-commit checks (a docs-only commit skips the heavy ones)
-#   scripts/gate.sh pre-push     pre-commit plus coverage, doctests, mutants on the change, audits, e2e
-#   scripts/gate.sh full         everything, never skipped, with mutants over the whole core
+#   scripts/gate.sh pre-commit   per-commit checks; a docs-only commit skips the heavy ones
+#   scripts/gate.sh pre-push     pre-commit plus coverage, doctests, audits and e2e, with no mutation testing
+#   scripts/gate.sh full         everything except mutation testing, never skipped; the agent and GTD gate command
+#   scripts/gate.sh release      everything full runs plus mutation testing over the whole core and engine; release.sh runs it
 #
 # Every step CHECKS; none rewrites a tracked file. Steps run in order and the
 # script stops at the first failure, naming the step that failed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-mode=${1:?usage: gate.sh pre-commit|pre-push|full}
-case "$mode" in pre-commit|pre-push|full) ;; *) echo "unknown mode: $mode" >&2; exit 2 ;; esac
+mode=${1:?usage: gate.sh pre-commit|pre-push|full|release}
+case "$mode" in pre-commit|pre-push|full|release) ;; *) echo "unknown mode: $mode" >&2; exit 2 ;; esac
 
 # Coverage floors. RATCHET UP as coverage climbs, never down.
 # Rust: line coverage of the core and the engine, at least 98.
@@ -44,7 +46,7 @@ docs_only=false
 case "$mode" in
   pre-commit) scripts/docs-only.sh staged 2>/dev/null && docs_only=true ;;
   pre-push) scripts/docs-only.sh push 2>/dev/null && docs_only=true ;;
-  full) ;;
+  full|release) ;;
 esac
 
 # ---- cheap checks: always, even for docs ------------------------------------
@@ -55,7 +57,7 @@ step cargo-sort-app in_app cargo sort --workspace --grouped --check
 step typos typos
 case "$mode" in
   pre-commit) step gitleaks gitleaks git --staged --redact --no-banner ;;
-  pre-push|full) step gitleaks gitleaks dir . --redact --no-banner ;;
+  pre-push|full|release) step gitleaks gitleaks dir . --redact --no-banner ;;
 esac
 
 if $docs_only; then
@@ -83,7 +85,7 @@ step unit-tests in_app pnpm exec playwright test --project unit
 
 [ "$mode" = pre-commit ] && { echo "gate: $mode passed" >&2; exit 0; }
 
-# ---- pre-push and full ------------------------------------------------------
+# ---- pre-push, full and release ------------------------------------------------------
 # Measures afresh (cargo llvm-cov cleans its old profiles first), so a gate can
 # never pass on coverage data left by an earlier commit.
 # The engine's cpal and whisper.cpp adapters (and its smoke example) need a
@@ -95,20 +97,12 @@ step coverage cargo llvm-cov nextest --workspace --all-features --locked \
 # nextest does not run doctests; without this they silently never run.
 step doctests cargo test --doc --workspace --locked
 
-# Zero surviving mutants. pre-push mutates only the code this change touches
-# (the diff from the merge-base with origin/main, uncommitted and untracked
-# files included); full mutates the whole core. An unknown base fails closed
-# to the whole core. The copies cargo-mutants builds live under target/.
-mkdir -p target/mutants-tmp
-mutants_diff=target/mutants-tmp/change.diff
-if [ "$mode" = pre-push ] && base=$(git merge-base origin/main HEAD 2>/dev/null); then
-  git diff "$base" > "$mutants_diff"
-  git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
-    git diff --no-index /dev/null "$f" >> "$mutants_diff" || true
-  done
-  step mutants env TMPDIR="$PWD/target/mutants-tmp" cargo mutants --no-shuffle --in-diff "$mutants_diff"
-else
+# Mutation testing runs only in release mode, over the whole core and engine,
+# with zero survivors required. The copies cargo-mutants builds live under target/.
+if [ "$mode" = release ]; then
+  mkdir -p target/mutants-tmp
   step mutants env TMPDIR="$PWD/target/mutants-tmp" cargo mutants --no-shuffle
+  step mutants-nonempty grep -Eq '"total_mutants": *[1-9]' mutants.out/outcomes.json
 fi
 
 step machete cargo machete
