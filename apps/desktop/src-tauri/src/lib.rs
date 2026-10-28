@@ -91,7 +91,7 @@ mod commands {
         engine.open_vocabulary().map_err(|e| e.to_string())
     }
 
-    /// `ollama_models`: the installed Ollama models' names, sorted.
+    /// `ollama_models`: the installed Ollama models' names that can generate text (embedding models hidden), sorted.
     #[tauri::command]
     pub(crate) async fn ollama_models(engine: State<'_, Engine>) -> Result<Vec<String>, String> {
         engine.ollama_models().map_err(|e| e.to_string())

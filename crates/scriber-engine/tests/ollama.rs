@@ -270,6 +270,32 @@ mod tests {
     }
 
     #[test]
+    fn embedding_models_are_not_listed() {
+        let (models, _) = listed(
+            &ok(
+                r#"{"models":[{"name":"qwen3.8:27b-mlx","capabilities":["completion","vision","tools","thinking"]},{"name":"qwen3-embedding:0.6b","capabilities":["tools","thinking","embedding"]},{"name":"nomic:latest","capabilities":["embedding"]},{"name":"empty:1","capabilities":[]},{"name":"odd:1","capabilities":[7,"Completion"]},{"name":"mixed:1","capabilities":[7,"completion"]},{"name":"bge-Embed-chat:1","capabilities":["completion"]}]}"#,
+            ),
+            false,
+        );
+        assert_eq!(models.unwrap(), ["mixed:1", "qwen3.8:27b-mlx"], "names");
+    }
+
+    #[test]
+    fn without_capabilities_only_the_name_hides_a_model() {
+        let (models, _) = listed(
+            &ok(
+                r#"{"models":[{"name":"gemma3:4b"},{"name":"mxbai-EMBED-large:latest"},{"name":"llama3:8b","capabilities":null},{"name":"all-minilm-embedding:1","capabilities":"completion"},{"name":"phi4:14b","capabilities":{"completion":true}}]}"#,
+            ),
+            false,
+        );
+        assert_eq!(
+            models.unwrap(),
+            ["gemma3:4b", "llama3:8b", "phi4:14b"],
+            "names"
+        );
+    }
+
+    #[test]
     fn a_trailing_slash_lists_from_the_same_path() {
         let (_, line) = listed(&ok(r#"{"models":[]}"#), true);
         assert_eq!(line, "GET /api/tags HTTP/1.1", "one slash");

@@ -741,8 +741,8 @@ impl Engine {
         Ok(self.settings())
     }
 
-    /// The names of the models installed on the Ollama server
-    /// ([`EngineConfig::ollama_url`]), sorted ([`installed_models`]). It
+    /// The names of the text-generating models installed on the Ollama server
+    /// ([`EngineConfig::ollama_url`]), embedding models hidden, sorted ([`installed_models`]). It
     /// takes no session lock and still works after [`Self::shutdown`].
     ///
     /// # Errors

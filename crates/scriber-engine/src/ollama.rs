@@ -1,7 +1,7 @@
 //! A local Ollama server: a one-sentence summary for a library entry, and
 //! the optional cleanup pass over a finished transcript, each asking the
 //! model the call names (or the adapter's default), and the listing of the
-//! installed models ([`installed_models`], `GET /api/tags`).
+//! installed models ([`installed_models`], `GET /api/tags`, embedding models hidden).
 
 use std::time::Duration;
 
@@ -103,9 +103,22 @@ impl Cleaner for Ollama {
     }
 }
 
+/// Whether a `/api/tags` entry is a model that can write text.
+fn is_text_model(entry: &Value) -> bool {
+    let named_embed = entry
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|n| n.to_lowercase().contains("embed"));
+    let completes = entry
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_none_or(|c| c.iter().any(|v| v.as_str() == Some("completion")));
+    !named_embed && completes
+}
+
 /// The names of the models installed on the Ollama server at `url`
 /// (`GET /api/tags`, the API's `ollama list`), sorted and without
-/// duplicates, within [`TAGS_TIMEOUT`].
+/// duplicates, within [`TAGS_TIMEOUT`]. Only models that can generate text are listed: a name containing `embed` (any case) is hidden, and so is an entry whose `capabilities` array lacks `"completion"`; without such an array only the name decides.
 ///
 /// # Errors
 ///
@@ -124,6 +137,7 @@ pub fn installed_models(url: &str) -> Result<Vec<String>, PortError> {
         .ok_or_else(|| PortError("the reply has no model list".to_string()))?;
     let mut names: Vec<String> = models
         .iter()
+        .filter(|m| is_text_model(m))
         .filter_map(|m| m.get("name").and_then(Value::as_str))
         .map(str::to_string)
         .collect();
