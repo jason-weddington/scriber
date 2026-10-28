@@ -8,7 +8,7 @@ use std::io::{self, Read};
 
 use scriber_core::dictation::{Job, Outcome};
 use scriber_core::ports::{
-    Captured, Clipboard, Clock, Downloader, Encoder, Files, JobQueue, Library, LocalTime,
+    Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, JobQueue, Library, LocalTime,
     PortError, Ports, Recorder, Summarizer, Transcriber,
 };
 use scriber_core::store::{VOCABULARY, segment_index, segment_path};
@@ -105,6 +105,8 @@ pub(crate) struct FakeFiles {
     pub(crate) fail_remove: Cell<bool>,
     pub(crate) fail_append: Cell<bool>,
     pub(crate) fail_rename: Cell<bool>,
+    /// Makes a write fail when its path ends with this.
+    pub(crate) fail_write_suffix: RefCell<Option<String>>,
 }
 
 impl FakeFiles {
@@ -151,7 +153,13 @@ impl Files for FakeFiles {
     }
 
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), PortError> {
-        if self.fail_write.get() {
+        if self.fail_write.get()
+            || self
+                .fail_write_suffix
+                .borrow()
+                .as_deref()
+                .is_some_and(|suffix| path.ends_with(suffix))
+        {
             return Err(PortError("disk full".to_string()));
         }
         let _: Option<_> = self
@@ -369,6 +377,32 @@ impl Summarizer for FakeSummarizer {
     }
 }
 
+/// Answers scripted replies in turn (the request's transcript, unchanged,
+/// when none is left) and records every `(system, request)` it is given.
+#[derive(Default)]
+pub(crate) struct FakeCleaner {
+    pub(crate) answers: RefCell<VecDeque<Result<String, String>>>,
+    pub(crate) calls: RefCell<Vec<(String, String)>>,
+}
+
+impl Cleaner for FakeCleaner {
+    fn clean(&self, system: &str, request: &str) -> Result<String, PortError> {
+        self.calls
+            .borrow_mut()
+            .push((system.to_string(), request.to_string()));
+        self.answers
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or_else(|| {
+                Ok(request
+                    .split_once("\n\nTranscript:\n")
+                    .map_or("", |(_, t)| t)
+                    .to_string())
+            })
+            .map_err(PortError)
+    }
+}
+
 /// Every fake, owned together.
 #[derive(Default)]
 pub(crate) struct World {
@@ -381,6 +415,7 @@ pub(crate) struct World {
     pub(crate) clock: FakeClock,
     pub(crate) encoder: FakeEncoder,
     pub(crate) summarizer: FakeSummarizer,
+    pub(crate) cleaner: FakeCleaner,
     /// Every progress report a job made through [`World::run`].
     pub(crate) progress: RefCell<Vec<u64>>,
 }
@@ -404,6 +439,16 @@ impl World {
             encoder: &self.encoder,
             summarizer: &self.summarizer,
         })
+    }
+
+    /// [`Self::ports`] with the cleanup model.
+    pub(crate) fn cleaner_ports(&self) -> Ports<'_> {
+        self.ports().with_cleaner(&self.cleaner)
+    }
+
+    /// [`Self::library_ports`] with the cleanup model.
+    pub(crate) fn library_cleaner_ports(&self) -> Ports<'_> {
+        self.library_ports().with_cleaner(&self.cleaner)
     }
 
     /// Runs `job` against the fakes, keeping its progress reports.

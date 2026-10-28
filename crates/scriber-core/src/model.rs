@@ -150,4 +150,7 @@ pub struct Settings {
     /// (`vocabulary.txt` in the data folder). Over the bridge the engine
     /// always answers an absolute path.
     pub vocabulary: String,
+    /// Whether each finished transcript is cleaned up by the local model
+    /// ([`crate::cleanup`]).
+    pub cleanup: bool,
 }

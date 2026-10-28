@@ -3,6 +3,7 @@
 //! ```text
 //! Idle --new--> Ready --record--> Recording --pause--> Paused --resume--> Recording
 //! Recording | Paused --done--> Transcribing --(all text in)--> Finished | Failed
+//! Transcribing --(all text in, cleanup on)--> Transcribing --(cleanup answered)--> Finished
 //! Failed --retry--> Transcribing
 //! Idle | Finished | Failed --new--> Ready (an empty session)
 //! anything but Idle and Transcribing --discard--> Ready (an empty session)
@@ -12,22 +13,27 @@
 //! thread with [`Job::run`] and hands the [`Outcome`] back to
 //! [`Dictation::complete`], so segments transcribe while the user thinks and
 //! Done only waits for the last one. Outcomes may arrive in any order; the
-//! transcript joins segments in recording order. An illegal action returns
-//! [`DictationError::Illegal`] and changes nothing.
+//! transcript joins segments in recording order. With the cleanup setting on
+//! and a cleanup model in the ports, a non-empty transcript then goes to the
+//! model as one more job ([`crate::cleanup`]) and the session stays
+//! transcribing until it answers; the transcript copied is the model's reply
+//! when [`cleanup::accept`] keeps it, and Whisper's text otherwise. An illegal
+//! action returns [`DictationError::Illegal`] and changes nothing.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use crate::audio::{decode_wav, duration_ms, encode_wav, to_mono_16k};
+use crate::cleanup;
 use crate::download::{self, Source};
-use crate::library::{self, clean_summary, entry_path, valid_id};
+use crate::library::{self, CleanupRecord, clean_summary, entry_path, valid_id};
 use crate::model::{Action, Download, Phase, Snapshot};
 use crate::ports::{Library, PortError, Ports};
 use crate::settings;
 use crate::store;
 use crate::sync::lock;
 use crate::transcript::{is_silent, join, keep};
-use crate::vocabulary::prompt;
+use crate::vocabulary::{self, prompt};
 
 /// Why an action was refused. The session is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -87,8 +93,9 @@ pub const NOTHING_HEARD: &str = "No speech was heard. If you spoke, check that S
 /// Work for the worker: one segment to transcribe, made by Pause, Done or
 /// Retry; the speech model's warm-up, queued at launch and after a
 /// download; the model's download, queued at launch when it is missing
-/// and by [`Action::DownloadModel`]; or, with the library on, a new library
-/// entry's audio to encode and its summary to write.
+/// and by [`Action::DownloadModel`]; a finished transcript to clean up, when
+/// the cleanup setting is on; or, with the library on, a new library entry's
+/// audio to encode and its summary to write.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job(Work);
 
@@ -109,6 +116,12 @@ enum Work {
     Encode { id: String },
     /// Summarize library entry `id`, whose transcript is `text`.
     Summary { id: String, text: String },
+    /// Clean up session `session`'s transcript `text` with glossary `terms`.
+    Cleanup {
+        session: u64,
+        text: String,
+        terms: Vec<String>,
+    },
 }
 
 /// Which job an outcome is for.
@@ -119,6 +132,7 @@ enum Mark {
     Segment { session: u64, index: u32 },
     Encode,
     Summary,
+    Cleanup { session: u64 },
 }
 
 impl Job {
@@ -141,6 +155,7 @@ impl Job {
             },
             Work::Encode { .. } => Mark::Encode,
             Work::Summary { .. } => Mark::Summary,
+            Work::Cleanup { session, .. } => Mark::Cleanup { session: *session },
         }
     }
 
@@ -152,7 +167,9 @@ impl Job {
     /// segment, which reports the failure. An encode replaces the entry's
     /// audio.wav with audio.m4a, keeping the WAV when encoding fails; a
     /// summary replaces the entry's excerpt with the model's sentence, and
-    /// leaves it when the model fails or says nothing.
+    /// leaves it when the model fails or says nothing. A cleanup asks the
+    /// cleanup model for its raw reply to [`cleanup::request`] under
+    /// [`cleanup::PROMPT`]; judging it is left to [`Dictation::complete`].
     #[must_use]
     pub fn run(&self, ports: &Ports<'_>, progress: &dyn Fn(u64)) -> Outcome {
         let result = match &self.0 {
@@ -174,6 +191,13 @@ impl Job {
                 .map_err(|e| e.to_string()),
             Work::Encode { id } => encode(id, ports).map(|()| None),
             Work::Summary { id, text } => summarize(id, text, ports).map(Some),
+            Work::Cleanup { text, terms, .. } => match ports.cleaner {
+                None => Err(CLEANUP_OFF.to_string()),
+                Some(cleaner) => cleaner
+                    .clean(cleanup::PROMPT, &cleanup::request(text, terms))
+                    .map(Some)
+                    .map_err(|e| e.to_string()),
+            },
         };
         Outcome {
             mark: self.mark(),
@@ -184,6 +208,9 @@ impl Job {
 
 /// Why a library job did nothing, when the library is off.
 const LIBRARY_OFF: &str = "the library is off";
+
+/// Why a cleanup job did nothing, when there is no cleanup model.
+const CLEANUP_OFF: &str = "the cleanup model is off";
 
 /// Why a library job did nothing, for an id that is not an entry's.
 const NOT_IN_LIBRARY: &str = "not in the library";
@@ -311,6 +338,9 @@ pub struct Dictation {
     /// What the download fetches: the model, except in tests; `None` when
     /// the model is a local file ([`Self::launch_local`]).
     source: Option<Source>,
+    /// While the cleanup model works on the transcript: Whisper's
+    /// transcript and the glossary terms sent with it.
+    cleaning: Option<(String, Vec<String>)>,
 }
 
 impl Dictation {
@@ -720,7 +750,41 @@ impl Dictation {
                     self.bump_library();
                 }
             }
+            Mark::Cleanup { session } => self.cleaned(session, outcome.result, ports),
         }
+    }
+
+    /// The cleanup model answered for `session`: finish with its reply when
+    /// [`cleanup::accept`] keeps it, and with Whisper's transcript otherwise.
+    /// Ignored unless that session is still waiting for it.
+    fn cleaned(&mut self, session: u64, result: Result<Option<String>, String>, ports: &Ports<'_>) {
+        if session != self.session || self.phase != Phase::Transcribing {
+            return;
+        }
+        let Some((raw, terms)) = self.cleaning.take() else {
+            return;
+        };
+        self.revision = self.revision.wrapping_add(1);
+        let record = |label, kept, reply, error| CleanupRecord {
+            label,
+            raw: kept,
+            reply,
+            error,
+        };
+        let (text, record) = match result {
+            Ok(reply) => {
+                let reply = reply.unwrap_or_default();
+                match cleanup::accept(&raw, &reply, &terms) {
+                    Ok(clean) if clean == raw => {
+                        (clean, record(cleanup::UNCHANGED, None, None, None))
+                    }
+                    Ok(clean) => (clean, record(cleanup::CLEANED, Some(raw), None, None)),
+                    Err(r) => (raw, record(r.label(), None, Some(reply), None)),
+                }
+            }
+            Err(e) => (raw, record(cleanup::FAILED, None, None, Some(e))),
+        };
+        self.finish(text, &record, ports);
     }
 
     /// The download finished: the model is in place and warms up, or the
@@ -765,8 +829,10 @@ impl Dictation {
         }
     }
 
-    /// While transcribing: once no segment is pending, finish (and copy the
-    /// transcript) or fail with the first failed segment's reason.
+    /// While transcribing: once no segment is pending, fail with the first
+    /// failed segment's reason, send the transcript to the cleanup model
+    /// (when the setting is on, there is a model and something was heard), or
+    /// finish at once.
     fn settle(&mut self, ports: &Ports<'_>) {
         if self.slots.values().any(|s| *s == Slot::Pending) {
             return;
@@ -787,7 +853,32 @@ impl Dictation {
                 Slot::Heard(None) | Slot::Pending => {}
             }
         }
-        self.text = join(texts);
+        let text = join(texts);
+        if !text.is_empty() && ports.cleaner.is_some() && settings::load(ports.files).cleanup {
+            let mut terms = vocabulary::terms(&store::vocabulary(ports.files).unwrap_or_default());
+            terms.truncate(cleanup::MAX_TERMS);
+            self.cleaning = Some((text.clone(), terms.clone()));
+            let job = Job(Work::Cleanup {
+                session: self.session,
+                text,
+                terms,
+            });
+            self.queue(vec![job], ports);
+            return;
+        }
+        let record = CleanupRecord {
+            label: cleanup::OFF,
+            raw: None,
+            reply: None,
+            error: None,
+        };
+        self.finish(text, &record, ports);
+    }
+
+    /// Finishes the session with transcript `text`: keeps it, copies it, and
+    /// archives it with the cleanup pass's `record`.
+    fn finish(&mut self, text: String, record: &CleanupRecord, ports: &Ports<'_>) {
+        self.text = text;
         self.phase = Phase::Finished;
         // Losing it only means a relaunch offers Retry instead of the text.
         let _kept = store::save_transcript(ports.files, &self.text);
@@ -799,7 +890,7 @@ impl Dictation {
                 Err(e) => format!("Could not copy to the clipboard: {e}. Use Copy to try again."),
             }
         });
-        self.archive(ports);
+        self.archive(ports, record);
     }
 
     fn bump_library(&mut self) {
@@ -811,7 +902,7 @@ impl Dictation {
     /// nothing) as a new entry, removes its segments' audio, and queues the
     /// entry's encoding and, when summaries are on, its summary. When the
     /// entry cannot be written the segments stay and nothing else changes.
-    fn archive(&mut self, ports: &Ports<'_>) {
+    fn archive(&mut self, ports: &Ports<'_>, record: &CleanupRecord) {
         let Some(lib) = ports.library else {
             return;
         };
@@ -822,7 +913,7 @@ impl Dictation {
             .started
             .clone()
             .unwrap_or_else(|| library::title(&lib.clock.now()));
-        let Ok(archived) = library::archive(ports.files, &title, &self.text) else {
+        let Ok(archived) = library::archive(ports.files, &title, &self.text, record) else {
             return;
         };
         store::remove_segments(ports.files);

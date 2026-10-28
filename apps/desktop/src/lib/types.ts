@@ -54,4 +54,6 @@ export interface Settings {
   libraryOpen: boolean;
   /** The glossary file's absolute path; send '' when it is not known yet (the saved one is kept). */
   vocabulary: string;
+  /** Whether each transcript is cleaned up by the local model (Ollama). */
+  cleanup: boolean;
 }

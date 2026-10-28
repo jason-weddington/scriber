@@ -2,9 +2,11 @@
 //! `library/<id>/` in the data folder.
 //!
 //! ```text
-//! library/20261026-140309/entry.json      {"id","title","summary","summary_source","duration_ms"}
-//! library/20261026-140309/transcript.txt  the transcript
-//! library/20261026-140309/audio.m4a       the session's audio (audio.wav until encoded, or when encoding fails)
+//! library/20261026-140309/entry.json          {"id","title","summary","summary_source","cleanup",["cleanup_error",]"duration_ms"}
+//! library/20261026-140309/transcript.txt      the transcript
+//! library/20261026-140309/transcript.raw.txt  Whisper's transcript, when an accepted cleanup changed it
+//! library/20261026-140309/cleanup.reply.txt   the cleanup model's rejected reply, verbatim
+//! library/20261026-140309/audio.m4a          the session's audio (audio.wav until encoded, or when encoding fails)
 //! ```
 //!
 //! An entry is named after its session's start in local time ([`title`],
@@ -12,6 +14,8 @@
 //! is replaced by the local model's one sentence ([`clean_summary`]) when
 //! that arrives. Every function that takes an id treats one that is not
 //! [`valid_id`] as not in the library, so an id can never reach outside it.
+//! `cleanup` is the cleanup pass's outcome label ([`crate::cleanup`]) and
+//! `cleanup_error` why the model failed, when it did.
 
 use std::collections::BTreeSet;
 
@@ -135,7 +139,21 @@ struct EntryFile<'a> {
     title: &'a str,
     summary: &'a str,
     summary_source: &'a str,
+    cleanup: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cleanup_error: Option<&'a str>,
     duration_ms: u64,
+}
+
+/// How the cleanup pass went, for a new entry: its outcome label
+/// ([`crate::cleanup`]), Whisper's transcript when an accepted cleanup
+/// changed it, the model's rejected reply, and why the model failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CleanupRecord {
+    pub(crate) label: &'static str,
+    pub(crate) raw: Option<String>,
+    pub(crate) reply: Option<String>,
+    pub(crate) error: Option<String>,
 }
 
 /// The path of `name` in entry `id`'s folder.
@@ -165,13 +183,19 @@ fn taken(files: &dyn Files) -> Result<BTreeSet<String>, PortError> {
 
 /// Keeps the finished session titled `title`, with transcript `text`, as a
 /// new entry: its stored segments joined into `audio.wav`, its transcript,
+/// then `transcript.raw.txt` and `cleanup.reply.txt` when `cleanup` has them,
 /// and last its entry.json, so an entry without one never lists. The
 /// segments themselves are left for the caller to remove.
 ///
 /// # Errors
 ///
 /// The library cannot be listed, or a file cannot be written.
-pub(crate) fn archive(files: &dyn Files, title: &str, text: &str) -> Result<Archived, PortError> {
+pub(crate) fn archive(
+    files: &dyn Files,
+    title: &str,
+    text: &str,
+    cleanup: &CleanupRecord,
+) -> Result<Archived, PortError> {
     let base = base_id(title);
     let taken = taken(files)?;
     let mut id = base.clone();
@@ -192,11 +216,19 @@ pub(crate) fn archive(files: &dyn Files, title: &str, text: &str) -> Result<Arch
         files.write(&entry_path(&id, "audio.wav"), &encode_wav(&all))?;
     }
     files.write(&entry_path(&id, "transcript.txt"), text.as_bytes())?;
+    if let Some(raw) = &cleanup.raw {
+        files.write(&entry_path(&id, "transcript.raw.txt"), raw.as_bytes())?;
+    }
+    if let Some(reply) = &cleanup.reply {
+        files.write(&entry_path(&id, "cleanup.reply.txt"), reply.as_bytes())?;
+    }
     let entry = EntryFile {
         id: &id,
         title,
         summary: &excerpt(text),
         summary_source: EXCERPT,
+        cleanup: cleanup.label,
+        cleanup_error: cleanup.error.as_deref(),
         duration_ms: duration_ms(all.len()),
     };
     let json = serde_json::to_vec(&entry).map_err(fail)?;

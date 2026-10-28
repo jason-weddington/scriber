@@ -2,11 +2,12 @@ import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 
-import { button, open } from './helpers';
+import { button, copied, open, press, release, status } from './helpers';
 
 // The settings panel's vocabulary file: its path (the default one in the
 // data folder until another is picked), Browse… (the native open panel,
-// answered by the mock's ?pick=) and Open in Text Editor.
+// answered by the mock's ?pick=) and Open in Text Editor; then the
+// post-processing switch, which cleans up each transcript with the local model.
 
 const DEFAULT = '/mock/data/vocabulary.txt';
 const PICKED = '/mock/Documents/terms.txt';
@@ -55,7 +56,7 @@ test('Browse picks another file and saves it', async ({ page }) => {
   await browse(page).click();
   await expect(path(page)).toHaveValue(PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current file').toEqual([DEFAULT]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -106,4 +107,35 @@ test('a long path never scrolls the window sideways at the minimum size', async 
   await expect(editor(page)).toBeInViewport();
   const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
   expect(fits, 'no horizontal scroll').toBe(true);
+});
+
+function cleanupSwitch(page: Page) {
+  return page.getByRole('switch', { name: 'Enable post-processing with local LLM' });
+}
+
+test('post-processing starts off and turning it on saves it', async ({ page }) => {
+  await openSettings(page);
+  await expect(cleanupSwitch(page)).not.toBeChecked();
+  await cleanupSwitch(page).click();
+  await expect(cleanupSwitch(page)).toBeChecked();
+  await expect
+    .poll(async () => (await saved(page)).at(-1))
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true });
+  await expect(alert(page)).toHaveCount(0);
+});
+
+test('a post-processing switch that cannot be saved says why', async ({ page }) => {
+  await openSettings(page, { fail: 'settings_set' });
+  await cleanupSwitch(page).click();
+  await expect(alert(page)).toHaveText('Mock failure: settings_set');
+});
+
+test('with post-processing on, the transcript waits for the cleanup', async ({ page }) => {
+  await open(page, { cleanup: 'on', hold: 'cleanup' });
+  await press(page, 'New', 'Record', 'Done');
+  await expect(status(page)).toHaveText('Transcribing…');
+  expect(await copied(page)).toEqual([]);
+  await release(page, 'cleanup');
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue('This is part 1 of the dictation.');
+  await expect.poll(() => copied(page)).toEqual(['This is part 1 of the dictation.']);
 });

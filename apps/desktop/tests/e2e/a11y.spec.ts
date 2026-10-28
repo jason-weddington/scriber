@@ -56,6 +56,14 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await release(page, 'transcribe');
     });
 
+    test('transcribing, waiting for the cleanup', async ({ page }) => {
+      await open(page, { cleanup: 'on', hold: 'cleanup' });
+      await press(page, 'New', 'Record', 'Done');
+      await expect(status(page)).toHaveText('Transcribing…');
+      await expectNoViolations(page);
+      await release(page, 'cleanup');
+    });
+
     test('finished', async ({ page }) => {
       await open(page);
       await press(page, 'New', 'Record', 'Done');
@@ -122,7 +130,8 @@ for (const colorScheme of ['light', 'dark'] as const) {
     test('the settings panel open', async ({ page }) => {
       await open(page, { library: '3' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await expect(page.getByRole('switch')).toBeVisible();
+      await expect(page.getByRole('switch')).toHaveCount(2);
+      await expect(page.getByRole('switch', { name: 'Enable post-processing with local LLM' })).toBeVisible();
       await expectNoViolations(page);
     });
 

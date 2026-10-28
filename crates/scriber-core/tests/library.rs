@@ -294,7 +294,7 @@ mod tests {
         );
         assert_eq!(
             w.files.read(&entry_path(ID, "entry.json")).unwrap(),
-            br#"{"id":"20261026-140309","title":"2026-10-26 14:03:09","summary":"Part 1. Part 2.","summary_source":"excerpt","duration_ms":2000}"#,
+            br#"{"id":"20261026-140309","title":"2026-10-26 14:03:09","summary":"Part 1. Part 2.","summary_source":"excerpt","cleanup":"off","duration_ms":2000}"#,
             "entry.json, keys in order"
         );
         assert!(
@@ -553,6 +553,7 @@ mod tests {
                 "title": "2026-10-26 14:03:09",
                 "summary": "A note about the board.",
                 "summary_source": "ollama",
+                "cleanup": "off",
                 "duration_ms": 1000,
                 "x": 1,
             }),
@@ -568,6 +569,35 @@ mod tests {
             "the library changed"
         );
         assert_eq!(s.revision, before.revision + 1, "so did the snapshot");
+    }
+
+    #[test]
+    fn a_summary_keeps_the_cleanup_keys() {
+        let w = World::default();
+        let (mut d, _, summary) = archived(&w);
+        let mut entry = entry_json(&w, ID);
+        let _: Option<Value> = entry
+            .as_object_mut()
+            .unwrap()
+            .insert("cleanup_error".to_string(), json!("down"));
+        put(
+            &w,
+            &entry_path(ID, "entry.json"),
+            entry.to_string().as_bytes(),
+        );
+        let _: Snapshot = d.complete(w.run_with(&summary, &w.library_ports()), &w.library_ports());
+        let after = entry_json(&w, ID);
+        assert_eq!(
+            after.get("summary_source"),
+            Some(&json!("ollama")),
+            "summarized"
+        );
+        assert_eq!(after.get("cleanup"), Some(&json!("off")), "cleanup kept");
+        assert_eq!(
+            after.get("cleanup_error"),
+            Some(&json!("down")),
+            "cleanup_error kept"
+        );
     }
 
     #[test]

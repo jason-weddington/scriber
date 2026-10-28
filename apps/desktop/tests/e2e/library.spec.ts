@@ -86,7 +86,7 @@ test('turning summaries off in the settings keeps the next excerpt', async ({ pa
   await expect(button(page, 'Settings')).toHaveAttribute('aria-expanded', 'true');
   await expect(summarySwitch(page)).toBeChecked();
   await summarySwitch(page).uncheck();
-  await expect.poll(() => saved(page)).toEqual([{ summaries: false, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt' }]);
+  await expect.poll(() => saved(page)).toEqual([{ summaries: false, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false }]);
   await page.keyboard.press('Escape');
   await expect(summarySwitch(page)).toBeHidden();
   await dictate(page);
@@ -154,8 +154,8 @@ test('the Library button hides and shows the drawer and saves the choice', async
   await expect
     .poll(() => saved(page))
     .toEqual([
-      { summaries: true, libraryOpen: false, vocabulary: '/mock/data/vocabulary.txt' },
-      { summaries: true, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt' },
+      { summaries: true, libraryOpen: false, vocabulary: '/mock/data/vocabulary.txt', cleanup: false },
+      { summaries: true, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false },
     ]);
 });
 
@@ -214,5 +214,5 @@ test('settings that cannot be read leave the defaults, silently', async ({ page 
   await expect(page.getByRole('alert')).toHaveCount(0);
   await button(page, 'Settings').click();
   await button(page, 'Library').click();
-  await expect.poll(() => saved(page)).toEqual([{ summaries: true, libraryOpen: false, vocabulary: '' }]);
+  await expect.poll(() => saved(page)).toEqual([{ summaries: true, libraryOpen: false, vocabulary: '', cleanup: false }]);
 });

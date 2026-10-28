@@ -16,6 +16,19 @@ pub const SEPARATOR: &str = ", ";
 /// tokens of prompt; 500 characters stays well inside that.
 pub const MAX_PROMPT_CHARS: usize = 500;
 
+/// The glossary's terms, in file order: one per line, surrounding
+/// whitespace trimmed, lines whose first non-blank character is `#` skipped,
+/// control characters removed, and terms left empty skipped.
+#[must_use]
+pub fn terms(file: &str) -> Vec<String> {
+    file.lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
 /// The prompt for a glossary file's contents: "<STYLE> Glossary: a, b, c.", or [`STYLE`] alone when there are no terms.
 ///
 /// One term per line, surrounding whitespace trimmed. Blank lines and lines
@@ -28,15 +41,9 @@ pub const MAX_PROMPT_CHARS: usize = 500;
 pub fn prompt(file: &str) -> String {
     let mut prompt = format!("{STYLE} {PREFIX}");
     let mut length = prompt.chars().count();
-    let mut terms = 0usize;
-    let cleaned = file
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.starts_with('#'))
-        .map(|line| line.chars().filter(|c| !c.is_control()).collect::<String>())
-        .filter(|term| !term.is_empty());
-    for term in cleaned {
-        let separator = if terms == 0 { "" } else { SEPARATOR };
+    let mut added = 0usize;
+    for term in terms(file) {
+        let separator = if added == 0 { "" } else { SEPARATOR };
         let grown = length
             .saturating_add(separator.chars().count())
             .saturating_add(term.chars().count());
@@ -46,9 +53,9 @@ pub fn prompt(file: &str) -> String {
         prompt.push_str(separator);
         prompt.push_str(&term);
         length = grown;
-        terms = terms.saturating_add(1);
+        added = added.saturating_add(1);
     }
-    if terms == 0 {
+    if added == 0 {
         return STYLE.to_string();
     }
     prompt.push('.');

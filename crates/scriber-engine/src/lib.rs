@@ -18,6 +18,12 @@
 //! default, so an app that embeds the engine keeps no audio it did not ask
 //! for.
 //!
+//! With the `cleanup` setting on ([`Settings::cleanup`]), each finished
+//! transcript goes once more to the same Ollama server and model, which fixes
+//! misheard glossary terms and spoken self-corrections; the raw Whisper text
+//! is used whenever that fails or the reply does not pass the core's check
+//! (`scriber_core::cleanup::accept`).
+//!
 //! ```rust,no_run
 //! use std::sync::{Arc, Mutex, mpsc};
 //! use std::time::Duration;
@@ -33,7 +39,7 @@
 //! let engine = Engine::open(EngineConfig::new("/path/to/data"), events);
 //! engine.record()?;
 //! // ... the user speaks ...
-//! let text = engine.stop_and_wait(Duration::from_secs(120))?;
+//! let text = engine.stop_and_wait(Duration::from_secs(300))?;
 //! // On macOS, always before the process exits (see `Engine::shutdown`).
 //! let _report = engine.shutdown();
 //! # drop((rx, text));
@@ -67,13 +73,13 @@ pub use editor::{OPEN, TextEditor};
 pub use encode::{AFCONVERT, Afconvert};
 pub use files::DataDir;
 pub use net::HttpDownloader;
-pub use ollama::{Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT};
+pub use ollama::{CLEANUP_TIMEOUT, Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT};
 pub use scriber_core::dictation::DictationError;
 pub use scriber_core::download::Source;
 pub use scriber_core::model::{Action, Download, LibraryEntry, Phase, Settings, Snapshot};
 pub use scriber_core::ports::{
-    Captured, Clipboard, Clock, Downloader, Encoder, Files, LocalTime, PortError, Recorder,
-    Summarizer, Transcriber, fail,
+    Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, LocalTime, PortError,
+    Recorder, Summarizer, Transcriber, fail,
 };
 pub use whisper::Whisper;
 
@@ -117,9 +123,11 @@ pub struct EngineConfig {
     /// Whether finished sessions are kept in the recording library
     /// (`library/` in the data folder, see [`Engine::library`]).
     pub library: bool,
-    /// The Ollama server that summarizes library entries.
+    /// The Ollama server that summarizes library entries and cleans up
+    /// transcripts.
     pub ollama_url: String,
-    /// The Ollama model that summarizes library entries.
+    /// The Ollama model that summarizes library entries and cleans up
+    /// transcripts.
     pub summary_model: String,
     /// The program that opens the glossary in a text editor
     /// ([`Engine::open_vocabulary`]); macOS's `open` ([`OPEN`]).
@@ -217,6 +225,8 @@ pub struct Adapters {
     pub encoder: Box<dyn Encoder + Send + Sync>,
     /// Summarizes each library entry.
     pub summarizer: Box<dyn Summarizer + Send + Sync>,
+    /// Cleans up each transcript when the setting is on.
+    pub cleaner: Box<dyn Cleaner + Send + Sync>,
 }
 
 /// A level sink that reports each level to `events` as [`Event::Level`].
@@ -286,7 +296,8 @@ impl Inner {
             &*self.clipboard,
             &self.queue,
             &*a.downloader,
-        );
+        )
+        .with_cleaner(&*a.cleaner);
         if self.library {
             ports.with_library(Library {
                 clock: &*a.clock,
@@ -345,6 +356,11 @@ impl Engine {
                 clock: Box::new(LocalClock),
                 encoder: Box::new(Afconvert::new(PathBuf::from(AFCONVERT), data_dir)),
                 summarizer: Box::new(Ollama::new(&ollama_url, &summary_model)),
+                cleaner: Box::new(Ollama::with_timeout(
+                    &ollama_url,
+                    &summary_model,
+                    CLEANUP_TIMEOUT,
+                )),
             },
             events,
         )
@@ -371,6 +387,7 @@ impl Engine {
     ///         clock: Box::new(LocalClock),
     ///         encoder: Box::new(Afconvert::new(AFCONVERT.into(), "/path/to/data".into())),
     ///         summarizer: Box::new(Ollama::new("http://127.0.0.1:11434", "qwen3.8:27b-mlx")),
+    ///         cleaner: Box::new(Ollama::new("http://127.0.0.1:11434", "qwen3.8:27b-mlx")),
     ///     },
     ///     Arc::new(|_event| {}),
     /// );
@@ -527,7 +544,9 @@ impl Engine {
         self.act(Action::DownloadModel, "")
     }
 
-    /// Waits up to `timeout` for a stopped session's transcript.
+    /// Waits up to `timeout` for a stopped session's transcript. With the
+    /// cleanup setting on, the wait includes the cleanup call, which may take
+    /// up to [`CLEANUP_TIMEOUT`].
     ///
     /// # Errors
     ///
@@ -564,7 +583,8 @@ impl Engine {
     }
 
     /// [`Self::stop`], then [`Self::wait`]: the primary path is
-    /// [`Self::record`] then this.
+    /// [`Self::record`] then this. With the cleanup setting on, the wait
+    /// includes the cleanup call, up to [`CLEANUP_TIMEOUT`].
     ///
     /// # Errors
     ///

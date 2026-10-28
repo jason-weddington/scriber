@@ -4,15 +4,15 @@
 use std::collections::VecDeque;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use scriber_core::sync::LoadOnce;
 use scriber_engine::{
-    Adapters, Captured, Clipboard, Clock, Downloader, Encoder, Engine, EngineConfig, Event,
-    LevelSink, LocalTime, PortError, Recorder, Snapshot, Summarizer, Transcriber,
+    Adapters, Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Engine, EngineConfig,
+    Event, LevelSink, LocalTime, PortError, Recorder, Snapshot, Summarizer, Transcriber,
 };
 
 /// How long a test waits for anything.
@@ -259,6 +259,34 @@ impl Summarizer for FakeSummarizer {
     }
 }
 
+/// A cleanup model that answers `reply` (an empty reply unless set) and
+/// counts its calls.
+#[derive(Clone)]
+pub(crate) struct FakeCleaner {
+    pub(crate) reply: Arc<Mutex<Result<String, String>>>,
+    pub(crate) calls: Arc<AtomicUsize>,
+}
+
+impl Default for FakeCleaner {
+    fn default() -> Self {
+        Self {
+            reply: Arc::new(Mutex::new(Ok(String::new()))),
+            calls: Arc::default(),
+        }
+    }
+}
+
+impl Cleaner for FakeCleaner {
+    fn clean(&self, _system: &str, _request: &str) -> Result<String, PortError> {
+        let _before = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.reply
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .map_err(PortError)
+    }
+}
+
 /// A clipboard that keeps every write.
 #[derive(Clone, Default)]
 pub(crate) struct RecordingClipboard {
@@ -283,6 +311,7 @@ pub(crate) struct Fakes {
     pub(crate) downloader: FakeDownloader,
     pub(crate) encoder: FakeEncoder,
     pub(crate) summarizer: FakeSummarizer,
+    pub(crate) cleaner: FakeCleaner,
 }
 
 impl Fakes {
@@ -303,7 +332,11 @@ impl Fakes {
             self.transcriber.clone(),
             self.downloader.clone(),
         );
-        let (encoder, summarizer) = (self.encoder.clone(), self.summarizer.clone());
+        let (encoder, summarizer, cleaner) = (
+            self.encoder.clone(),
+            self.summarizer.clone(),
+            self.cleaner.clone(),
+        );
         let engine = Engine::with_adapters(
             config,
             move |level| {
@@ -318,6 +351,7 @@ impl Fakes {
                     clock: Box::new(FakeClock),
                     encoder: Box::new(encoder),
                     summarizer: Box::new(summarizer),
+                    cleaner: Box::new(cleaner),
                 }
             },
             events(tx),

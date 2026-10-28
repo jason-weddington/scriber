@@ -1,4 +1,5 @@
-//! The Ollama summarizer against a plain HTTP stub on 127.0.0.1.
+//! The Ollama summarizer and cleanup model against a plain HTTP stub on
+//! 127.0.0.1.
 
 #[cfg(test)]
 mod tests {
@@ -8,7 +9,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use scriber_engine::{Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT, Summarizer as _};
+    use scriber_engine::{
+        CLEANUP_TIMEOUT, Cleaner as _, Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT, Summarizer as _,
+    };
     use serde_json::{Value, json};
 
     /// A request as the stub read it: its request line and its body.
@@ -62,6 +65,7 @@ mod tests {
     #[test]
     fn the_timeout_and_prompt_are_pinned() {
         assert_eq!(SUMMARY_TIMEOUT, Duration::from_secs(60), "timeout");
+        assert_eq!(CLEANUP_TIMEOUT, Duration::from_secs(120), "cleanup timeout");
         assert_eq!(
             SYSTEM_PROMPT,
             "You write a one-sentence summary of a dictated note, at most 15 words, plain text, no quotes, no preamble.",
@@ -147,5 +151,57 @@ mod tests {
         let ollama = Ollama::with_timeout(&base, "m", Duration::from_millis(300));
         assert!(ollama.summarize("x").is_err(), "timed out");
         assert!(started.elapsed() < Duration::from_secs(5), "promptly");
+    }
+
+    #[test]
+    fn a_cleanup_sends_its_system_prompt_and_request() {
+        let (base, rx) = serve(&ok(REPLY));
+        let reply = Ollama::with_timeout(&base, "m", CLEANUP_TIMEOUT)
+            .clean("S", "R")
+            .unwrap();
+        assert_eq!(reply, " A note about the board. ", "raw content");
+        let (line, body) = rx.recv().unwrap();
+        assert_eq!(line, "POST /api/chat HTTP/1.1", "the request line");
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "model": "m",
+                "stream": false,
+                "think": false,
+                "messages": [
+                    {"role": "system", "content": "S"},
+                    {"role": "user", "content": "R"},
+                ],
+            }),
+            "the body"
+        );
+    }
+
+    #[test]
+    fn a_reply_cut_off_at_its_length_is_an_error() {
+        let cut = ok(
+            r#"{"message":{"role":"assistant","content":"A note"},"done":true,"done_reason":"length"}"#,
+        );
+        let (summary_base, _summary_rx) = serve(&cut);
+        let summary = Ollama::new(&summary_base, "m").summarize("x");
+        assert!(
+            summary.as_ref().is_err_and(|e| e.0.contains("cut off")),
+            "summary: {summary:?}"
+        );
+        let (clean_base, _clean_rx) = serve(&cut);
+        let cleaned = Ollama::new(&clean_base, "m").clean("S", "R");
+        assert!(
+            cleaned.as_ref().is_err_and(|e| e.0.contains("cut off")),
+            "cleanup: {cleaned:?}"
+        );
+        let (stop_base, _stop_rx) = serve(&ok(
+            r#"{"message":{"role":"assistant","content":"A note"},"done":true,"done_reason":"stop"}"#,
+        ));
+        assert_eq!(
+            Ollama::new(&stop_base, "m").clean("S", "R").unwrap(),
+            "A note",
+            "a finished reply"
+        );
     }
 }

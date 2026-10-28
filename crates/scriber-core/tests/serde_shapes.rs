@@ -113,6 +113,7 @@ mod tests {
                 summaries: true,
                 library_open: true,
                 vocabulary: "/data/vocabulary.txt".to_string(),
+                cleanup: true,
             },
         );
     }
@@ -153,6 +154,11 @@ mod tests {
         assert!(
             serde_json::from_value::<Settings>(no_vocabulary).is_err(),
             "settings: missing vocabulary"
+        );
+        let (_, no_cleanup) = altered("settings", "cleanup");
+        assert!(
+            serde_json::from_value::<Settings>(no_cleanup).is_err(),
+            "settings: missing cleanup"
         );
     }
 

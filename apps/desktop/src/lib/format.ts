@@ -49,7 +49,7 @@ export function statusText(s: Snapshot): string {
         ? `Paused. Transcribing ${parts(s.pending)} while you think.`
         : `Paused after ${parts(s.segments)}. Resume when you are ready.`;
     case 'transcribing':
-      return `Transcribing the last ${parts(s.pending)}…`;
+      return s.pending > 0 ? `Transcribing the last ${parts(s.pending)}…` : 'Transcribing…';
     case 'finished':
       return s.notice ?? 'The transcript is ready.';
     case 'failed':

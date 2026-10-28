@@ -221,6 +221,20 @@ pub trait Summarizer {
     fn summarize(&self, transcript: &str) -> Result<String, PortError>;
 }
 
+/// A local language model, for the optional cleanup pass over a finished
+/// transcript ([`crate::cleanup`]).
+pub trait Cleaner {
+    /// The model's raw answer to the cleanup `request`, under the `system`
+    /// prompt; judging the answer is the core's job
+    /// ([`crate::cleanup::accept`]).
+    ///
+    /// # Errors
+    ///
+    /// The model cannot be reached, answers with an error, or the reply was
+    /// cut off.
+    fn clean(&self, system: &str, request: &str) -> Result<String, PortError>;
+}
+
 /// The ports only the recording library needs ([`crate::library`]).
 #[derive(Clone, Copy)]
 pub struct Library<'a> {
@@ -250,6 +264,8 @@ pub struct Ports<'a> {
     pub downloader: &'a dyn Downloader,
     /// The recording library's ports; `None` keeps no library.
     pub library: Option<Library<'a>>,
+    /// The transcript's cleanup model; `None` never cleans up.
+    pub cleaner: Option<&'a dyn Cleaner>,
 }
 
 impl<'a> Ports<'a> {
@@ -272,6 +288,7 @@ impl<'a> Ports<'a> {
             queue,
             downloader,
             library: None,
+            cleaner: None,
         }
     }
 
@@ -280,6 +297,16 @@ impl<'a> Ports<'a> {
     pub fn with_library(self, library: Library<'a>) -> Self {
         Self {
             library: Some(library),
+            ..self
+        }
+    }
+
+    /// These ports, cleaning up each transcript with `cleaner` when the
+    /// setting is on.
+    #[must_use]
+    pub fn with_cleaner(self, cleaner: &'a dyn Cleaner) -> Self {
+        Self {
+            cleaner: Some(cleaner),
             ..self
         }
     }

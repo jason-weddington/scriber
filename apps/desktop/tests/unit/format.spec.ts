@@ -74,6 +74,7 @@ test('the status line says what to do next in every phase', () => {
     [{ phase: 'paused', segments: 2, pending: 1 }, 'Paused. Transcribing 1 part while you think.'],
     [{ phase: 'paused', segments: 2, pending: 0 }, 'Paused after 2 parts. Resume when you are ready.'],
     [{ phase: 'transcribing', pending: 2 }, 'Transcribing the last 2 parts…'],
+    [{ phase: 'transcribing', pending: 0 }, 'Transcribing…'],
     [{ phase: 'finished', notice: 'Copied to the clipboard.' }, 'Copied to the clipboard.'],
     [{ phase: 'finished', notice: null }, 'The transcript is ready.'],
     [{ phase: 'failed', error: 'Part 1 of 1 could not be transcribed.' }, 'The transcript is not ready.'],

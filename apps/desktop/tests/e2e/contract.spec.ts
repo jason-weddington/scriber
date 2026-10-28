@@ -85,9 +85,9 @@ const CALLS: Call[] = [
   { fn: 'settingsGet', args: [], command: 'settings_get', sent: {} },
   {
     fn: 'settingsSet',
-    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt' }],
+    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true }],
     command: 'settings_set',
-    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt' } },
+    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true } },
   },
   { fn: 'vocabularyOpen', args: [], command: 'vocabulary_open', sent: {} },
 ];

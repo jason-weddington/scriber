@@ -190,6 +190,18 @@ test('Space on the focused summaries switch toggles it and sends no action', asy
   expect(await acts(page)).toEqual(['new']);
 });
 
+test('Space on the focused post-processing switch toggles it and sends no action', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await button(page, 'Settings').click();
+  const toggle = page.getByRole('switch', { name: 'Enable post-processing with local LLM' });
+  await toggle.focus();
+  await key(page, 'Space');
+  await expect(toggle).toBeChecked();
+  expect(await acts(page)).toEqual(['new']);
+});
+
 test('Space and Return while a library entry is shown send no action', async ({ page }) => {
   await open(page, { library: '1' });
   await key(page, 'Meta+n');

@@ -20,8 +20,8 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::common::{
-        FakeDownloader, FakeSummarizer, FakeTranscriber, Fakes, PATIENCE, RecordingClipboard,
-        events, until,
+        FakeCleaner, FakeDownloader, FakeSummarizer, FakeTranscriber, Fakes, PATIENCE,
+        RecordingClipboard, events, until,
     };
 
     /// The SHA-256 of b"abcd".
@@ -733,6 +733,75 @@ mod tests {
         );
     }
 
+    /// Fakes whose cleanup model answers `reply`.
+    fn cleaning(reply: Result<&str, &str>) -> Fakes {
+        let cleaner = FakeCleaner::default();
+        *cleaner.reply.lock().unwrap() = reply.map(str::to_string).map_err(str::to_string);
+        Fakes {
+            cleaner,
+            ..Fakes::default()
+        }
+    }
+
+    #[test]
+    fn an_accepted_cleanup_is_the_transcript() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"cleanup":true}"#);
+        write(&dir, "vocabulary.txt", b"Zed\n");
+        let fakes = cleaning(Ok("Zed world"));
+        let clipboard = RecordingClipboard::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            clipboard: Some(Arc::new(clipboard.clone())),
+            ..library_config(&dir)
+        });
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "Zed world",
+            "cleaned"
+        );
+        assert_eq!(*clipboard.writes.lock().unwrap(), ["Zed world"], "copied");
+        assert_eq!(fakes.cleaner.calls.load(Ordering::SeqCst), 1, "asked once");
+        assert_eq!(
+            std::fs::read_to_string(
+                dir.path()
+                    .join("library/20261026-140309/transcript.raw.txt")
+            )
+            .unwrap(),
+            "hello world",
+            "the raw text is kept"
+        );
+    }
+
+    #[test]
+    fn a_failed_cleanup_keeps_the_raw_transcript() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"cleanup":true}"#);
+        let fakes = cleaning(Err("down"));
+        let (engine, _rx) = fakes.open(library_config(&dir));
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "raw"
+        );
+        assert_eq!(fakes.cleaner.calls.load(Ordering::SeqCst), 1, "asked once");
+    }
+
+    #[test]
+    fn cleanup_is_off_by_default() {
+        let dir = TempDir::new().unwrap();
+        let fakes = cleaning(Ok("Zed world"));
+        let (engine, _rx) = fakes.open(library_config(&dir));
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "raw"
+        );
+        assert_eq!(fakes.cleaner.calls.load(Ordering::SeqCst), 0, "never asked");
+    }
+
     #[test]
     fn a_slow_summary_never_holds_up_the_next_session() {
         let dir = TempDir::new().unwrap();
@@ -866,6 +935,7 @@ mod tests {
             summaries: true,
             library_open: true,
             vocabulary: default_vocabulary(&dir),
+            cleanup: false,
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -876,7 +946,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":""}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -898,6 +968,7 @@ mod tests {
             summaries: false,
             library_open: false,
             vocabulary: String::new(),
+            cleanup: false,
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -923,6 +994,7 @@ mod tests {
             summaries: true,
             library_open: true,
             vocabulary: "/x/terms.txt".to_string(),
+            cleanup: false,
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -938,6 +1010,7 @@ mod tests {
             summaries: false,
             library_open: true,
             vocabulary: String::new(),
+            cleanup: false,
         };
         let kept = Settings {
             summaries: false,
@@ -957,6 +1030,7 @@ mod tests {
                 summaries: true,
                 library_open: true,
                 vocabulary: "/x/terms.txt".to_string(),
+                cleanup: false,
             })
             .unwrap();
         let back = engine
@@ -964,6 +1038,7 @@ mod tests {
                 summaries: true,
                 library_open: true,
                 vocabulary: default_vocabulary(&dir),
+                cleanup: false,
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -991,6 +1066,7 @@ mod tests {
                 summaries: true,
                 library_open: true,
                 vocabulary: String::new(),
+                cleanup: false,
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1055,6 +1131,7 @@ mod tests {
                 summaries: true,
                 library_open: true,
                 vocabulary: file.to_string_lossy().into_owned(),
+                cleanup: false,
             })
             .unwrap();
         engine.open_vocabulary().unwrap();

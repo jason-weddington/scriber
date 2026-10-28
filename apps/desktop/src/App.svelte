@@ -66,7 +66,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '' });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false });
   let settingsOpen = $state(false);
   let settingsError = $state<string | null>(null);
   // A failure to save the drawer's open state, shown in the band.
@@ -122,6 +122,18 @@
       },
       (e: unknown) => {
         toggleError = errorText(e);
+      },
+    );
+  }
+
+  function setCleanup(on: boolean): void {
+    settings = { ...settings, cleanup: on };
+    settingsSet(settings).then(
+      () => {
+        settingsError = null;
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
       },
     );
   }
@@ -497,6 +509,7 @@
       open={settingsOpen}
       error={settingsError}
       onsummaries={setSummaries}
+      oncleanup={setCleanup}
       onbrowse={browseVocabulary}
       onopenvocabulary={openVocabulary}
     />

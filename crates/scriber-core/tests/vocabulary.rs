@@ -109,4 +109,13 @@ mod tests {
         assert_eq!(got.chars().count(), 500, "500 characters");
         assert!(got.len() > 500, "more bytes than characters");
     }
+
+    #[test]
+    fn terms_are_cleaned_like_the_prompt() {
+        assert_eq!(
+            scriber_core::vocabulary::terms("  Claude \n# c\n\nAgent\u{7}GTD\n"),
+            vec!["Claude".to_string(), "AgentGTD".to_string()],
+            "trimmed, comments and blanks skipped, control characters removed"
+        );
+    }
 }

@@ -1,8 +1,9 @@
 //! The user's settings, kept in `settings.json` in the data folder.
 //!
 //! On disk the file is a JSON object with the `snake_case` keys `summaries`,
-//! `library_open` and `vocabulary`. Reading is lenient: a missing, unreadable
-//! or invalid file means the defaults (both flags true, `vocabulary` empty),
+//! `library_open`, `vocabulary` and `cleanup`. Reading is lenient: a missing,
+//! unreadable or invalid file means the defaults (`summaries` and
+//! `library_open` true, `vocabulary` empty, `cleanup` false),
 //! and each key is taken on its own, so a missing key or one of another type
 //! takes its default and unknown keys are ignored. `vocabulary` is kept only
 //! when it is an absolute path (it starts with `/`); anything else means `""`,
@@ -27,6 +28,7 @@ struct Disk {
     summaries: bool,
     library_open: bool,
     vocabulary: String,
+    cleanup: bool,
 }
 
 /// The saved settings, or the defaults where there are none.
@@ -37,16 +39,18 @@ pub fn load(files: &dyn Files) -> Settings {
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Map<String, Value>>(&bytes).ok())
         .unwrap_or_default();
-    let flag = |key: &str| object.get(key).and_then(Value::as_bool).unwrap_or(true);
+    let flag =
+        |key: &str, default: bool| object.get(key).and_then(Value::as_bool).unwrap_or(default);
     Settings {
-        summaries: flag("summaries"),
-        library_open: flag("library_open"),
+        summaries: flag("summaries", true),
+        library_open: flag("library_open", true),
         vocabulary: object
             .get("vocabulary")
             .and_then(Value::as_str)
             .filter(|path| path.starts_with('/'))
             .unwrap_or_default()
             .to_string(),
+        cleanup: flag("cleanup", false),
     }
 }
 
@@ -60,6 +64,7 @@ pub fn save(files: &dyn Files, s: &Settings) -> Result<(), PortError> {
         summaries: s.summaries,
         library_open: s.library_open,
         vocabulary: s.vocabulary.clone(),
+        cleanup: s.cleanup,
     };
     let bytes = serde_json::to_vec(&disk).map_err(fail)?;
     files.write(SETTINGS_PARTIAL, &bytes)?;

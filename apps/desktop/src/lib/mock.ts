@@ -23,10 +23,13 @@
 //   ?summaries=off        summaries start off in the settings
 //   ?libraryOpen=0        the library drawer starts closed in the settings
 //   ?ollama=down          the summarizer fails, so each entry keeps its excerpt
+//   ?cleanup=on           post-processing with the local model starts on in the settings
 // A test can hold a call so the UI is seen mid-call, and release it:
-//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize') ... release(...)
+//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup') ... release(...)
 // ('download' holds each step of the model's download; 'summarize' holds
-// each new library entry's summary.) A finished session with a transcript is
+// each new library entry's summary; 'cleanup' holds the cleanup pass over a
+// finished transcript, with cleanup on, which keeps the session
+// transcribing; the mock cleaner answers the transcript unchanged.) A finished session with a transcript is
 // archived into the library like the core does it (crates/scriber-core/src/library.rs). While recording the
 // mock emits a synthetic input level every LEVEL_MS, like the core's 50 ms
 // windows. The settings' vocabulary is kept like the engine keeps it: '' for
@@ -204,7 +207,7 @@ type Slot = { state: 'pending' } | { state: 'heard'; text: string | null } | { s
 
 /** What a test reaches through `window.__mockBridge`. */
 export interface MockHandle {
-  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download' or 'summarize') wait until `release(name)`. */
+  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download', 'summarize' or 'cleanup') wait until `release(name)`. */
   hold(name: string): void;
   release(name: string): void;
   /** Every text the mock clipboard was given, in order. */
@@ -280,7 +283,12 @@ export class Mock {
     this.long = params.get('long') === '1';
     this.failing = params.get('fail');
     this.ollamaDown = params.get('ollama') === 'down';
-    this.settings = { summaries: params.get('summaries') !== 'off', libraryOpen: params.get('libraryOpen') !== '0', vocabulary: '' };
+    this.settings = {
+      summaries: params.get('summaries') !== 'off',
+      libraryOpen: params.get('libraryOpen') !== '0',
+      vocabulary: '',
+      cleanup: params.get('cleanup') === 'on',
+    };
     const pick = params.get('pick') ?? MOCK_PICK;
     this.pick = pick === 'cancel' ? null : pick;
     this.entries = Array.from({ length: Number(params.get('library') ?? '0') }, (_, k) => preloaded(k));
@@ -573,7 +581,7 @@ export class Mock {
     this.announce();
   }
 
-  /** The core's settle: wait for pending, fail on the first failure, else finish and copy. */
+  /** The core's settle: wait for pending, fail on the first failure, clean up when on, else finish and copy. */
   private settle(): void {
     if (this.slots.some((s) => s.state === 'pending')) return;
     const failed = this.slots.findIndex((s) => s.state === 'failed');
@@ -583,7 +591,27 @@ export class Mock {
       this.phase = 'failed';
       return;
     }
-    this.text = join(this.slots.map((s) => (s.state === 'heard' ? s.text : null)));
+    const text = join(this.slots.map((s) => (s.state === 'heard' ? s.text : null)));
+    if (text !== '' && this.settings.cleanup) {
+      void this.cleanup(this.session, text);
+      return;
+    }
+    this.finish(text);
+  }
+
+  /** The cleanup job: the mock cleaner answers `text` unchanged, once 'cleanup' is not held. */
+  private async cleanup(session: number, text: string): Promise<void> {
+    await Promise.resolve();
+    await this.gate('cleanup');
+    if (session !== this.session || this.phase !== 'transcribing') return;
+    this.finish(text);
+    this.revision += 1;
+    this.announce();
+  }
+
+  /** The core's finish: keep the transcript, copy it, and archive it. */
+  private finish(text: string): void {
+    this.text = text;
     this.phase = 'finished';
     if (this.text === '') this.notice = NOTHING_HEARD;
     else if (this.clipboardFails) this.notice = 'Could not copy to the clipboard: pasteboard unavailable. Use Copy to try again.';

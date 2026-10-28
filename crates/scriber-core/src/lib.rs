@@ -15,9 +15,12 @@
 //! model, and [`sync`] holds the model that loads once for every caller.
 //! With the library on, [`library`] keeps every finished session (titled by
 //! its start, summarized by a local model or an excerpt, its audio
-//! compressed) and [`settings`] holds the user's settings.
+//! compressed) and [`settings`] holds the user's settings. [`cleanup`] is
+//! the optional local-model pass over the finished transcript, which fixes
+//! misheard glossary terms and spoken self-corrections.
 
 pub mod audio;
+pub mod cleanup;
 pub mod dictation;
 pub mod download;
 pub mod level;

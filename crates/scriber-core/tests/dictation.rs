@@ -14,7 +14,12 @@ mod tests {
 
     use scriber_core::library::{entry_path, list};
     use scriber_core::ports::Files as _;
-    use scriber_core::store::STARTED;
+    use scriber_core::store::{STARTED, TRANSCRIPT};
+
+    use scriber_core::cleanup::PROMPT;
+    use scriber_core::ports::Ports;
+    use scriber_core::settings::SETTINGS;
+    use serde_json::{Value, json};
 
     use crate::common::{World, at as time, speech};
 
@@ -1257,5 +1262,407 @@ mod tests {
             "and its audio"
         );
         assert!(w.queue.jobs.borrow().is_empty(), "nothing queued");
+    }
+
+    const CID: &str = "20261026-140309";
+
+    const CLAWED: &str = "Ask Clawed to check the board.";
+
+    const CLAUDE: &str = "Ask Claude to check the board.";
+
+    fn cleanup_on(w: &World) {
+        w.files.write(SETTINGS, br#"{"cleanup":true}"#).unwrap();
+    }
+
+    /// A one-part session heard as `heard`, driven through Done and its
+    /// transcription with `p`, so that the cleanup job (if any) is queued.
+    fn heard_with(w: &World, p: &Ports<'_>, heard: &str) -> (Dictation, Snapshot) {
+        let mut d = idle(w);
+        d.new_session(p).unwrap();
+        d.record(p).unwrap();
+        let job = d.pause(p).unwrap().unwrap();
+        assert!(d.done(p).unwrap().is_none(), "paused");
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(heard.to_string()));
+        let s = d.complete(w.run(&job), p);
+        (d, s)
+    }
+
+    /// With cleanup and the library on, a session heard as `heard` up to its
+    /// queued cleanup job, which is taken off the queue.
+    fn to_cleanup(w: &World, heard: &str) -> (Dictation, Job) {
+        cleanup_on(w);
+        let (d, s) = heard_with(w, &w.library_cleaner_ports(), heard);
+        assert_eq!(s.phase, Phase::Transcribing, "waiting for the cleanup");
+        let job = w.queue.jobs.borrow_mut().pop().unwrap();
+        assert!(format!("{job:?}").contains("Cleanup"), "{job:?}");
+        (d, job)
+    }
+
+    /// Runs the cleanup job with the cleaner answering `reply`.
+    fn cleaned(w: &World, d: &mut Dictation, job: &Job, reply: Result<&str, &str>) -> Snapshot {
+        let p = w.library_cleaner_ports();
+        w.cleaner
+            .answers
+            .borrow_mut()
+            .push_back(reply.map(str::to_string).map_err(str::to_string));
+        d.complete(w.run_with(job, &p), &p)
+    }
+
+    fn entry_file(w: &World, name: &str) -> Option<String> {
+        w.files
+            .read(&entry_path(CID, name))
+            .ok()
+            .map(|b| String::from_utf8(b).unwrap())
+    }
+
+    fn entry_json(w: &World) -> Value {
+        serde_json::from_str(&entry_file(w, "entry.json").unwrap()).unwrap()
+    }
+
+    #[test]
+    fn with_cleanup_off_the_session_finishes_at_once() {
+        let w = World::default();
+        let (_, s) = heard_with(&w, &w.cleaner_ports(), CLAWED);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, CLAWED, "the raw text");
+        assert!(
+            w.cleaner.calls.borrow().is_empty(),
+            "the model is not asked"
+        );
+        assert!(w.queue.jobs.borrow().is_empty(), "nothing queued");
+    }
+
+    #[test]
+    fn with_cleanup_on_and_no_model_the_session_finishes_at_once() {
+        let w = World::default();
+        cleanup_on(&w);
+        let (_, s) = heard_with(&w, &w.ports(), CLAWED);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, CLAWED, "the raw text");
+        assert!(w.queue.jobs.borrow().is_empty(), "nothing queued");
+    }
+
+    #[test]
+    fn with_cleanup_on_the_session_waits_for_the_model() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("Claude\n"));
+        cleanup_on(&w);
+        let p = w.library_cleaner_ports();
+        let (d, s) = heard_with(&w, &p, CLAWED);
+        assert_eq!(s.phase, Phase::Transcribing, "still transcribing");
+        assert_eq!(s.pending, 0, "no segment pending");
+        assert_eq!(s.text, "", "no text yet");
+        assert!(w.clipboard.writes.borrow().is_empty(), "nothing copied");
+        assert_eq!(s, d.snapshot(&p), "complete answers with the snapshot");
+        let jobs = w.queue.jobs.borrow().clone();
+        assert_eq!(jobs.len(), 1, "one job: {jobs:?}");
+        let job = jobs.first().unwrap();
+        assert!(format!("{job:?}").contains("Cleanup"), "{job:?}");
+        let _outcome = w.run_with(job, &p);
+        let calls = w.cleaner.calls.borrow();
+        let (system, request) = calls.first().unwrap();
+        assert_eq!(system, PROMPT, "the system prompt");
+        assert!(
+            request.starts_with("Glossary:\nClaude\n\nTranscript:\n"),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn an_accepted_cleanup_is_copied_and_kept_beside_the_raw_text() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("Claude\n"));
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let s = cleaned(&w, &mut d, &job, Ok(CLAUDE));
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, CLAUDE, "the cleaned text");
+        assert_eq!(s.notice.as_deref(), Some(COPIED), "copied");
+        assert_eq!(*w.clipboard.writes.borrow(), [CLAUDE], "on the clipboard");
+        assert_eq!(
+            w.files.read(TRANSCRIPT).unwrap(),
+            CLAUDE.as_bytes(),
+            "kept for a relaunch"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.txt").as_deref(),
+            Some(CLAUDE),
+            "the entry"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(CLAWED),
+            "the raw text"
+        );
+        assert_eq!(entry_file(&w, "cleanup.reply.txt"), None, "no reply kept");
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("cleaned")),
+            "label"
+        );
+        assert_eq!(entry_json(&w).get("cleanup_error"), None, "no error");
+        let summary = w.queue.jobs.borrow_mut().pop().unwrap();
+        assert!(format!("{summary:?}").contains("Summary"), "{summary:?}");
+        let _outcome = w.run_with(&summary, &w.library_cleaner_ports());
+        assert_eq!(
+            *w.summarizer.transcripts.borrow(),
+            [CLAUDE],
+            "the cleaned text is summarized"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_reply_keeps_no_raw_text() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let s = cleaned(&w, &mut d, &job, Ok(CLAWED));
+        assert_eq!(s.text, CLAWED, "the text");
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("unchanged")),
+            "label"
+        );
+        assert_eq!(entry_file(&w, "transcript.raw.txt"), None, "no raw text");
+    }
+
+    #[test]
+    fn a_rejected_reply_falls_back_to_the_raw_text_and_is_kept() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let reply = format!("Here is the text: {CLAWED}");
+        let s = cleaned(&w, &mut d, &job, Ok(&reply));
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, CLAWED, "the raw text");
+        assert_eq!(s.error, None, "no error");
+        assert_eq!(s.notice.as_deref(), Some(COPIED), "copied as usual");
+        assert_eq!(*w.clipboard.writes.borrow(), [CLAWED], "on the clipboard");
+        assert_eq!(
+            entry_file(&w, "cleanup.reply.txt").as_deref(),
+            Some(reply.as_str()),
+            "the reply"
+        );
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("rejected-new-words")),
+            "label"
+        );
+        assert_eq!(entry_file(&w, "transcript.raw.txt"), None, "no raw text");
+    }
+
+    #[test]
+    fn a_failed_model_falls_back_to_the_raw_text() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let s = cleaned(&w, &mut d, &job, Err("down"));
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, CLAWED, "the raw text");
+        assert_eq!(s.error, None, "no error");
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("failed")),
+            "label"
+        );
+        assert_eq!(
+            entry_json(&w).get("cleanup_error"),
+            Some(&json!("down")),
+            "why"
+        );
+        assert_eq!(entry_file(&w, "cleanup.reply.txt"), None, "no reply");
+        assert_eq!(entry_file(&w, "transcript.raw.txt"), None, "no raw text");
+    }
+
+    #[test]
+    fn a_queue_that_refuses_the_cleanup_finishes_with_the_raw_text() {
+        let w = World::default();
+        cleanup_on(&w);
+        let p = w.library_cleaner_ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let job = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        w.queue.fail.set(true);
+        let s = d.complete(w.run(&job), &p);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, CLAWED, "the raw text");
+        assert_eq!(*w.clipboard.writes.borrow(), [CLAWED], "copied");
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("failed")),
+            "label"
+        );
+        assert!(w.cleaner.calls.borrow().is_empty(), "never asked");
+    }
+
+    #[test]
+    fn with_cleanup_off_the_entry_says_so() {
+        let w = World::default();
+        let (_, s) = heard_with(&w, &w.library_cleaner_ports(), CLAWED);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(entry_json(&w).get("cleanup"), Some(&json!("off")), "label");
+        assert!(
+            !entry_file(&w, "entry.json")
+                .unwrap()
+                .contains("cleanup_error"),
+            "no cleanup_error key"
+        );
+    }
+
+    #[test]
+    fn a_silent_session_is_not_cleaned_up() {
+        let w = World::default();
+        cleanup_on(&w);
+        let (_, s) = heard_with(&w, &w.library_cleaner_ports(), "");
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.notice.as_deref(), Some(NOTHING_HEARD), "nothing heard");
+        assert!(w.queue.jobs.borrow().is_empty(), "no cleanup queued");
+    }
+
+    #[test]
+    fn a_stale_or_late_cleanup_changes_nothing() {
+        let w = World::default();
+        let p = w.library_cleaner_ports();
+        let (mut d, first) = to_cleanup(&w, CLAWED);
+        let first = w.run_with(&first, &p);
+        let _: Snapshot = d.complete(first.clone(), &p);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let job = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        let _: Snapshot = d.complete(w.run(&job), &p);
+        let second = w.queue.jobs.borrow_mut().pop().unwrap();
+        let before = d.snapshot(&p);
+        assert_eq!(before.phase, Phase::Transcribing, "cleaning again");
+        assert_eq!(
+            d.complete(first, &p),
+            before,
+            "an outcome from the last session"
+        );
+        let second = w.run_with(&second, &p);
+        let finished = d.complete(second.clone(), &p);
+        assert_eq!(finished.phase, Phase::Finished, "finished");
+        assert_eq!(d.complete(second, &p), finished, "a late duplicate");
+    }
+
+    #[test]
+    fn a_cleanup_job_without_a_model_fails_closed() {
+        let w = World::default();
+        let p = w.library_cleaner_ports();
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let outcome = w.run_with(&job, &w.library_ports());
+        assert!(
+            format!("{outcome:?}").contains(r#"result: Err("the cleanup model is off")"#),
+            "{outcome:?}"
+        );
+        let s = d.complete(outcome.clone(), &p);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, CLAWED, "the raw text");
+        assert_eq!(
+            entry_json(&w).get("cleanup_error"),
+            Some(&json!("the cleanup model is off")),
+            "why"
+        );
+        // A later Retry's transcription, with no cleanup running yet.
+        let mut d2 = Dictation::default();
+        d2.new_session(&p).unwrap();
+        d2.record(&p).unwrap();
+        let seg = d2.pause(&p).unwrap().unwrap();
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Err("model exploded".to_string()));
+        assert!(d2.done(&p).unwrap().is_none(), "paused");
+        let _: Snapshot = d2.complete(w.run(&seg), &p);
+        let retry = d2.retry(&p).unwrap();
+        let before = d2.snapshot(&p);
+        assert_eq!(before.phase, Phase::Transcribing, "retrying");
+        assert_eq!(retry.len(), 1, "one part");
+        assert_eq!(d2.complete(outcome, &p), before, "no cleanup is running");
+    }
+
+    #[test]
+    fn retry_goes_through_the_cleanup_too() {
+        let w = World::default();
+        cleanup_on(&w);
+        let p = w.cleaner_ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let seg = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Err("model exploded".to_string()));
+        assert_eq!(d.complete(w.run(&seg), &p).phase, Phase::Failed, "failed");
+        let retry = d.retry(&p).unwrap();
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        let s = d.complete(w.run(retry.first().unwrap()), &p);
+        assert_eq!(s.phase, Phase::Transcribing, "cleaning");
+        let job = w.queue.jobs.borrow_mut().pop().unwrap();
+        w.cleaner
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAUDE.to_string()));
+        w.files.set_vocabulary(Some("Claude"));
+        let done = d.complete(w.run_with(&job, &p), &p);
+        assert_eq!(done.phase, Phase::Finished, "finished");
+        assert_eq!(
+            done.text, CLAWED,
+            "Claude was not a term when the part was heard"
+        );
+        assert_eq!(w.cleaner.calls.borrow().len(), 1, "asked once");
+    }
+
+    #[test]
+    fn at_most_two_hundred_terms_are_sent() {
+        let w = World::default();
+        let terms: Vec<String> = (1..=201).map(|n| format!("t{n}")).collect();
+        w.files.set_vocabulary(Some(&terms.join("\n")));
+        let (_, job) = to_cleanup(&w, CLAWED);
+        let _outcome = w.run_with(&job, &w.library_cleaner_ports());
+        let calls = w.cleaner.calls.borrow();
+        let (_, request) = calls.first().unwrap();
+        assert!(request.contains("\nt200\n"), "the 200th term");
+        assert!(!request.contains("t201"), "not the 201st");
+    }
+
+    #[test]
+    fn a_quit_during_cleanup_leaves_the_session_to_retry() {
+        let w = World::default();
+        let (_, _job) = to_cleanup(&w, CLAWED);
+        let s = snap(&Dictation::recover(&w.ports()), &w);
+        assert_eq!(s.phase, Phase::Failed, "failed");
+        assert_eq!(
+            s.error.as_deref(),
+            Some(
+                "The last session was not transcribed. Retry to transcribe its 1 recorded part, or start a new session."
+            ),
+            "retry offered"
+        );
+        assert_eq!(w.files.segments(), 1, "the part is kept");
+    }
+
+    #[test]
+    fn a_raw_text_that_cannot_be_kept_fails_the_archive() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("Claude"));
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        *w.files.fail_write_suffix.borrow_mut() = Some("transcript.raw.txt".to_string());
+        let s = cleaned(&w, &mut d, &job, Ok(CLAUDE));
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, CLAUDE, "the cleaned text");
+        assert_eq!(entry_file(&w, "entry.json"), None, "no entry");
+        assert_eq!(w.files.segments(), 1, "the part stays");
+        assert_eq!(s.library_revision, 0, "the library is unchanged");
     }
 }

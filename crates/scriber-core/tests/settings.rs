@@ -16,6 +16,7 @@ mod tests {
         summaries: true,
         library_open: true,
         vocabulary: String::new(),
+        cleanup: false,
     };
 
     fn with(bytes: &[u8]) -> FakeFiles {
@@ -53,6 +54,7 @@ mod tests {
                     summaries: false,
                     library_open: true,
                     vocabulary: String::new(),
+                    cleanup: false,
                 },
             ),
             (
@@ -61,6 +63,7 @@ mod tests {
                     summaries: true,
                     library_open: false,
                     vocabulary: String::new(),
+                    cleanup: false,
                 },
             ),
             (
@@ -69,6 +72,7 @@ mod tests {
                     summaries: true,
                     library_open: false,
                     vocabulary: String::new(),
+                    cleanup: false,
                 },
             ),
             (
@@ -77,6 +81,7 @@ mod tests {
                     summaries: false,
                     library_open: true,
                     vocabulary: String::new(),
+                    cleanup: false,
                 },
             ),
             (br#"{"libraryOpen":false}"#, DEFAULTS),
@@ -97,18 +102,19 @@ mod tests {
             summaries: false,
             library_open: false,
             vocabulary: String::new(),
+            cleanup: false,
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
         let written: Value = serde_json::from_slice(&files.read(SETTINGS).unwrap()).unwrap();
         assert_eq!(
             written,
-            json!({"summaries": false, "library_open": false, "vocabulary": ""}),
+            json!({"summaries": false, "library_open": false, "vocabulary": "", "cleanup": false}),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false,"vocabulary":""}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false}"#,
             "compact"
         );
         assert!(
@@ -151,7 +157,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -166,5 +172,32 @@ mod tests {
         files.fail_rename.set(false);
         files.fail_write.set(true);
         assert!(save(&files, &DEFAULTS).is_err(), "the write failed");
+    }
+
+    #[test]
+    fn cleanup_is_off_unless_it_is_true() {
+        assert!(!load(&with(b"{}")).cleanup, "missing");
+        assert!(load(&with(br#"{"cleanup":true}"#)).cleanup, "true");
+        assert!(!load(&with(br#"{"cleanup":"yes"}"#)).cleanup, "not a bool");
+        assert!(!load(&with(b"not json")).cleanup, "invalid file");
+        let unreadable = with(br#"{"cleanup":true}"#);
+        unreadable.fail_read.set(true);
+        assert!(!load(&unreadable).cleanup, "unreadable");
+    }
+
+    #[test]
+    fn cleanup_is_saved_fourth() {
+        let files = FakeFiles::default();
+        let s = Settings {
+            cleanup: true,
+            ..DEFAULTS
+        };
+        save(&files, &s).unwrap();
+        assert_eq!(
+            files.read(SETTINGS).unwrap(),
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true}"#,
+            "bytes"
+        );
+        assert_eq!(load(&files), s, "read back");
     }
 }
