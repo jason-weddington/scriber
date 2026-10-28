@@ -42,6 +42,7 @@
 
 mod clock;
 mod device;
+mod editor;
 mod encode;
 mod files;
 mod net;
@@ -57,11 +58,12 @@ use scriber_core::dictation::{Dictation, Job, work};
 use scriber_core::library;
 use scriber_core::ports::{JobQueue, Library, Ports};
 use scriber_core::settings;
-use scriber_core::store::MODEL;
+use scriber_core::store::{MODEL, VOCABULARY};
 use scriber_core::sync::lock;
 
 pub use clock::LocalClock;
 pub use device::CpalRecorder;
+pub use editor::{OPEN, TextEditor};
 pub use encode::{AFCONVERT, Afconvert};
 pub use files::DataDir;
 pub use net::HttpDownloader;
@@ -103,8 +105,9 @@ pub const DEFAULT_SUMMARY_MODEL: &str = "qwen3.8:27b-mlx";
 
 /// How to open an [`Engine`].
 pub struct EngineConfig {
-    /// The data folder: the session's audio, its transcript, the glossary
-    /// (`vocabulary.txt`) and, for [`ModelSource::Download`], the model.
+    /// The data folder: the session's audio, its transcript, the default
+    /// glossary (`vocabulary.txt`) and, for [`ModelSource::Download`], the
+    /// model.
     pub data_dir: PathBuf,
     /// Where the speech model comes from.
     pub model: ModelSource,
@@ -118,12 +121,15 @@ pub struct EngineConfig {
     pub ollama_url: String,
     /// The Ollama model that summarizes library entries.
     pub summary_model: String,
+    /// The program that opens the glossary in a text editor
+    /// ([`Engine::open_vocabulary`]); macOS's `open` ([`OPEN`]).
+    pub editor: PathBuf,
 }
 
 impl EngineConfig {
-    /// The default model, downloaded into `data_dir`, no clipboard, and no
+    /// The default model, downloaded into `data_dir`, no clipboard, no
     /// library ([`DEFAULT_OLLAMA_URL`] and [`DEFAULT_SUMMARY_MODEL`] for
-    /// when it is turned on).
+    /// when it is turned on), and [`OPEN`] as the text editor.
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
@@ -132,6 +138,7 @@ impl EngineConfig {
             library: false,
             ollama_url: DEFAULT_OLLAMA_URL.to_string(),
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            editor: PathBuf::from(OPEN),
         }
     }
 }
@@ -174,6 +181,9 @@ pub enum EngineError {
     /// The settings could not be saved, for this reason.
     #[error("Could not save the settings: {0}.")]
     Settings(String),
+    /// The glossary could not be opened in the text editor, for this reason.
+    #[error("Could not open the vocabulary file: {0}.")]
+    Editor(String),
 }
 
 /// What one [`Engine::shutdown`] call did.
@@ -261,6 +271,8 @@ struct Inner {
     shut: AtomicBool,
     /// Whether finished sessions are kept in the library.
     library: bool,
+    /// Opens the glossary in the text editor.
+    editor: TextEditor,
 }
 
 impl Inner {
@@ -377,6 +389,7 @@ impl Engine {
             library,
             ollama_url: _,
             summary_model: _,
+            editor,
         } = config;
         let clipboard = clipboard.unwrap_or_else(|| Arc::new(NoClipboard));
         let inner = Arc::new_cyclic(|weak| Inner {
@@ -389,6 +402,7 @@ impl Engine {
             queue: Jobs(Weak::clone(weak)),
             shut: AtomicBool::new(false),
             library,
+            editor: TextEditor::new(editor),
         });
         let ports = inner.ports();
         // Launched with the lock held, so a job it queues cannot record its
@@ -632,23 +646,63 @@ impl Engine {
             .map_err(|e| EngineError::Refused(DictationError::Clipboard(e)))
     }
 
-    /// The user's settings (the defaults where none are saved).
-    #[must_use]
-    pub fn settings(&self) -> Settings {
-        settings::load(&self.0.files)
+    /// The default glossary's absolute path: `vocabulary.txt` in the data
+    /// folder.
+    fn default_vocabulary(&self) -> String {
+        self.0
+            .files
+            .root()
+            .join(VOCABULARY)
+            .to_string_lossy()
+            .into_owned()
     }
 
-    /// Saves the user's settings and answers with what was saved.
+    /// The user's settings (the defaults where none are saved), with the
+    /// glossary always an absolute path.
+    #[must_use]
+    pub fn settings(&self) -> Settings {
+        let mut s = settings::load(&self.0.files);
+        if s.vocabulary.is_empty() {
+            s.vocabulary = self.default_vocabulary();
+        }
+        s
+    }
+
+    /// Saves the user's settings and answers with them as [`Self::settings`]
+    /// reads them back. Every field is replaced, except that an empty
+    /// `vocabulary` keeps the saved one, and the default glossary's absolute
+    /// path is saved as `""` (the default, wherever the data folder is).
     ///
     /// # Errors
     ///
     /// [`EngineError::Settings`]: the file cannot be written;
     /// [`EngineError::ShutDown`]: the engine has shut down.
-    pub fn set_settings(&self, s: Settings) -> Result<Settings, EngineError> {
+    pub fn set_settings(&self, mut s: Settings) -> Result<Settings, EngineError> {
         if self.0.shut.load(Ordering::SeqCst) {
             return Err(EngineError::ShutDown);
         }
+        if s.vocabulary.is_empty() {
+            s.vocabulary = settings::load(&self.0.files).vocabulary;
+        } else if s.vocabulary == self.default_vocabulary() {
+            s.vocabulary = String::new();
+        }
         settings::save(&self.0.files, &s).map_err(|e| EngineError::Settings(e.to_string()))?;
-        Ok(s)
+        Ok(self.settings())
+    }
+
+    /// Opens the glossary ([`Self::settings`]' `vocabulary`) in the text
+    /// editor, creating it empty first when it is missing. It still works
+    /// after [`Self::shutdown`].
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::Editor`]: the file cannot be created, or the editor
+    /// cannot be started or fails.
+    pub fn open_vocabulary(&self) -> Result<(), EngineError> {
+        let path = PathBuf::from(self.settings().vocabulary);
+        self.0
+            .editor
+            .open(&path)
+            .map_err(|e| EngineError::Editor(e.to_string()))
     }
 }

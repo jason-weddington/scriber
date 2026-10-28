@@ -7,6 +7,17 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn an_absolute_path_names_a_file_outside_the_folder() {
+        let root = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let file = elsewhere.path().join("terms.txt");
+        std::fs::write(&file, b"talos").unwrap();
+        let d = DataDir::new(root.path().to_path_buf());
+        assert_eq!(d.root(), root.path(), "root");
+        assert_eq!(d.read(file.to_str().unwrap()).unwrap(), b"talos", "read");
+    }
+
+    #[test]
     fn the_data_folder_keeps_the_ports_promises() {
         let tmp = TempDir::new().unwrap();
         let d = DataDir::new(tmp.path().to_path_buf());

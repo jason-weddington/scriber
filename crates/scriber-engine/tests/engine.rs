@@ -6,7 +6,7 @@ mod common;
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
@@ -687,10 +687,12 @@ mod tests {
             [
                 EngineError::NotInLibrary.to_string(),
                 EngineError::Settings("disk full".into()).to_string(),
+                EngineError::Editor("no text editor".into()).to_string(),
             ],
             [
                 "That recording is no longer in the library.",
                 "Could not save the settings: disk full.",
+                "Could not open the vocabulary file: no text editor.",
             ],
             "sentences"
         );
@@ -843,6 +845,18 @@ mod tests {
         );
     }
 
+    /// The default glossary's absolute path in `dir`.
+    fn default_vocabulary(dir: &TempDir) -> String {
+        dir.path()
+            .join("vocabulary.txt")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn saved(dir: &TempDir) -> String {
+        std::fs::read_to_string(dir.path().join("settings.json")).unwrap()
+    }
+
     #[test]
     fn settings_round_trip_through_the_data_folder() {
         let dir = TempDir::new().unwrap();
@@ -851,18 +865,19 @@ mod tests {
         let defaults = Settings {
             summaries: true,
             library_open: true,
+            vocabulary: default_vocabulary(&dir),
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
             summaries: false,
-            library_open: true,
+            ..defaults.clone()
         };
-        assert_eq!(engine.set_settings(off), Ok(off), "saved");
+        assert_eq!(engine.set_settings(off.clone()), Ok(off.clone()), "saved");
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("settings.json")).unwrap(),
-            r#"{"summaries":false,"library_open":true}"#,
-            "snake_case on disk"
+            saved(&dir),
+            r#"{"summaries":false,"library_open":true,"vocabulary":""}"#,
+            "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
         assert_eq!(
@@ -882,10 +897,199 @@ mod tests {
         let saved = engine.set_settings(Settings {
             summaries: false,
             library_open: false,
+            vocabulary: String::new(),
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
             "an error: {saved:?}"
         );
+    }
+
+    #[test]
+    fn the_editor_is_macos_open_by_default() {
+        assert_eq!(
+            EngineConfig::new("/data").editor,
+            PathBuf::from("/usr/bin/open"),
+            "editor"
+        );
+    }
+
+    #[test]
+    fn a_vocabulary_path_is_saved_and_an_empty_one_keeps_it() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        let elsewhere = Settings {
+            summaries: true,
+            library_open: true,
+            vocabulary: "/x/terms.txt".to_string(),
+        };
+        assert_eq!(
+            engine.set_settings(elsewhere.clone()),
+            Ok(elsewhere.clone()),
+            "saved"
+        );
+        assert_eq!(engine.settings().vocabulary, "/x/terms.txt", "read back");
+        assert!(
+            saved(&dir).contains(r#""vocabulary":"/x/terms.txt""#),
+            "on disk"
+        );
+        let unknown = Settings {
+            summaries: false,
+            library_open: true,
+            vocabulary: String::new(),
+        };
+        let kept = Settings {
+            summaries: false,
+            ..elsewhere
+        };
+        assert_eq!(engine.set_settings(unknown), Ok(kept.clone()), "kept");
+        assert_eq!(engine.settings(), kept, "read back");
+    }
+
+    #[test]
+    fn the_default_vocabulary_path_is_saved_as_empty() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        let _: Settings = engine
+            .set_settings(Settings {
+                summaries: true,
+                library_open: true,
+                vocabulary: "/x/terms.txt".to_string(),
+            })
+            .unwrap();
+        let back = engine
+            .set_settings(Settings {
+                summaries: true,
+                library_open: true,
+                vocabulary: default_vocabulary(&dir),
+            })
+            .unwrap();
+        assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
+        assert!(saved(&dir).contains(r#""vocabulary":"""#), "stored empty");
+        assert_eq!(
+            engine.settings().vocabulary,
+            default_vocabulary(&dir),
+            "read back"
+        );
+    }
+
+    #[test]
+    fn a_relative_vocabulary_path_is_the_default_and_dropped_on_save() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"vocabulary":"terms.txt"}"#);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        assert_eq!(
+            engine.settings().vocabulary,
+            default_vocabulary(&dir),
+            "the default"
+        );
+        let _: Settings = engine
+            .set_settings(Settings {
+                summaries: true,
+                library_open: true,
+                vocabulary: String::new(),
+            })
+            .unwrap();
+        assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
+    }
+
+    /// An editor stub in `dir` that writes its arguments, one per line, to
+    /// `argv.txt` there, then exits with `status`.
+    fn editor(dir: &TempDir, status: u8) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let log = dir.path().join("argv.txt");
+        let path = dir.path().join("open");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > '{}'\necho nope >&2\nexit {status}\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (path, log)
+    }
+
+    #[test]
+    fn open_vocabulary_creates_and_opens_the_default_glossary() {
+        let dir = TempDir::new().unwrap();
+        let bin = TempDir::new().unwrap();
+        let (stub, log) = editor(&bin, 0);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            editor: stub,
+            ..config(&dir)
+        });
+        engine.open_vocabulary().unwrap();
+        let file = dir.path().join("vocabulary.txt");
+        assert_eq!(std::fs::read(&file).unwrap(), b"", "created empty");
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            format!("-t\n{}\n", file.display()),
+            "opened as text"
+        );
+        let _report = engine.shutdown();
+        std::fs::remove_file(&log).unwrap();
+        engine.open_vocabulary().unwrap();
+        assert!(log.exists(), "still opens after shutdown");
+    }
+
+    #[test]
+    fn open_vocabulary_opens_the_configured_glossary() {
+        let dir = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let bin = TempDir::new().unwrap();
+        let (stub, log) = editor(&bin, 0);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            editor: stub,
+            ..config(&dir)
+        });
+        let file = other.path().join("words/terms.txt");
+        let _: Settings = engine
+            .set_settings(Settings {
+                summaries: true,
+                library_open: true,
+                vocabulary: file.to_string_lossy().into_owned(),
+            })
+            .unwrap();
+        engine.open_vocabulary().unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"", "created empty");
+        assert!(
+            !dir.path().join("vocabulary.txt").exists(),
+            "not the default"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            format!("-t\n{}\n", file.display()),
+            "opened"
+        );
+    }
+
+    #[test]
+    fn a_failing_editor_is_an_editor_error() {
+        let dir = TempDir::new().unwrap();
+        let bin = TempDir::new().unwrap();
+        let (stub, _log) = editor(&bin, 3);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            editor: stub,
+            ..config(&dir)
+        });
+        let opened = engine.open_vocabulary();
+        assert!(
+            matches!(&opened, Err(EngineError::Editor(_))),
+            "an error: {opened:?}"
+        );
+        let text = opened.unwrap_err().to_string();
+        assert!(
+            text.starts_with("Could not open the vocabulary file: "),
+            "{text}"
+        );
+        assert!(text.contains("nope"), "with the reason: {text}");
     }
 }

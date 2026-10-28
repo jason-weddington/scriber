@@ -112,6 +112,7 @@ mod tests {
             &Settings {
                 summaries: true,
                 library_open: true,
+                vocabulary: "/data/vocabulary.txt".to_string(),
             },
         );
     }
@@ -147,6 +148,11 @@ mod tests {
         assert!(
             serde_json::from_value::<Settings>(settings_missing).is_err(),
             "settings: missing field"
+        );
+        let (_, no_vocabulary) = altered("settings", "vocabulary");
+        assert!(
+            serde_json::from_value::<Settings>(no_vocabulary).is_err(),
+            "settings: missing vocabulary"
         );
     }
 

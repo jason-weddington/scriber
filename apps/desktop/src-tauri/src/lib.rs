@@ -84,6 +84,12 @@ mod commands {
     ) -> Result<Settings, String> {
         engine.set_settings(settings).map_err(|e| e.to_string())
     }
+
+    /// `vocabulary_open`: opens the glossary in the default text editor, creating it empty first.
+    #[tauri::command]
+    pub(crate) async fn vocabulary_open(engine: State<'_, Engine>) -> Result<(), String> {
+        engine.open_vocabulary().map_err(|e| e.to_string())
+    }
 }
 
 /// Builds and runs the app.
@@ -106,6 +112,7 @@ pub fn run() -> Result<(), tauri::Error> {
             }
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
             // An emit fails only once the webview is gone: no one hears.
@@ -129,6 +136,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::library_copy,
             commands::settings_get,
             commands::settings_set,
+            commands::vocabulary_open,
         ])
         .build(tauri::generate_context!())?;
     // The engine is shut down on Exit (Cmd-Q, the menu Quit, the last window

@@ -2,7 +2,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use scriber_core::ports::{Files, PortError, fail};
 
@@ -17,6 +17,12 @@ impl DataDir {
     #[must_use]
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    /// The folder's root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 }
 

@@ -1,11 +1,13 @@
 //! The user's settings, kept in `settings.json` in the data folder.
 //!
-//! On disk the file is a JSON object with the `snake_case` keys `summaries`
-//! and `library_open`. Reading is lenient: a missing, unreadable or invalid
-//! file means the defaults (both true), and each key is taken on its own, so
-//! a missing key or one of another type takes its default and unknown keys
-//! are ignored. Saving writes the file beside itself and renames it into
-//! place.
+//! On disk the file is a JSON object with the `snake_case` keys `summaries`,
+//! `library_open` and `vocabulary`. Reading is lenient: a missing, unreadable
+//! or invalid file means the defaults (both flags true, `vocabulary` empty),
+//! and each key is taken on its own, so a missing key or one of another type
+//! takes its default and unknown keys are ignored. `vocabulary` is kept only
+//! when it is an absolute path (it starts with `/`); anything else means `""`,
+//! the default glossary. Saving writes the file beside itself and renames it
+//! into place.
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -24,6 +26,7 @@ const SETTINGS_PARTIAL: &str = "settings.json.partial";
 struct Disk {
     summaries: bool,
     library_open: bool,
+    vocabulary: String,
 }
 
 /// The saved settings, or the defaults where there are none.
@@ -38,6 +41,12 @@ pub fn load(files: &dyn Files) -> Settings {
     Settings {
         summaries: flag("summaries"),
         library_open: flag("library_open"),
+        vocabulary: object
+            .get("vocabulary")
+            .and_then(Value::as_str)
+            .filter(|path| path.starts_with('/'))
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
@@ -50,6 +59,7 @@ pub fn save(files: &dyn Files, s: &Settings) -> Result<(), PortError> {
     let disk = Disk {
         summaries: s.summaries,
         library_open: s.library_open,
+        vocabulary: s.vocabulary.clone(),
     };
     let bytes = serde_json::to_vec(&disk).map_err(fail)?;
     files.write(SETTINGS_PARTIAL, &bytes)?;

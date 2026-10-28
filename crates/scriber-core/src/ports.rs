@@ -93,7 +93,8 @@ pub trait Transcriber {
     fn unload(&self) -> bool;
 }
 
-/// The app's data folder. Paths are relative to it and use `/`.
+/// The app's data folder. Paths are relative to it and use `/`; a path that
+/// starts with `/` is absolute and names that file wherever it is.
 pub trait Files {
     /// The contents of the file at `path`.
     ///

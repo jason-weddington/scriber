@@ -85,10 +85,11 @@ const CALLS: Call[] = [
   { fn: 'settingsGet', args: [], command: 'settings_get', sent: {} },
   {
     fn: 'settingsSet',
-    args: [{ summaries: false, libraryOpen: true }],
+    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt' }],
     command: 'settings_set',
-    sent: { settings: { summaries: false, libraryOpen: true } },
+    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt' } },
   },
+  { fn: 'vocabularyOpen', args: [], command: 'vocabulary_open', sent: {} },
 ];
 
 const SNAPSHOT = {
@@ -121,10 +122,13 @@ test.describe('bridge.ts against the Rust command signatures', () => {
       const bridge = (await import(/* @vite-ignore */ url)) as Record<string, (...a: unknown[]) => Promise<unknown>>;
       const log: { command: string; args: Record<string, unknown> | undefined }[] = [];
       const callbacks: ((e: unknown) => void)[] = [];
+      // What the stubbed open panel answers: a file, then a cancel.
+      let picked: string | null = '/picked/terms.txt';
       const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
       w.__TAURI_INTERNALS__ = {
         invoke: (command: string, args?: Record<string, unknown>) => {
           log.push({ command, args });
+          if (command === 'plugin:dialog|open') return Promise.resolve(picked);
           return Promise.resolve(command === 'plugin:app|version' ? '9.9.9' : null);
         },
         transformCallback: (cb: (e: unknown) => void) => {
@@ -134,6 +138,10 @@ test.describe('bridge.ts against the Rust command signatures', () => {
       };
       try {
         for (const c of calls) await bridge[c.fn]?.(...c.args);
+        const chosen = await bridge.pickVocabularyFile?.('/data/vocabulary.txt');
+        picked = null;
+        const cancelled = await bridge.pickVocabularyFile?.('/data/vocabulary.txt');
+        log.push({ command: 'picked', args: { chosen, cancelled } });
         const received: unknown[] = [];
         await bridge.onDictationChanged?.((p: unknown) => received.push(p));
         await bridge.onLevel?.((p: unknown) => received.push(p));
@@ -149,7 +157,7 @@ test.describe('bridge.ts against the Rust command signatures', () => {
       return log;
     }, [CALLS, SNAPSHOT] as const);
 
-    const commandCalls = sent.filter((c) => !c.command.startsWith('plugin:') && !['version', 'received'].includes(c.command));
+    const commandCalls = sent.filter((c) => !c.command.startsWith('plugin:') && !['version', 'received', 'picked'].includes(c.command));
     expect(commandCalls.map((c) => c.command)).toEqual(CALLS.map((c) => c.command));
 
     for (const [i, call] of CALLS.entries()) {
@@ -170,6 +178,14 @@ test.describe('bridge.ts against the Rust command signatures', () => {
     expect(listened).toEqual([constant(src, 'DICTATION_EVENT'), constant(src, 'LEVEL_EVENT')]);
 
     expect(sent.find((c) => c.command === 'received')?.args).toEqual({ received: [SNAPSHOT, 0.5] });
+
+    // The vocabulary file's open panel goes through the dialog plugin, a file or null back.
+    const panels = sent.filter((c) => c.command === 'plugin:dialog|open');
+    expect(panels).toHaveLength(2);
+    expect(panels[0]?.args).toEqual({
+      options: { multiple: false, directory: false, defaultPath: '/data/vocabulary.txt', filters: [{ name: 'Text', extensions: ['txt'] }] },
+    });
+    expect(sent.find((c) => c.command === 'picked')?.args).toEqual({ chosen: '/picked/terms.txt', cancelled: null });
 
     // The version comes from Tauri's own app plugin, passed through.
     expect(sent.some((c) => c.command === 'plugin:app|version')).toBe(true);

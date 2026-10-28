@@ -403,6 +403,49 @@ button.icon {
   display: none;
 }
 
+/* The vocabulary file: its path, then Browse… and Open in Text Editor. */
+.vocabulary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.vocabulary .caption {
+  color: var(--muted);
+}
+
+.vocabulary .row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.vocabulary input {
+  flex: 1 1 16em;
+  min-width: 0;
+  width: 16em;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+
+.vocabulary input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.vocabulary button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .switch {
   display: flex;
   align-items: center;

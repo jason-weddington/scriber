@@ -48,7 +48,8 @@
   },
   "settings": {
     "summaries": true,
-    "libraryOpen": true
+    "libraryOpen": true,
+    "vocabulary": "/data/vocabulary.txt"
   },
   "level": 0.5
 }

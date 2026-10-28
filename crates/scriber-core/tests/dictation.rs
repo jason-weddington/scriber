@@ -422,6 +422,23 @@ mod tests {
     }
 
     #[test]
+    fn the_glossary_is_read_from_the_path_in_the_settings() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("ignored"));
+        w.files
+            .write("settings.json", br#"{"vocabulary":"/elsewhere/terms.txt"}"#)
+            .unwrap();
+        w.files.write("/elsewhere/terms.txt", b"talos\n").unwrap();
+        let (_d, jobs) = at(&w, Phase::Paused);
+        let _first = w.run(&jobs[0]);
+        assert_eq!(
+            *w.transcriber.calls.borrow(),
+            [(16_000, Some(format!("{STYLE} Glossary: talos.")))],
+            "the configured glossary, not vocabulary.txt"
+        );
+    }
+
+    #[test]
     fn a_missing_model_is_reported_and_refuses_to_record() {
         let w = World::default();
         *w.transcriber.missing.borrow_mut() = Some("/data/models/ggml.bin".to_string());

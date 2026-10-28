@@ -15,6 +15,7 @@ mod tests {
     const DEFAULTS: Settings = Settings {
         summaries: true,
         library_open: true,
+        vocabulary: String::new(),
     };
 
     fn with(bytes: &[u8]) -> FakeFiles {
@@ -51,6 +52,7 @@ mod tests {
                 Settings {
                     summaries: false,
                     library_open: true,
+                    vocabulary: String::new(),
                 },
             ),
             (
@@ -58,6 +60,7 @@ mod tests {
                 Settings {
                     summaries: true,
                     library_open: false,
+                    vocabulary: String::new(),
                 },
             ),
             (
@@ -65,6 +68,7 @@ mod tests {
                 Settings {
                     summaries: true,
                     library_open: false,
+                    vocabulary: String::new(),
                 },
             ),
             (
@@ -72,6 +76,7 @@ mod tests {
                 Settings {
                     summaries: false,
                     library_open: true,
+                    vocabulary: String::new(),
                 },
             ),
             (br#"{"libraryOpen":false}"#, DEFAULTS),
@@ -91,18 +96,19 @@ mod tests {
         let off = Settings {
             summaries: false,
             library_open: false,
+            vocabulary: String::new(),
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
         let written: Value = serde_json::from_slice(&files.read(SETTINGS).unwrap()).unwrap();
         assert_eq!(
             written,
-            json!({"summaries": false, "library_open": false}),
+            json!({"summaries": false, "library_open": false, "vocabulary": ""}),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":""}"#,
             "compact"
         );
         assert!(
@@ -111,6 +117,44 @@ mod tests {
         );
         save(&files, &DEFAULTS).unwrap();
         assert_eq!(load(&files), DEFAULTS, "overwritten");
+    }
+
+    #[test]
+    fn only_an_absolute_vocabulary_path_is_kept() {
+        assert_eq!(
+            load(&with(br#"{"vocabulary":"/x/terms.txt"}"#)).vocabulary,
+            "/x/terms.txt",
+            "absolute"
+        );
+        for bytes in [
+            &b"{}"[..],
+            br#"{"vocabulary":42}"#,
+            br#"{"vocabulary":""}"#,
+            br#"{"vocabulary":"terms.txt"}"#,
+        ] {
+            assert_eq!(
+                load(&with(bytes)).vocabulary,
+                "",
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn the_vocabulary_path_is_saved_third() {
+        let files = FakeFiles::default();
+        let s = Settings {
+            vocabulary: "/x/terms.txt".to_string(),
+            ..DEFAULTS
+        };
+        save(&files, &s).unwrap();
+        assert_eq!(
+            files.read(SETTINGS).unwrap(),
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt"}"#,
+            "bytes"
+        );
+        assert_eq!(load(&files), s, "read back");
     }
 
     #[test]

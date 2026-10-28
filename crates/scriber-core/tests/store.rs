@@ -9,6 +9,7 @@ mod tests {
     use scriber_core::store::{
         MODEL, SEGMENTS, STARTED, TRANSCRIPT, VOCABULARY, clear, load, remove_segments, save,
         save_transcript, segment_index, segment_path, stored, transcript, vocabulary,
+        vocabulary_path,
     };
 
     use scriber_core::ports::Files as _;
@@ -127,6 +128,35 @@ mod tests {
             .borrow_mut()
             .insert(VOCABULARY.to_string(), vec![0xff, 0xfe]);
         assert_eq!(vocabulary(&files), None, "not UTF-8");
+    }
+
+    #[test]
+    fn the_glossary_is_vocabulary_txt_by_default() {
+        let files = FakeFiles::default();
+        assert_eq!(vocabulary_path(&files), "vocabulary.txt", "default");
+        files.set_vocabulary(Some("talos"));
+        assert_eq!(vocabulary(&files).as_deref(), Some("talos"), "read");
+    }
+
+    #[test]
+    fn the_glossary_path_in_the_settings_wins() {
+        let files = FakeFiles::default();
+        files.set_vocabulary(Some("talos"));
+        files
+            .write("settings.json", br#"{"vocabulary":"/elsewhere/terms.txt"}"#)
+            .unwrap();
+        assert_eq!(
+            vocabulary_path(&files),
+            "/elsewhere/terms.txt",
+            "configured"
+        );
+        assert_eq!(
+            vocabulary(&files),
+            None,
+            "missing, and vocabulary.txt ignored"
+        );
+        files.write("/elsewhere/terms.txt", b"pulumi").unwrap();
+        assert_eq!(vocabulary(&files).as_deref(), Some("pulumi"), "read");
     }
 
     #[test]

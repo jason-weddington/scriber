@@ -13,7 +13,11 @@
 //   ?leftover=<n>         launch finds n segments of an unfinished session
 //   ?long=1               each segment is heard as a long paragraph
 //   ?fail=<call>          that call rejects: "dictation_state", "app_version", an action,
-//                         "library_list", "library_get", "library_copy", "settings_get" or "settings_set"
+//                         "library_list", "library_get", "library_copy", "settings_get", "settings_set"
+//                         or "pick_vocabulary_file" (with "Mock failure: <call>"); ?fail=vocabulary_open
+//                         rejects with the engine's "Could not open the vocabulary file: no text editor."
+//   ?pick=<path>          the open panel picks that file (default /mock/Documents/terms.txt);
+//                         ?pick=cancel cancels it
 //   ?hold=<call>          that call is held from launch (see hold below)
 //   ?library=<n>          the recording library starts with n entries (see preloaded)
 //   ?summaries=off        summaries start off in the settings
@@ -25,7 +29,11 @@
 // each new library entry's summary.) A finished session with a transcript is
 // archived into the library like the core does it (crates/scriber-core/src/library.rs). While recording the
 // mock emits a synthetic input level every LEVEL_MS, like the core's 50 ms
-// windows. Segment durations and the level and download timers run on
+// windows. The settings' vocabulary is kept like the engine keeps it: '' for
+// the default (answered as MOCK_VOCABULARY), and settings_set's '' keeps the
+// saved path while MOCK_VOCABULARY is saved as ''. Open in Text Editor appends
+// the resolved path to window.__mockBridge.opened, and Browse… the path its
+// open panel starts at to window.__mockBridge.browsed. Segment durations and the level and download timers run on
 // Date.now() and setTimeout, so Playwright's clock controls them.
 
 import type { Action, Download, LibraryEntry, Phase, Settings, Snapshot } from './types';
@@ -82,6 +90,15 @@ const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
 
 /** The core's NotInLibrary sentence (crates/scriber-engine/src/lib.rs). */
 export const NOT_IN_LIBRARY = 'That recording is no longer in the library.';
+
+/** The default glossary's absolute path, as the engine answers it. */
+export const MOCK_VOCABULARY = '/mock/data/vocabulary.txt';
+
+/** What the mock open panel picks without ?pick=. */
+export const MOCK_PICK = '/mock/Documents/terms.txt';
+
+/** The engine's sentence when the text editor cannot open the glossary. */
+export const OPEN_FAILED = 'Could not open the vocabulary file: no text editor.';
 
 /** What the mock summarizer answers for every entry. */
 export const MOCK_SUMMARY = 'A dictated note.';
@@ -196,6 +213,10 @@ export interface MockHandle {
   readonly acts: Action[];
   /** Every settings_set call's settings, in order, whether or not it failed. */
   readonly saved: Settings[];
+  /** Every glossary path opened in the text editor, in order. */
+  readonly opened: string[];
+  /** Where each open panel started (the path it was given), in order. */
+  readonly browsed: string[];
 }
 
 declare global {
@@ -217,6 +238,9 @@ export class Mock {
   private readonly held = new Map<string, { promise: Promise<void>; open: () => void }>();
   private readonly copied: string[] = [];
   private readonly saved: Settings[] = [];
+  private readonly opened: string[] = [];
+  private readonly browsed: string[] = [];
+  private readonly pick: string | null;
   private readonly attempts = new Map<number, number>();
   private readonly ollamaDown: boolean;
   private entries: (LibraryEntry & { transcript: string })[] = [];
@@ -256,7 +280,9 @@ export class Mock {
     this.long = params.get('long') === '1';
     this.failing = params.get('fail');
     this.ollamaDown = params.get('ollama') === 'down';
-    this.settings = { summaries: params.get('summaries') !== 'off', libraryOpen: params.get('libraryOpen') !== '0' };
+    this.settings = { summaries: params.get('summaries') !== 'off', libraryOpen: params.get('libraryOpen') !== '0', vocabulary: '' };
+    const pick = params.get('pick') ?? MOCK_PICK;
+    this.pick = pick === 'cancel' ? null : pick;
     this.entries = Array.from({ length: Number(params.get('library') ?? '0') }, (_, k) => preloaded(k));
     const left = Number(params.get('leftover') ?? '0');
     if (left > 0) {
@@ -284,6 +310,8 @@ export class Mock {
       copied: this.copied,
       acts: this.acts,
       saved: this.saved,
+      opened: this.opened,
+      browsed: this.browsed,
     };
   }
 
@@ -354,15 +382,38 @@ export class Mock {
   async settingsGet(): Promise<Settings> {
     await this.gate('settings_get');
     this.check('settings_get');
-    return { ...this.settings };
+    return this.resolved();
+  }
+
+  /** The settings as the engine answers them: the glossary always a path. */
+  private resolved(): Settings {
+    return { ...this.settings, vocabulary: this.settings.vocabulary || MOCK_VOCABULARY };
   }
 
   async settingsSet(settings: Settings): Promise<Settings> {
     this.saved.push({ ...settings });
     await this.gate('settings_set');
     this.check('settings_set');
-    this.settings = { ...settings };
-    return { ...this.settings };
+    // The engine's write rule: '' keeps the saved glossary, the default is saved as ''.
+    const vocabulary =
+      settings.vocabulary === '' ? this.settings.vocabulary : settings.vocabulary === MOCK_VOCABULARY ? '' : settings.vocabulary;
+    this.settings = { ...settings, vocabulary };
+    return this.resolved();
+  }
+
+  /** The open panel: the ?pick= file, or null when cancelled. */
+  async pickVocabularyFile(current: string): Promise<string | null> {
+    await this.gate('pick_vocabulary_file');
+    this.browsed.push(current);
+    this.check('pick_vocabulary_file');
+    return this.pick;
+  }
+
+  /** Opens the glossary in the text editor (the engine creates it first). */
+  async vocabularyOpen(): Promise<void> {
+    await this.gate('vocabulary_open');
+    if (this.failing === 'vocabulary_open') throw new Error(OPEN_FAILED);
+    this.opened.push(this.resolved().vocabulary);
   }
 
   onChange(cb: (s: Snapshot) => void): () => void {

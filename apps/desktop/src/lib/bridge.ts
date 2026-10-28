@@ -12,6 +12,7 @@
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
 
 import { Mock } from './mock';
 import type { Action, LibraryEntry, Settings, Snapshot } from './types';
@@ -96,6 +97,19 @@ export async function settingsGet(): Promise<Settings> {
 export async function settingsSet(settings: Settings): Promise<Settings> {
   if (!underTauri()) return mock().settingsSet(settings);
   return invoke<Settings>('settings_set', { settings });
+}
+
+/** Opens the glossary in the default text editor, creating it empty first. */
+export async function vocabularyOpen(): Promise<void> {
+  if (!underTauri()) return mock().vocabularyOpen();
+  return invoke<undefined>('vocabulary_open');
+}
+
+/** The native open panel for a glossary file, starting at `current`; null when cancelled. */
+export async function pickVocabularyFile(current: string): Promise<string | null> {
+  if (!underTauri()) return mock().pickVocabularyFile(current);
+  const r = await open({ multiple: false, directory: false, defaultPath: current, filters: [{ name: 'Text', extensions: ['txt'] }] });
+  return typeof r === 'string' ? r : null;
 }
 
 /** Subscribes to background changes (a segment transcribed, the model's download). Resolves to the unsubscribe function. */

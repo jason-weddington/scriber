@@ -139,11 +139,15 @@ pub struct LibraryEntry {
 }
 
 /// The user's settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
     /// Whether new library entries are summarized by the local model.
     pub summaries: bool,
     /// Whether the window shows the library drawer.
     pub library_open: bool,
+    /// The glossary file's absolute path, or `""` for the default
+    /// (`vocabulary.txt` in the data folder). Over the bridge the engine
+    /// always answers an absolute path.
+    pub vocabulary: String,
 }

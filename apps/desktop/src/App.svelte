@@ -17,8 +17,10 @@
     libraryList,
     onDictationChanged,
     onLevel,
+    pickVocabularyFile,
     settingsGet,
     settingsSet,
+    vocabularyOpen,
   } from './lib/bridge';
   import {
     allowed,
@@ -64,7 +66,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '' });
   let settingsOpen = $state(false);
   let settingsError = $state<string | null>(null);
   // A failure to save the drawer's open state, shown in the band.
@@ -134,6 +136,34 @@
         settingsError = errorText(e);
       },
     );
+  }
+
+  /** Browse…: the open panel picks another glossary file, which is saved at once. */
+  function browseVocabulary(): void {
+    pickVocabularyFile(settings.vocabulary).then(
+      (path) => {
+        if (path === null) return;
+        settings = { ...settings, vocabulary: path };
+        settingsSet(settings).then(
+          () => {
+            settingsError = null;
+          },
+          (e: unknown) => {
+            settingsError = errorText(e);
+          },
+        );
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
+      },
+    );
+  }
+
+  /** Open in Text Editor: the engine creates the glossary when missing, then opens it. */
+  function openVocabulary(): void {
+    vocabularyOpen().catch((e: unknown) => {
+      settingsError = errorText(e);
+    });
   }
 
   /** Whether library entry `id` is the one shown (another may have been chosen meanwhile). */
@@ -462,7 +492,14 @@
         />
       </svg>
     </button>
-    <SettingsPanel {settings} open={settingsOpen} error={settingsError} onsummaries={setSummaries} />
+    <SettingsPanel
+      {settings}
+      open={settingsOpen}
+      error={settingsError}
+      onsummaries={setSummaries}
+      onbrowse={browseVocabulary}
+      onopenvocabulary={openVocabulary}
+    />
   </header>
 
   {#if version !== ''}

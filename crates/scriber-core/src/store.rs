@@ -1,7 +1,7 @@
 //! What Scriber keeps in its data folder, through the [`Files`] port:
 //!
 //! ```text
-//! vocabulary.txt                 the user's glossary (optional)
+//! vocabulary.txt                 the user's glossary (optional; the default, overridable in settings.json)
 //! settings.json                  the user's settings (crate::settings)
 //! segments/segment-0000.wav      the current session's audio, one file per segment
 //! segments/transcript.txt        the session's transcript, once it has one
@@ -28,7 +28,7 @@ pub const STARTED: &str = "segments/started.txt";
 /// Where the transcript is written before it is renamed into place.
 const TRANSCRIPT_PARTIAL: &str = "segments/transcript.txt.partial";
 
-/// The glossary file.
+/// The default glossary file.
 pub const VOCABULARY: &str = "vocabulary.txt";
 
 /// The speech model: ggml `large-v3-turbo` from the `ggerganov/whisper.cpp`
@@ -134,9 +134,21 @@ pub fn transcript(files: &dyn Files) -> Option<String> {
     String::from_utf8(files.read(TRANSCRIPT).ok()?).ok()
 }
 
-/// The glossary's text, or `None` when it is missing, unreadable or not
-/// UTF-8.
+/// The glossary file's path: the one in the settings when there is one (an
+/// absolute path), else [`VOCABULARY`] in the data folder.
+#[must_use]
+pub fn vocabulary_path(files: &dyn Files) -> String {
+    let configured = crate::settings::load(files).vocabulary;
+    if configured.is_empty() {
+        VOCABULARY.to_string()
+    } else {
+        configured
+    }
+}
+
+/// The glossary's text, read from [`vocabulary_path`], or `None` when it is
+/// missing, unreadable or not UTF-8.
 #[must_use]
 pub fn vocabulary(files: &dyn Files) -> Option<String> {
-    String::from_utf8(files.read(VOCABULARY).ok()?).ok()
+    String::from_utf8(files.read(&vocabulary_path(files)).ok()?).ok()
 }

@@ -31,6 +31,8 @@ scriber-engine = { path = "../../../crates/scriber-engine" }
 # @tauri-apps/api in package.json, and the plugins move with Tauri's minor.
 tauri = { version = "=2.12.4", features = [] }
 tauri-plugin-clipboard-manager = "=2.5.0"
+# The native open panel that picks the glossary file.
+tauri-plugin-dialog = "=2.8.3"
 # One window at a time: a second launch focuses the first.
 tauri-plugin-single-instance = "=2.5.4"
 

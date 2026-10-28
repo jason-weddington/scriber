@@ -126,6 +126,16 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
+    test('the settings panel with the text editor failing', async ({ page }) => {
+      await open(page, { fail: 'vocabulary_open' });
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await page.getByRole('button', { name: 'Open in Text Editor' }).click();
+      await expect(page.getByRole('region', { name: 'Settings' }).getByRole('alert')).toHaveText(
+        'Could not open the vocabulary file: no text editor.',
+      );
+      await expectNoViolations(page);
+    });
+
     test('session unreadable', async ({ page }) => {
       await open(page, { fail: 'dictation_state' });
       await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();

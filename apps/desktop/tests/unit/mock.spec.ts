@@ -18,6 +18,7 @@ import {
   leftover,
   Mock,
   MOCK_SUMMARY,
+  MOCK_VOCABULARY,
   MOCK_VERSION,
   MODEL_BYTES,
   modelMissing,
@@ -409,9 +410,13 @@ test('summaries off, or Ollama down, keep the excerpt; nothing is archived from 
 
 test('settings round-trip, and the library calls fail on request', async () => {
   const mock = new Mock('?libraryOpen=0&summaries=off');
-  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false });
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true })).toEqual({ summaries: true, libraryOpen: true });
-  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true });
+  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY });
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt' })).toEqual({
+    summaries: true,
+    libraryOpen: true,
+    vocabulary: '/x/terms.txt',
+  });
+  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt' });
   await expect(mock.libraryGet('../segments')).rejects.toThrow(NOT_IN_LIBRARY);
   for (const call of ['library_list', 'library_get', 'library_copy', 'settings_get', 'settings_set'] as const) {
     const failing = new Mock(`?fail=${call}&library=1`);
@@ -420,7 +425,7 @@ test('settings round-trip, and the library calls fail on request', async () => {
       library_get: () => failing.libraryGet('20261026-090000'),
       library_copy: () => failing.libraryCopy('20261026-090000'),
       settings_get: () => failing.settingsGet(),
-      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true }),
+      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '' }),
     }[call];
     await expect(attempt(), call).rejects.toThrow(`Mock failure: ${call}`);
   }
@@ -430,4 +435,41 @@ test('settings round-trip, and the library calls fail on request', async () => {
   await expect(new Mock('?library=1&clipboard=fail').libraryCopy('20261026-090000')).rejects.toThrow(
     'Could not copy to the clipboard: pasteboard unavailable',
   );
+});
+
+test('the vocabulary file is kept like the engine keeps it', async () => {
+  const mock = new Mock('');
+  expect((await mock.settingsGet()).vocabulary, 'the default, as a path').toBe(MOCK_VOCABULARY);
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt' });
+  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '' })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY })).toEqual({
+    summaries: true,
+    libraryOpen: true,
+    vocabulary: MOCK_VOCABULARY,
+  });
+  // Stored as '': a later '' keeps the default rather than an old path.
+  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '' })).vocabulary).toBe(MOCK_VOCABULARY);
+  expect(mock.handle.saved.map((s) => s.vocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', MOCK_VOCABULARY, '']);
+});
+
+test('the open panel picks ?pick=, a default, or nothing, and fails on request', async () => {
+  const mock = new Mock('');
+  expect(await mock.pickVocabularyFile(MOCK_VOCABULARY)).toBe('/mock/Documents/terms.txt');
+  expect(mock.handle.browsed, 'where the panel started').toEqual([MOCK_VOCABULARY]);
+  expect(await new Mock('?pick=/a/b.txt').pickVocabularyFile(MOCK_VOCABULARY)).toBe('/a/b.txt');
+  expect(await new Mock('?pick=cancel').pickVocabularyFile(MOCK_VOCABULARY)).toBeNull();
+  await expect(new Mock('?fail=pick_vocabulary_file').pickVocabularyFile(MOCK_VOCABULARY)).rejects.toThrow(
+    'Mock failure: pick_vocabulary_file',
+  );
+});
+
+test('opening the vocabulary file records the resolved path, or fails like the engine', async () => {
+  const mock = new Mock('');
+  await mock.vocabularyOpen();
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt' });
+  await mock.vocabularyOpen();
+  expect(mock.handle.opened).toEqual([MOCK_VOCABULARY, '/x/terms.txt']);
+  const failing = new Mock('?fail=vocabulary_open');
+  await expect(failing.vocabularyOpen()).rejects.toThrow('Could not open the vocabulary file: no text editor.');
+  expect(failing.handle.opened).toEqual([]);
 });
