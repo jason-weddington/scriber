@@ -553,6 +553,7 @@ mod tests {
                 "title": "2026-10-26 14:03:09",
                 "summary": "A note about the board.",
                 "summary_source": "ollama",
+                "summary_model": "",
                 "cleanup": "off",
                 "duration_ms": 1000,
                 "x": 1,
@@ -569,6 +570,32 @@ mod tests {
             "the library changed"
         );
         assert_eq!(s.revision, before.revision + 1, "so did the snapshot");
+    }
+
+    #[test]
+    fn a_summary_records_its_model_beside_the_other_keys() {
+        let w = World::default();
+        let (mut d, _, summary) = archived(&w);
+        let before = entry_json(&w, ID);
+        put(
+            &w,
+            "settings.json",
+            br#"{"summaries":true,"summary_model":"gemma3:4b"}"#,
+        );
+        let _: Snapshot = d.complete(w.run_with(&summary, &w.library_ports()), &w.library_ports());
+        let after = entry_json(&w, ID);
+        let after = after.as_object().unwrap();
+        assert_eq!(
+            after.get("summary_model"),
+            Some(&json!("gemma3:4b")),
+            "the model"
+        );
+        for (key, value) in before.as_object().unwrap() {
+            if key != "summary" && key != "summary_source" {
+                assert_eq!(after.get(key), Some(value), "{key} kept");
+            }
+        }
+        assert_eq!(*w.summarizer.models.borrow(), ["gemma3:4b"], "sent");
     }
 
     #[test]

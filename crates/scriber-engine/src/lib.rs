@@ -73,7 +73,9 @@ pub use editor::{OPEN, TextEditor};
 pub use encode::{AFCONVERT, Afconvert};
 pub use files::DataDir;
 pub use net::HttpDownloader;
-pub use ollama::{CLEANUP_TIMEOUT, Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT};
+pub use ollama::{
+    CLEANUP_TIMEOUT, Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT, TAGS_TIMEOUT, installed_models,
+};
 pub use scriber_core::dictation::DictationError;
 pub use scriber_core::download::Source;
 pub use scriber_core::model::{Action, Download, LibraryEntry, Phase, Settings, Snapshot};
@@ -127,7 +129,8 @@ pub struct EngineConfig {
     /// transcripts.
     pub ollama_url: String,
     /// The Ollama model that summarizes library entries and cleans up
-    /// transcripts.
+    /// transcripts: the default model for both summaries and cleanup when
+    /// settings.json names none.
     pub summary_model: String,
     /// The program that opens the glossary in a text editor
     /// ([`Engine::open_vocabulary`]); macOS's `open` ([`OPEN`]).
@@ -192,6 +195,9 @@ pub enum EngineError {
     /// The glossary could not be opened in the text editor, for this reason.
     #[error("Could not open the vocabulary file: {0}.")]
     Editor(String),
+    /// The installed Ollama models could not be listed, for this reason.
+    #[error("Local AI needs Ollama: {0}.")]
+    Ollama(String),
 }
 
 /// What one [`Engine::shutdown`] call did.
@@ -283,6 +289,10 @@ struct Inner {
     library: bool,
     /// Opens the glossary in the text editor.
     editor: TextEditor,
+    /// The Ollama server, for listing its models.
+    ollama_url: String,
+    /// The model asked when settings.json names none.
+    default_model: String,
 }
 
 impl Inner {
@@ -404,8 +414,8 @@ impl Engine {
             model,
             clipboard,
             library,
-            ollama_url: _,
-            summary_model: _,
+            ollama_url,
+            summary_model,
             editor,
         } = config;
         let clipboard = clipboard.unwrap_or_else(|| Arc::new(NoClipboard));
@@ -420,6 +430,8 @@ impl Engine {
             shut: AtomicBool::new(false),
             library,
             editor: TextEditor::new(editor),
+            ollama_url,
+            default_model: summary_model,
         });
         let ports = inner.ports();
         // Launched with the lock held, so a job it queues cannot record its
@@ -678,12 +690,18 @@ impl Engine {
     }
 
     /// The user's settings (the defaults where none are saved), with the
-    /// glossary always an absolute path.
+    /// glossary always an absolute path and both models always named
+    /// ([`EngineConfig::summary_model`] where none is saved).
     #[must_use]
     pub fn settings(&self) -> Settings {
         let mut s = settings::load(&self.0.files);
         if s.vocabulary.is_empty() {
             s.vocabulary = self.default_vocabulary();
+        }
+        for model in [&mut s.summary_model, &mut s.cleanup_model] {
+            if model.is_empty() {
+                model.clone_from(&self.0.default_model);
+            }
         }
         s
     }
@@ -692,6 +710,8 @@ impl Engine {
     /// reads them back. Every field is replaced, except that an empty
     /// `vocabulary` keeps the saved one, and the default glossary's absolute
     /// path is saved as `""` (the default, wherever the data folder is).
+    /// Likewise for each of `summary_model` and `cleanup_model`: empty keeps
+    /// the saved one, and [`EngineConfig::summary_model`] is saved as `""`.
     ///
     /// # Errors
     ///
@@ -706,8 +726,31 @@ impl Engine {
         } else if s.vocabulary == self.default_vocabulary() {
             s.vocabulary = String::new();
         }
+        let saved = settings::load(&self.0.files);
+        for (model, kept) in [
+            (&mut s.summary_model, saved.summary_model),
+            (&mut s.cleanup_model, saved.cleanup_model),
+        ] {
+            if model.is_empty() {
+                *model = kept;
+            } else if *model == self.0.default_model {
+                model.clear();
+            }
+        }
         settings::save(&self.0.files, &s).map_err(|e| EngineError::Settings(e.to_string()))?;
         Ok(self.settings())
+    }
+
+    /// The names of the models installed on the Ollama server
+    /// ([`EngineConfig::ollama_url`]), sorted ([`installed_models`]). It
+    /// takes no session lock and still works after [`Self::shutdown`].
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::Ollama`]: the server cannot be reached or answers
+    /// with no model list.
+    pub fn ollama_models(&self) -> Result<Vec<String>, EngineError> {
+        installed_models(&self.0.ollama_url).map_err(|e| EngineError::Ollama(e.0))
     }
 
     /// Opens the glossary ([`Self::settings`]' `vocabulary`) in the text

@@ -114,6 +114,8 @@ mod tests {
                 library_open: true,
                 vocabulary: "/data/vocabulary.txt".to_string(),
                 cleanup: true,
+                summary_model: "gemma3:4b".to_string(),
+                cleanup_model: "qwen3.8:27b-mlx".to_string(),
             },
         );
     }
@@ -159,6 +161,16 @@ mod tests {
         assert!(
             serde_json::from_value::<Settings>(no_cleanup).is_err(),
             "settings: missing cleanup"
+        );
+        let (_, no_summary_model) = altered("settings", "summaryModel");
+        assert!(
+            serde_json::from_value::<Settings>(no_summary_model).is_err(),
+            "settings: missing summaryModel"
+        );
+        let (_, no_cleanup_model) = altered("settings", "cleanupModel");
+        assert!(
+            serde_json::from_value::<Settings>(no_cleanup_model).is_err(),
+            "settings: missing cleanupModel"
         );
     }
 

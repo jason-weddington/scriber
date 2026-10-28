@@ -56,4 +56,8 @@ export interface Settings {
   vocabulary: string;
   /** Whether each transcript is cleaned up by the local model (Ollama). */
   cleanup: boolean;
+  /** The Ollama model for summaries. */
+  summaryModel: string;
+  /** The Ollama model for post-processing. */
+  cleanupModel: string;
 }

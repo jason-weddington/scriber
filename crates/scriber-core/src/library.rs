@@ -2,7 +2,7 @@
 //! `library/<id>/` in the data folder.
 //!
 //! ```text
-//! library/20261026-140309/entry.json          {"id","title","summary","summary_source","cleanup",["cleanup_error",]"duration_ms"}
+//! library/20261026-140309/entry.json          {"id","title","summary","summary_source","cleanup",["cleanup_error",]"duration_ms"[,"summary_model"]}
 //! library/20261026-140309/transcript.txt      the transcript
 //! library/20261026-140309/transcript.raw.txt  Whisper's transcript, when an accepted cleanup changed it
 //! library/20261026-140309/cleanup.reply.txt   the cleanup model's rejected reply, verbatim
@@ -15,7 +15,9 @@
 //! that arrives. Every function that takes an id treats one that is not
 //! [`valid_id`] as not in the library, so an id can never reach outside it.
 //! `cleanup` is the cleanup pass's outcome label ([`crate::cleanup`]) and
-//! `cleanup_error` why the model failed, when it did.
+//! `cleanup_error` why the model failed, when it did. `summary_model` is the
+//! model name sent for the summary (`""` = the engine's default), written
+//! once the summary lands.
 
 use std::collections::BTreeSet;
 
@@ -244,12 +246,18 @@ pub(crate) fn archive(
 /// # Errors
 ///
 /// The entry cannot be read, is not a JSON object, or cannot be rewritten.
-pub(crate) fn set_summary(files: &dyn Files, id: &str, summary: &str) -> Result<(), PortError> {
+pub(crate) fn set_summary(
+    files: &dyn Files,
+    id: &str,
+    summary: &str,
+    model: &str,
+) -> Result<(), PortError> {
     let path = entry_path(id, "entry.json");
     let mut entry: Map<String, Value> =
         serde_json::from_slice(&files.read(&path)?).map_err(fail)?;
     let _summary = entry.insert("summary".to_string(), Value::from(summary));
     let _source = entry.insert("summary_source".to_string(), Value::from(OLLAMA));
+    let _model = entry.insert("summary_model".to_string(), Value::from(model));
     let json = serde_json::to_vec(&entry).map_err(fail)?;
     let partial = entry_path(id, "entry.json.partial");
     files.write(&partial, &json)?;

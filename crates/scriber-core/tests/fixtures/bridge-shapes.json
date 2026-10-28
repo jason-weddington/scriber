@@ -50,7 +50,9 @@
     "summaries": true,
     "libraryOpen": true,
     "vocabulary": "/data/vocabulary.txt",
-    "cleanup": true
+    "cleanup": true,
+    "summaryModel": "gemma3:4b",
+    "cleanupModel": "qwen3.8:27b-mlx"
   },
   "level": 0.5
 }

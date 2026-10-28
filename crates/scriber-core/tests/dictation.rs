@@ -1665,4 +1665,97 @@ mod tests {
         assert_eq!(w.files.segments(), 1, "the part stays");
         assert_eq!(s.library_revision, 0, "the library is unchanged");
     }
+
+    /// A one-part library session up to its queued summary job, which is
+    /// taken off the queue.
+    fn to_summary(w: &World) -> Job {
+        let mut d = idle(w);
+        let _: Snapshot = library_session(w, &mut d, 1);
+        let mut jobs = w.queue.jobs.borrow_mut();
+        let at = jobs
+            .iter()
+            .position(|j| format!("{j:?}").contains("Summary"))
+            .unwrap();
+        jobs.remove(at)
+    }
+
+    fn summary_model_in_entry(w: &World) -> Option<Value> {
+        let id = library_ids(w).into_iter().next().unwrap();
+        let bytes = w.files.read(&entry_path(&id, "entry.json")).unwrap();
+        let entry: Value = serde_json::from_slice(&bytes).unwrap();
+        entry.get("summary_model").cloned()
+    }
+
+    #[test]
+    fn with_no_model_saved_the_summary_asks_for_the_default() {
+        let w = World::default();
+        let job = to_summary(&w);
+        let _outcome = w.run_with(&job, &w.library_ports());
+        assert_eq!(*w.summarizer.models.borrow(), [""], "the default");
+        assert_eq!(summary_model_in_entry(&w), Some(json!("")), "recorded");
+    }
+
+    #[test]
+    fn the_saved_summary_model_is_asked_and_recorded() {
+        let w = World::default();
+        w.files
+            .write(SETTINGS, br#"{"summary_model":"gemma3:4b"}"#)
+            .unwrap();
+        let job = to_summary(&w);
+        let _outcome = w.run_with(&job, &w.library_ports());
+        assert_eq!(*w.summarizer.models.borrow(), ["gemma3:4b"], "asked");
+        assert_eq!(
+            summary_model_in_entry(&w),
+            Some(json!("gemma3:4b")),
+            "recorded"
+        );
+    }
+
+    #[test]
+    fn the_summary_model_is_read_when_the_job_runs() {
+        let w = World::default();
+        let job = to_summary(&w);
+        w.files
+            .write(SETTINGS, br#"{"summaries":true,"summary_model":"late:1b"}"#)
+            .unwrap();
+        let _outcome = w.run_with(&job, &w.library_ports());
+        assert_eq!(*w.summarizer.models.borrow(), ["late:1b"], "asked");
+        assert_eq!(
+            summary_model_in_entry(&w),
+            Some(json!("late:1b")),
+            "recorded"
+        );
+    }
+
+    #[test]
+    fn cleanup_and_summary_each_ask_their_own_model() {
+        let w = World::default();
+        w.files
+            .write(
+                SETTINGS,
+                br#"{"cleanup":true,"cleanup_model":"gemma3:4b","summary_model":"qwen3:8b"}"#,
+            )
+            .unwrap();
+        let p = w.library_cleaner_ports();
+        let (mut d, _) = heard_with(&w, &p, CLAWED);
+        let cleanup = w.queue.jobs.borrow_mut().pop().unwrap();
+        assert!(format!("{cleanup:?}").contains("Cleanup"), "{cleanup:?}");
+        let _: Snapshot = d.complete(w.run_with(&cleanup, &p), &p);
+        let summary = w.queue.jobs.borrow_mut().pop().unwrap();
+        assert!(format!("{summary:?}").contains("Summary"), "{summary:?}");
+        let _outcome = w.run_with(&summary, &p);
+        assert_eq!(*w.cleaner.models.borrow(), ["gemma3:4b"], "cleanup");
+        assert_eq!(*w.summarizer.models.borrow(), ["qwen3:8b"], "summary");
+    }
+
+    #[test]
+    fn the_cleanup_model_is_read_when_the_job_runs() {
+        let w = World::default();
+        let (_, job) = to_cleanup(&w, CLAWED);
+        w.files
+            .write(SETTINGS, br#"{"cleanup":true,"cleanup_model":"late:1b"}"#)
+            .unwrap();
+        let _outcome = w.run_with(&job, &w.library_cleaner_ports());
+        assert_eq!(*w.cleaner.models.borrow(), ["late:1b"], "asked");
+    }
 }

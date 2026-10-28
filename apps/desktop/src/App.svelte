@@ -16,6 +16,7 @@
     libraryGet,
     libraryList,
     onDictationChanged,
+    ollamaModels,
     onLevel,
     pickVocabularyFile,
     settingsGet,
@@ -66,9 +67,17 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '' });
   let settingsOpen = $state(false);
   let settingsError = $state<string | null>(null);
+  // The installed Ollama models, listed each time Settings opens; null while
+  // the listing is in flight.
+  let models = $state<string[] | null>(null);
+  // Whether the last listing could not reach Ollama, and why.
+  let ollamaDown = $state(false);
+  let ollamaReason = $state('');
+  // Which listing is the latest, so a slow earlier answer cannot overwrite it.
+  let modelListing = 0;
   // A failure to save the drawer's open state, shown in the band.
   let toggleError = $state<string | null>(null);
   let entries = $state<LibraryEntry[]>([]);
@@ -128,6 +137,50 @@
 
   function setCleanup(on: boolean): void {
     settings = { ...settings, cleanup: on };
+    settingsSet(settings).then(
+      () => {
+        settingsError = null;
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
+      },
+    );
+  }
+
+  /** Lists the installed models in the background; only the latest listing is kept. */
+  function listModels(): void {
+    modelListing += 1;
+    const n = modelListing;
+    models = null;
+    ollamaDown = false;
+    ollamaReason = '';
+    ollamaModels().then(
+      (got) => {
+        if (n === modelListing) models = got;
+      },
+      (e: unknown) => {
+        if (n !== modelListing) return;
+        ollamaDown = true;
+        models = [];
+        ollamaReason = errorText(e);
+      },
+    );
+  }
+
+  function setSummaryModel(name: string): void {
+    settings = { ...settings, summaryModel: name };
+    settingsSet(settings).then(
+      () => {
+        settingsError = null;
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
+      },
+    );
+  }
+
+  function setCleanupModel(name: string): void {
+    settings = { ...settings, cleanupModel: name };
     settingsSet(settings).then(
       () => {
         settingsError = null;
@@ -494,6 +547,7 @@
       aria-controls="settings"
       onclick={() => {
         settingsOpen = !settingsOpen;
+        if (settingsOpen) listModels();
       }}
     >
       <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
@@ -508,7 +562,12 @@
       {settings}
       open={settingsOpen}
       error={settingsError}
+      {models}
+      {ollamaDown}
+      {ollamaReason}
       onsummaries={setSummaries}
+      onsummarymodel={setSummaryModel}
+      oncleanupmodel={setCleanupModel}
       oncleanup={setCleanup}
       onbrowse={browseVocabulary}
       onopenvocabulary={openVocabulary}

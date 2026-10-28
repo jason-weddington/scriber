@@ -93,6 +93,12 @@ export async function settingsGet(): Promise<Settings> {
   return invoke<Settings>('settings_get');
 }
 
+/** The installed Ollama models' names, sorted; rejects when Ollama cannot be reached. */
+export async function ollamaModels(): Promise<string[]> {
+  if (!underTauri()) return mock().ollamaModels();
+  return invoke<string[]>('ollama_models');
+}
+
 /** Saves the user's settings; resolves to what was saved. */
 export async function settingsSet(settings: Settings): Promise<Settings> {
   if (!underTauri()) return mock().settingsSet(settings);

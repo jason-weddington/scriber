@@ -17,6 +17,8 @@ mod tests {
         library_open: true,
         vocabulary: String::new(),
         cleanup: false,
+        summary_model: String::new(),
+        cleanup_model: String::new(),
     };
 
     fn with(bytes: &[u8]) -> FakeFiles {
@@ -55,6 +57,8 @@ mod tests {
                     library_open: true,
                     vocabulary: String::new(),
                     cleanup: false,
+                    summary_model: String::new(),
+                    cleanup_model: String::new(),
                 },
             ),
             (
@@ -64,6 +68,8 @@ mod tests {
                     library_open: false,
                     vocabulary: String::new(),
                     cleanup: false,
+                    summary_model: String::new(),
+                    cleanup_model: String::new(),
                 },
             ),
             (
@@ -73,6 +79,8 @@ mod tests {
                     library_open: false,
                     vocabulary: String::new(),
                     cleanup: false,
+                    summary_model: String::new(),
+                    cleanup_model: String::new(),
                 },
             ),
             (
@@ -82,6 +90,8 @@ mod tests {
                     library_open: true,
                     vocabulary: String::new(),
                     cleanup: false,
+                    summary_model: String::new(),
+                    cleanup_model: String::new(),
                 },
             ),
             (br#"{"libraryOpen":false}"#, DEFAULTS),
@@ -103,18 +113,27 @@ mod tests {
             library_open: false,
             vocabulary: String::new(),
             cleanup: false,
+            summary_model: String::new(),
+            cleanup_model: String::new(),
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
         let written: Value = serde_json::from_slice(&files.read(SETTINGS).unwrap()).unwrap();
         assert_eq!(
             written,
-            json!({"summaries": false, "library_open": false, "vocabulary": "", "cleanup": false}),
+            json!({
+                "summaries": false,
+                "library_open": false,
+                "vocabulary": "",
+                "cleanup": false,
+                "summary_model": "",
+                "cleanup_model": ""
+            }),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":""}"#,
             "compact"
         );
         assert!(
@@ -157,7 +176,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":""}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -195,9 +214,53 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":""}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
+    }
+
+    #[test]
+    fn a_model_is_kept_only_when_it_is_a_string() {
+        for key in ["summary_model", "cleanup_model"] {
+            let pick = |s: Settings| {
+                if key == "summary_model" {
+                    s.summary_model
+                } else {
+                    s.cleanup_model
+                }
+            };
+            assert_eq!(pick(load(&with(b"{}"))), "", "{key}: missing");
+            let number = format!(r#"{{"{key}":42}}"#);
+            assert_eq!(pick(load(&with(number.as_bytes()))), "", "{key}: 42");
+            let named = format!(r#"{{"{key}":"gemma3:4b"}}"#);
+            assert_eq!(
+                pick(load(&with(named.as_bytes()))),
+                "gemma3:4b",
+                "{key}: a name"
+            );
+        }
+    }
+
+    #[test]
+    fn the_models_are_saved_last() {
+        let files = FakeFiles::default();
+        let s = Settings {
+            summary_model: "gemma3:4b".to_string(),
+            ..DEFAULTS
+        };
+        save(&files, &s).unwrap();
+        assert_eq!(
+            files.read(SETTINGS).unwrap(),
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":""}"#,
+            "bytes"
+        );
+        assert_eq!(load(&files), s, "read back");
+        let other = Settings {
+            cleanup_model: "llama3:8b".to_string(),
+            ..DEFAULTS
+        };
+        save(&files, &other).unwrap();
+        assert_eq!(load(&files), other, "cleanup model read back");
     }
 }

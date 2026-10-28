@@ -202,6 +202,18 @@ test('Space on the focused post-processing switch toggles it and sends no action
   expect(await acts(page)).toEqual(['new']);
 });
 
+test('Space on the focused summary model dropdown sends no action', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await button(page, 'Settings').click();
+  const dropdown = page.getByRole('combobox', { name: 'Summary model' });
+  await expect(dropdown).toBeEnabled();
+  await dropdown.focus();
+  await key(page, 'Space');
+  expect(await acts(page)).toEqual(['new']);
+});
+
 test('Space and Return while a library entry is shown send no action', async ({ page }) => {
   await open(page, { library: '1' });
   await key(page, 'Meta+n');

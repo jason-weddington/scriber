@@ -2,11 +2,13 @@
 //! test keeps a copy to look at while the engine owns another.
 
 use std::collections::VecDeque;
-use std::io::{Cursor, Read};
+use std::io::{BufRead as _, BufReader, Cursor, Read, Write as _};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use scriber_core::sync::LoadOnce;
@@ -236,6 +238,8 @@ impl Encoder for FakeEncoder {
 #[derive(Clone, Default)]
 pub(crate) struct FakeSummarizer {
     pub(crate) gate: Option<Arc<Mutex<Receiver<()>>>>,
+    /// The model each call named.
+    pub(crate) models: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeSummarizer {
@@ -244,13 +248,18 @@ impl FakeSummarizer {
         let (tx, rx) = mpsc::channel();
         let gated = Self {
             gate: Some(Arc::new(Mutex::new(rx))),
+            models: Arc::default(),
         };
         (gated, tx)
     }
 }
 
 impl Summarizer for FakeSummarizer {
-    fn summarize(&self, _transcript: &str) -> Result<String, PortError> {
+    fn summarize(&self, model: &str, _transcript: &str) -> Result<String, PortError> {
+        self.models
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(model.to_string());
         if let Some(gate) = &self.gate {
             // A closed gate (the test ended) lets the answer through.
             let _opened = gate.lock().unwrap_or_else(PoisonError::into_inner).recv();
@@ -265,6 +274,8 @@ impl Summarizer for FakeSummarizer {
 pub(crate) struct FakeCleaner {
     pub(crate) reply: Arc<Mutex<Result<String, String>>>,
     pub(crate) calls: Arc<AtomicUsize>,
+    /// The model each call named.
+    pub(crate) models: Arc<Mutex<Vec<String>>>,
 }
 
 impl Default for FakeCleaner {
@@ -272,12 +283,17 @@ impl Default for FakeCleaner {
         Self {
             reply: Arc::new(Mutex::new(Ok(String::new()))),
             calls: Arc::default(),
+            models: Arc::default(),
         }
     }
 }
 
 impl Cleaner for FakeCleaner {
-    fn clean(&self, _system: &str, _request: &str) -> Result<String, PortError> {
+    fn clean(&self, model: &str, _system: &str, _request: &str) -> Result<String, PortError> {
+        self.models
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(model.to_string());
         let _before = self.calls.fetch_add(1, Ordering::SeqCst);
         self.reply
             .lock()
@@ -379,4 +395,31 @@ pub(crate) fn until(
             Event::State(_) | Event::Level(_) => {}
         }
     }
+}
+
+/// A server at the returned URL that answers one request with the raw HTTP
+/// `response`, after reading the request's head.
+#[cfg(test)]
+pub(crate) fn serve_once(response: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let _server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+            line.clear();
+        }
+        let _written = reader.get_mut().write_all(response.as_bytes());
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// A URL where nothing listens.
+#[cfg(test)]
+pub(crate) fn closed_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}")
 }

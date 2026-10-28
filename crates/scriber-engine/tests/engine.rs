@@ -21,7 +21,7 @@ mod tests {
 
     use crate::common::{
         FakeCleaner, FakeDownloader, FakeSummarizer, FakeTranscriber, Fakes, PATIENCE,
-        RecordingClipboard, events, until,
+        RecordingClipboard, closed_url, events, serve_once, until,
     };
 
     /// The SHA-256 of b"abcd".
@@ -936,6 +936,8 @@ mod tests {
             library_open: true,
             vocabulary: default_vocabulary(&dir),
             cleanup: false,
+            summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -946,7 +948,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":""}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -969,6 +971,8 @@ mod tests {
             library_open: false,
             vocabulary: String::new(),
             cleanup: false,
+            summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -995,6 +999,8 @@ mod tests {
             library_open: true,
             vocabulary: "/x/terms.txt".to_string(),
             cleanup: false,
+            summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1011,6 +1017,8 @@ mod tests {
             library_open: true,
             vocabulary: String::new(),
             cleanup: false,
+            summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
         };
         let kept = Settings {
             summaries: false,
@@ -1031,6 +1039,8 @@ mod tests {
                 library_open: true,
                 vocabulary: "/x/terms.txt".to_string(),
                 cleanup: false,
+                summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+                cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             })
             .unwrap();
         let back = engine
@@ -1039,6 +1049,8 @@ mod tests {
                 library_open: true,
                 vocabulary: default_vocabulary(&dir),
                 cleanup: false,
+                summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+                cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1067,6 +1079,8 @@ mod tests {
                 library_open: true,
                 vocabulary: String::new(),
                 cleanup: false,
+                summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+                cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1132,6 +1146,8 @@ mod tests {
                 library_open: true,
                 vocabulary: file.to_string_lossy().into_owned(),
                 cleanup: false,
+                summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
+                cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1168,5 +1184,180 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("nope"), "with the reason: {text}");
+    }
+
+    const DEFAULT: &str = "qwen3.8:27b-mlx";
+
+    /// The settings as answered with nothing saved, but with these models.
+    fn with_models(dir: &TempDir, summary_model: &str, cleanup_model: &str) -> Settings {
+        Settings {
+            summaries: true,
+            library_open: true,
+            vocabulary: default_vocabulary(dir),
+            cleanup: false,
+            summary_model: summary_model.to_string(),
+            cleanup_model: cleanup_model.to_string(),
+        }
+    }
+
+    #[test]
+    fn with_no_model_saved_both_are_answered_as_the_default() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            engine.settings(),
+            with_models(&dir, DEFAULT, DEFAULT),
+            "no file"
+        );
+        write(
+            &dir,
+            "settings.json",
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":""}"#,
+        );
+        assert_eq!(
+            engine.settings(),
+            with_models(&dir, DEFAULT, DEFAULT),
+            "saved empty"
+        );
+        write(&dir, "settings.json", br#"{"summary_model":42}"#);
+        assert_eq!(engine.settings().summary_model, DEFAULT, "not a string");
+    }
+
+    #[test]
+    fn the_models_are_saved_kept_when_empty_and_the_default_stored_empty() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let chosen = with_models(&dir, "gemma3:4b", "llama3:8b");
+        assert_eq!(
+            engine.set_settings(chosen.clone()),
+            Ok(chosen.clone()),
+            "saved"
+        );
+        assert_eq!(engine.settings(), chosen, "read back");
+        assert!(
+            saved(&dir).contains(r#""summary_model":"gemma3:4b","cleanup_model":"llama3:8b""#),
+            "on disk: {}",
+            saved(&dir)
+        );
+        assert_eq!(
+            engine.set_settings(with_models(&dir, "", "")),
+            Ok(chosen.clone()),
+            "empty keeps both"
+        );
+        let back = engine
+            .set_settings(with_models(&dir, DEFAULT, "llama3:8b"))
+            .unwrap();
+        assert_eq!(back, with_models(&dir, DEFAULT, "llama3:8b"), "answered");
+        assert!(
+            saved(&dir).contains(r#""summary_model":"","cleanup_model":"llama3:8b""#),
+            "the default stored empty: {}",
+            saved(&dir)
+        );
+        assert_eq!(engine.settings().summary_model, DEFAULT, "read back");
+        let _: Settings = engine
+            .set_settings(with_models(&dir, "gemma3:4b", DEFAULT))
+            .unwrap();
+        assert!(
+            saved(&dir).contains(r#""summary_model":"gemma3:4b","cleanup_model":"""#),
+            "each on its own: {}",
+            saved(&dir)
+        );
+    }
+
+    #[test]
+    fn the_summary_asks_the_model_saved_after_the_engine_opened() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, rx) = fakes.open(library_config(&dir));
+        let _: Settings = engine
+            .set_settings(with_models(&dir, "gemma3:4b", DEFAULT))
+            .unwrap();
+        let _recording = engine.record().unwrap();
+        let _text = engine.stop_and_wait(PATIENCE).unwrap();
+        let _summarized = until(&rx, |s| s.library_revision == 2).unwrap();
+        assert_eq!(
+            *fakes.summarizer.models.lock().unwrap(),
+            ["gemma3:4b"],
+            "chosen"
+        );
+    }
+
+    #[test]
+    fn with_no_model_saved_the_summary_asks_for_the_default() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, rx) = fakes.open(library_config(&dir));
+        let _recording = engine.record().unwrap();
+        let _text = engine.stop_and_wait(PATIENCE).unwrap();
+        let _summarized = until(&rx, |s| s.library_revision == 2).unwrap();
+        assert_eq!(
+            *fakes.summarizer.models.lock().unwrap(),
+            [""],
+            "the default"
+        );
+    }
+
+    #[test]
+    fn the_cleanup_asks_its_own_model() {
+        let dir = TempDir::new().unwrap();
+        write(
+            &dir,
+            "settings.json",
+            br#"{"cleanup":true,"cleanup_model":"llama3:8b"}"#,
+        );
+        let fakes = cleaning(Ok("hello world"));
+        let (engine, _rx) = fakes.open(library_config(&dir));
+        let _recording = engine.record().unwrap();
+        let _text = engine.stop_and_wait(PATIENCE).unwrap();
+        assert_eq!(
+            *fakes.cleaner.models.lock().unwrap(),
+            ["llama3:8b"],
+            "chosen"
+        );
+    }
+
+    const TAGS: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 42\r\nConnection: close\r\n\r\n{\"models\":[{\"name\":\"b:1\"},{\"name\":\"a:1\"}]}";
+
+    /// An engine whose Ollama answers the tags request once.
+    fn listing_engine(dir: &TempDir) -> Engine {
+        Fakes::default()
+            .open(EngineConfig {
+                ollama_url: serve_once(TAGS),
+                ..config(dir)
+            })
+            .0
+    }
+
+    #[test]
+    fn the_installed_models_are_listed() {
+        let dir = TempDir::new().unwrap();
+        let engine = listing_engine(&dir);
+        assert_eq!(engine.ollama_models().unwrap(), ["a:1", "b:1"], "sorted");
+    }
+
+    #[test]
+    fn the_installed_models_are_listed_after_shutdown() {
+        let dir = TempDir::new().unwrap();
+        let engine = listing_engine(&dir);
+        let _report = engine.shutdown();
+        assert_eq!(
+            engine.ollama_models().unwrap(),
+            ["a:1", "b:1"],
+            "after shutdown"
+        );
+    }
+
+    #[test]
+    fn no_ollama_is_an_ollama_error() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(EngineConfig {
+            ollama_url: closed_url(),
+            ..config(&dir)
+        });
+        let listed = engine.ollama_models();
+        assert!(matches!(&listed, Err(EngineError::Ollama(_))), "{listed:?}");
+        let text = listed.unwrap_err().to_string();
+        assert!(text.starts_with("Local AI needs Ollama: "), "{text}");
+        assert!(text.ends_with('.'), "{text}");
     }
 }

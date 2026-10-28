@@ -90,6 +90,12 @@ mod commands {
     pub(crate) async fn vocabulary_open(engine: State<'_, Engine>) -> Result<(), String> {
         engine.open_vocabulary().map_err(|e| e.to_string())
     }
+
+    /// `ollama_models`: the installed Ollama models' names, sorted.
+    #[tauri::command]
+    pub(crate) async fn ollama_models(engine: State<'_, Engine>) -> Result<Vec<String>, String> {
+        engine.ollama_models().map_err(|e| e.to_string())
+    }
 }
 
 /// Builds and runs the app.
@@ -137,6 +143,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::settings_get,
             commands::settings_set,
             commands::vocabulary_open,
+            commands::ollama_models,
         ])
         .build(tauri::generate_context!())?;
     // The engine is shut down on Exit (Cmd-Q, the menu Quit, the last window

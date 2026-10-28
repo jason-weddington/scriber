@@ -194,7 +194,11 @@ impl Job {
             Work::Cleanup { text, terms, .. } => match ports.cleaner {
                 None => Err(CLEANUP_OFF.to_string()),
                 Some(cleaner) => cleaner
-                    .clean(cleanup::PROMPT, &cleanup::request(text, terms))
+                    .clean(
+                        &settings::load(ports.files).cleanup_model,
+                        cleanup::PROMPT,
+                        &cleanup::request(text, terms),
+                    )
                     .map(Some)
                     .map_err(|e| e.to_string()),
             },
@@ -245,12 +249,13 @@ fn encode(id: &str, ports: &Ports<'_>) -> Result<(), String> {
 /// Asks the model for entry `id`'s summary and writes it into the entry.
 fn summarize(id: &str, text: &str, ports: &Ports<'_>) -> Result<String, String> {
     let library = library_for(id, ports)?;
+    let model = settings::load(ports.files).summary_model;
     let raw = library
         .summarizer
-        .summarize(text)
+        .summarize(&model, text)
         .map_err(|e| e.to_string())?;
     let summary = clean_summary(&raw).ok_or("the summary was empty")?;
-    library::set_summary(ports.files, id, &summary).map_err(|e| e.to_string())?;
+    library::set_summary(ports.files, id, &summary, &model).map_err(|e| e.to_string())?;
     Ok(summary)
 }
 

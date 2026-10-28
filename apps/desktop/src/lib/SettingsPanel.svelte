@@ -2,23 +2,63 @@
   // The settings: the vocabulary file (the glossary that steers
   // transcription), shown as its path with Browse… (the native open panel)
   // and Open in Text Editor (which creates it empty when missing); then two
-  // switches: post-processing of each transcript by the local model (glossary
-  // fixes and spoken self-corrections), and summaries by the local model. It
-  // shows no status about Ollama: a cleanup that fails leaves Whisper's text,
-  // and a summary simply replaces the excerpt when it lands.
+  // switches, each followed by its model: post-processing of each transcript
+  // by the local model (glossary fixes and spoken self-corrections), and
+  // summaries by the local model. The models are chosen from the ones Ollama
+  // has installed, listed each time the panel opens (`models` is null while
+  // the listing is in flight). While listing, and when Ollama cannot be
+  // reached, each dropdown shows only its saved model and is disabled; once
+  // listed, a saved model that is not installed is still shown, marked
+  // "(not installed)". When Ollama is down one note says so, with the reason
+  // on hover. The switches stay enabled in every state, so local AI can
+  // always be turned off. Nothing else shows status about Ollama: a cleanup
+  // that fails leaves Whisper's text, and a summary simply replaces the
+  // excerpt when it lands.
   import type { Settings } from './types';
 
   interface Props {
     settings: Settings;
     open: boolean;
     error: string | null;
+    models: string[] | null;
+    ollamaDown: boolean;
+    ollamaReason: string;
     onsummaries: (on: boolean) => void;
     oncleanup: (on: boolean) => void;
+    onsummarymodel: (name: string) => void;
+    oncleanupmodel: (name: string) => void;
     onbrowse: () => void;
     onopenvocabulary: () => void;
   }
 
-  const { settings, open, error, onsummaries, oncleanup, onbrowse, onopenvocabulary }: Props = $props();
+  const {
+    settings,
+    open,
+    error,
+    models,
+    ollamaDown,
+    ollamaReason,
+    onsummaries,
+    oncleanup,
+    onsummarymodel,
+    oncleanupmodel,
+    onbrowse,
+    onopenvocabulary,
+  }: Props = $props();
+
+  // The installed models, once listed; null while loading or when Ollama is down.
+  const listed = $derived(models !== null && !ollamaDown ? models : null);
+
+  // Each option carries its own `selected` (and its value through a spread):
+  // Svelte compiles `<select value>` and `<option {value}>` to an inline
+  // `?? ''` fallback that a string value never takes.
+
+  /** A dropdown's options for the saved model `value`, as [value, text] pairs. */
+  function options(value: string): [string, string][] {
+    if (listed === null) return [[value, value]];
+    const installed = listed.map((name): [string, string] => [name, name]);
+    return value !== '' && !listed.includes(value) ? [[value, `${value} (not installed)`], ...installed] : installed;
+  }
 </script>
 
 <section id="settings" class="settings" aria-label="Settings" hidden={!open}>
@@ -41,6 +81,18 @@
     />
     Enable post-processing with local LLM
   </label>
+  <label for="cleanup-model">Post-processing model</label>
+  <select
+    id="cleanup-model"
+    disabled={listed === null}
+    onchange={(e) => {
+      oncleanupmodel(e.currentTarget.value);
+    }}
+  >
+    {#each options(settings.cleanupModel) as [value, text] (value)}
+      <option {...{ value }} selected={value === settings.cleanupModel}>{text}</option>
+    {/each}
+  </select>
   <label class="switch">
     <input
       type="checkbox"
@@ -52,6 +104,21 @@
     />
     Summarize recordings with local AI (Ollama)
   </label>
+  <label for="summary-model">Summary model</label>
+  <select
+    id="summary-model"
+    disabled={listed === null}
+    onchange={(e) => {
+      onsummarymodel(e.currentTarget.value);
+    }}
+  >
+    {#each options(settings.summaryModel) as [value, text] (value)}
+      <option {...{ value }} selected={value === settings.summaryModel}>{text}</option>
+    {/each}
+  </select>
+  {#if ollamaDown}
+    <p class="note" title={ollamaReason}>Local AI needs Ollama. Start Ollama, then reopen Settings.</p>
+  {/if}
   {#if error !== null}
     <p class="error" role="alert">{error}</p>
   {/if}

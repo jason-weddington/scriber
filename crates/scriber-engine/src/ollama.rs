@@ -1,5 +1,7 @@
 //! A local Ollama server: a one-sentence summary for a library entry, and
-//! the optional cleanup pass over a finished transcript.
+//! the optional cleanup pass over a finished transcript, each asking the
+//! model the call names (or the adapter's default), and the listing of the
+//! installed models ([`installed_models`], `GET /api/tags`).
 
 use std::time::Duration;
 
@@ -13,10 +15,14 @@ pub const SUMMARY_TIMEOUT: Duration = Duration::from_secs(60);
 /// byte.
 pub const CLEANUP_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long listing the installed models may take, from connecting to the
+/// last byte.
+pub const TAGS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// What the model is told to do with a transcript.
 pub const SYSTEM_PROMPT: &str = "You write a one-sentence summary of a dictated note, at most 15 words, plain text, no quotes, no preamble.";
 
-/// Ollama's chat API at `url`, asking `model`.
+/// Ollama's chat API at `url`, asking `model` unless a call names another.
 pub struct Ollama {
     url: String,
     model: String,
@@ -43,12 +49,21 @@ impl Ollama {
 }
 
 impl Ollama {
-    /// The model's reply to `user` under the `system` prompt: one
+    /// `chosen`, or the default model when it is empty.
+    fn model_for<'a>(&'a self, chosen: &'a str) -> &'a str {
+        if chosen.is_empty() {
+            &self.model
+        } else {
+            chosen
+        }
+    }
+
+    /// `model`'s reply to `user` under the `system` prompt: one
     /// non-streaming chat request, thinking off, within the timeout.
-    fn chat(&self, system: &str, user: &str) -> Result<String, PortError> {
+    fn chat(&self, model: &str, system: &str, user: &str) -> Result<String, PortError> {
         let url = format!("{}/api/chat", self.url.trim_end_matches('/'));
         let body = json!({
-            "model": self.model,
+            "model": model,
             "stream": false,
             "think": false,
             "messages": [
@@ -77,13 +92,42 @@ impl Ollama {
 }
 
 impl Summarizer for Ollama {
-    fn summarize(&self, transcript: &str) -> Result<String, PortError> {
-        self.chat(SYSTEM_PROMPT, transcript)
+    fn summarize(&self, model: &str, transcript: &str) -> Result<String, PortError> {
+        self.chat(self.model_for(model), SYSTEM_PROMPT, transcript)
     }
 }
 
 impl Cleaner for Ollama {
-    fn clean(&self, system: &str, request: &str) -> Result<String, PortError> {
-        self.chat(system, request)
+    fn clean(&self, model: &str, system: &str, request: &str) -> Result<String, PortError> {
+        self.chat(self.model_for(model), system, request)
     }
+}
+
+/// The names of the models installed on the Ollama server at `url`
+/// (`GET /api/tags`, the API's `ollama list`), sorted and without
+/// duplicates, within [`TAGS_TIMEOUT`].
+///
+/// # Errors
+///
+/// The server cannot be reached, answers with an error status, is too
+/// slow, or its reply is not JSON with a `models` list.
+pub fn installed_models(url: &str) -> Result<Vec<String>, PortError> {
+    let url = format!("{}/api/tags", url.trim_end_matches('/'));
+    let config = ureq::Agent::config_builder().timeout_global(Some(TAGS_TIMEOUT));
+    let agent = config.build().new_agent();
+    let mut response = agent.get(&url).call().map_err(fail)?;
+    let text = response.body_mut().read_to_string().map_err(fail)?;
+    let reply: Value = serde_json::from_str(&text).map_err(fail)?;
+    let models = reply
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| PortError("the reply has no model list".to_string()))?;
+    let mut names: Vec<String> = models
+        .iter()
+        .filter_map(|m| m.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
 }

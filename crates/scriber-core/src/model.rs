@@ -153,4 +153,10 @@ pub struct Settings {
     /// Whether each finished transcript is cleaned up by the local model
     /// ([`crate::cleanup`]).
     pub cleanup: bool,
+    /// The Ollama model for summaries, or `""` for the engine's default.
+    /// Over the bridge the engine always answers a model name.
+    pub summary_model: String,
+    /// The Ollama model for the cleanup pass, or `""` for the engine's
+    /// default. Over the bridge the engine always answers a model name.
+    pub cleanup_model: String,
 }

@@ -145,6 +145,27 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
+    test('the settings panel listing the models', async ({ page }) => {
+      await open(page, { hold: 'ollama_models' });
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await expect(page.getByRole('combobox', { name: 'Summary model' })).toBeDisabled();
+      await expectNoViolations(page);
+    });
+
+    test('the settings panel with the models listed', async ({ page }) => {
+      await open(page);
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await expect(page.getByRole('combobox', { name: 'Summary model' })).toBeEnabled();
+      await expectNoViolations(page);
+    });
+
+    test('the settings panel with Ollama unavailable', async ({ page }) => {
+      await open(page, { ollama: 'down' });
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await expect(page.getByText('Local AI needs Ollama. Start Ollama, then reopen Settings.')).toBeVisible();
+      await expectNoViolations(page);
+    });
+
     test('session unreadable', async ({ page }) => {
       await open(page, { fail: 'dictation_state' });
       await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();

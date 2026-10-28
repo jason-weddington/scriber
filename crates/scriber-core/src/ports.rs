@@ -213,12 +213,13 @@ pub trait Encoder {
 /// A local language model, for a library entry's one-sentence summary.
 pub trait Summarizer {
     /// The model's raw answer for `transcript`; cleaning it is the core's
-    /// job ([`crate::library::clean_summary`]).
+    /// job ([`crate::library::clean_summary`]). `model` is the Ollama model
+    /// to ask; `""` means the adapter's own default.
     ///
     /// # Errors
     ///
     /// The model cannot be reached or answers with an error.
-    fn summarize(&self, transcript: &str) -> Result<String, PortError>;
+    fn summarize(&self, model: &str, transcript: &str) -> Result<String, PortError>;
 }
 
 /// A local language model, for the optional cleanup pass over a finished
@@ -226,13 +227,14 @@ pub trait Summarizer {
 pub trait Cleaner {
     /// The model's raw answer to the cleanup `request`, under the `system`
     /// prompt; judging the answer is the core's job
-    /// ([`crate::cleanup::accept`]).
+    /// ([`crate::cleanup::accept`]). `model` is the Ollama model to ask;
+    /// `""` means the adapter's own default.
     ///
     /// # Errors
     ///
     /// The model cannot be reached, answers with an error, or the reply was
     /// cut off.
-    fn clean(&self, system: &str, request: &str) -> Result<String, PortError>;
+    fn clean(&self, model: &str, system: &str, request: &str) -> Result<String, PortError>;
 }
 
 /// The ports only the recording library needs ([`crate::library`]).

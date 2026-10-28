@@ -22,10 +22,13 @@
 //   ?library=<n>          the recording library starts with n entries (see preloaded)
 //   ?summaries=off        summaries start off in the settings
 //   ?libraryOpen=0        the library drawer starts closed in the settings
-//   ?ollama=down          the summarizer fails, so each entry keeps its excerpt
+//   ?ollama=down          the summarizer fails, so each entry keeps its excerpt, and ollama_models
+//                         rejects with "Local AI needs Ollama: connection refused."
+//   ?summaryModel=<name>  the summary model starts as that name in the settings (else '', the default)
+//   ?cleanupModel=<name>  the post-processing model starts as that name in the settings (else '')
 //   ?cleanup=on           post-processing with the local model starts on in the settings
 // A test can hold a call so the UI is seen mid-call, and release it:
-//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup') ... release(...)
+//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup' | 'ollama_models') ... release(...)
 // ('download' holds each step of the model's download; 'summarize' holds
 // each new library entry's summary; 'cleanup' holds the cleanup pass over a
 // finished transcript, with cleanup on, which keeps the session
@@ -36,7 +39,12 @@
 // the default (answered as MOCK_VOCABULARY), and settings_set's '' keeps the
 // saved path while MOCK_VOCABULARY is saved as ''. Open in Text Editor appends
 // the resolved path to window.__mockBridge.opened, and Browse… the path its
-// open panel starts at to window.__mockBridge.browsed. Segment durations and the level and download timers run on
+// open panel starts at to window.__mockBridge.browsed. The models are kept
+// like the engine keeps them: '' for the default (answered as
+// MOCK_DEFAULT_MODEL), settings_set's '' keeps the saved model and
+// MOCK_DEFAULT_MODEL is saved as ''. ollama_models answers MOCK_MODELS
+// ('ollama_models' holds it) and counts its calls in
+// window.__mockBridge.modelListings. Segment durations and the level and download timers run on
 // Date.now() and setTimeout, so Playwright's clock controls them.
 
 import type { Action, Download, LibraryEntry, Phase, Settings, Snapshot } from './types';
@@ -102,6 +110,15 @@ export const MOCK_PICK = '/mock/Documents/terms.txt';
 
 /** The engine's sentence when the text editor cannot open the glossary. */
 export const OPEN_FAILED = 'Could not open the vocabulary file: no text editor.';
+
+/** The engine's default Ollama model (DEFAULT_SUMMARY_MODEL), as answered for an unset choice. */
+export const MOCK_DEFAULT_MODEL = 'qwen3.8:27b-mlx';
+
+/** The models the mock Ollama has installed, sorted. */
+export const MOCK_MODELS: readonly string[] = ['gemma3:4b', 'qwen3.8:27b-mlx'];
+
+/** Why ollama_models rejects under ?ollama=down. */
+export const OLLAMA_DOWN = 'Local AI needs Ollama: connection refused.';
 
 /** What the mock summarizer answers for every entry. */
 export const MOCK_SUMMARY = 'A dictated note.';
@@ -203,11 +220,17 @@ export function join(texts: (string | null)[]): string {
   return texts.filter((t): t is string => t !== null).join('\n\n');
 }
 
+/** The engine's write rule for a model: '' keeps the saved one, the default is saved as ''. */
+function stored(sent: string, saved: string): string {
+  if (sent === '') return saved;
+  return sent === MOCK_DEFAULT_MODEL ? '' : sent;
+}
+
 type Slot = { state: 'pending' } | { state: 'heard'; text: string | null } | { state: 'failed'; reason: string };
 
 /** What a test reaches through `window.__mockBridge`. */
 export interface MockHandle {
-  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download', 'summarize' or 'cleanup') wait until `release(name)`. */
+  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download', 'summarize', 'cleanup' or 'ollama_models') wait until `release(name)`. */
   hold(name: string): void;
   release(name: string): void;
   /** Every text the mock clipboard was given, in order. */
@@ -220,6 +243,8 @@ export interface MockHandle {
   readonly opened: string[];
   /** Where each open panel started (the path it was given), in order. */
   readonly browsed: string[];
+  /** How many times ollama_models was called. */
+  readonly modelListings: number;
 }
 
 declare global {
@@ -248,6 +273,7 @@ export class Mock {
   private readonly ollamaDown: boolean;
   private entries: (LibraryEntry & { transcript: string })[] = [];
   private libraryRevision = 0;
+  private modelListings = 0;
   private settings: Settings;
   /** Date.now() at the session's first Record, else null. */
   private started: number | null = null;
@@ -288,6 +314,8 @@ export class Mock {
       libraryOpen: params.get('libraryOpen') !== '0',
       vocabulary: '',
       cleanup: params.get('cleanup') === 'on',
+      summaryModel: params.get('summaryModel') ?? '',
+      cleanupModel: params.get('cleanupModel') ?? '',
     };
     const pick = params.get('pick') ?? MOCK_PICK;
     this.pick = pick === 'cancel' ? null : pick;
@@ -303,6 +331,7 @@ export class Mock {
   }
 
   get handle(): MockHandle {
+    const listings = (): number => this.modelListings;
     return {
       hold: (name) => {
         let open = (): void => undefined;
@@ -320,6 +349,9 @@ export class Mock {
       saved: this.saved,
       opened: this.opened,
       browsed: this.browsed,
+      get modelListings() {
+        return listings();
+      },
     };
   }
 
@@ -393,9 +425,14 @@ export class Mock {
     return this.resolved();
   }
 
-  /** The settings as the engine answers them: the glossary always a path. */
+  /** The settings as the engine answers them: the glossary always a path, the models always named. */
   private resolved(): Settings {
-    return { ...this.settings, vocabulary: this.settings.vocabulary || MOCK_VOCABULARY };
+    return {
+      ...this.settings,
+      vocabulary: this.settings.vocabulary || MOCK_VOCABULARY,
+      summaryModel: this.settings.summaryModel || MOCK_DEFAULT_MODEL,
+      cleanupModel: this.settings.cleanupModel || MOCK_DEFAULT_MODEL,
+    };
   }
 
   async settingsSet(settings: Settings): Promise<Settings> {
@@ -405,8 +442,21 @@ export class Mock {
     // The engine's write rule: '' keeps the saved glossary, the default is saved as ''.
     const vocabulary =
       settings.vocabulary === '' ? this.settings.vocabulary : settings.vocabulary === MOCK_VOCABULARY ? '' : settings.vocabulary;
-    this.settings = { ...settings, vocabulary };
+    this.settings = {
+      ...settings,
+      vocabulary,
+      summaryModel: stored(settings.summaryModel, this.settings.summaryModel),
+      cleanupModel: stored(settings.cleanupModel, this.settings.cleanupModel),
+    };
     return this.resolved();
+  }
+
+  /** The installed Ollama models, or a rejection under ?ollama=down. */
+  async ollamaModels(): Promise<string[]> {
+    this.modelListings += 1;
+    await this.gate('ollama_models');
+    if (this.ollamaDown) throw new Error(OLLAMA_DOWN);
+    return [...MOCK_MODELS];
   }
 
   /** The open panel: the ?pick= file, or null when cancelled. */

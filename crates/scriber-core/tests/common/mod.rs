@@ -364,10 +364,12 @@ impl Encoder for FakeEncoder {
 pub(crate) struct FakeSummarizer {
     pub(crate) answers: RefCell<VecDeque<Result<String, String>>>,
     pub(crate) transcripts: RefCell<Vec<String>>,
+    pub(crate) models: RefCell<Vec<String>>,
 }
 
 impl Summarizer for FakeSummarizer {
-    fn summarize(&self, transcript: &str) -> Result<String, PortError> {
+    fn summarize(&self, model: &str, transcript: &str) -> Result<String, PortError> {
+        self.models.borrow_mut().push(model.to_string());
         self.transcripts.borrow_mut().push(transcript.to_string());
         self.answers
             .borrow_mut()
@@ -383,10 +385,12 @@ impl Summarizer for FakeSummarizer {
 pub(crate) struct FakeCleaner {
     pub(crate) answers: RefCell<VecDeque<Result<String, String>>>,
     pub(crate) calls: RefCell<Vec<(String, String)>>,
+    pub(crate) models: RefCell<Vec<String>>,
 }
 
 impl Cleaner for FakeCleaner {
-    fn clean(&self, system: &str, request: &str) -> Result<String, PortError> {
+    fn clean(&self, model: &str, system: &str, request: &str) -> Result<String, PortError> {
+        self.models.borrow_mut().push(model.to_string());
         self.calls
             .borrow_mut()
             .push((system.to_string(), request.to_string()));

@@ -391,6 +391,8 @@ button.icon {
   flex-direction: column;
   gap: 8px;
   max-width: calc(100vw - 24px);
+  max-height: calc(100vh - var(--band-height) - 8px);
+  overflow-y: auto;
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -401,6 +403,16 @@ button.icon {
 
 .settings[hidden] {
   display: none;
+}
+
+.settings select {
+  width: 100%;
+  font: inherit;
+}
+
+.settings .note {
+  margin: 4px 0 0;
+  color: var(--muted);
 }
 
 /* The vocabulary file: its path, then Browse… and Open in Text Editor. */
