@@ -5,7 +5,7 @@
 //! library/20261026-140309/entry.json          {"id","title","summary","summary_source","cleanup",["cleanup_error",]"duration_ms"[,"summary_model"]}
 //! library/20261026-140309/transcript.txt      the transcript
 //! library/20261026-140309/transcript.raw.txt  Whisper's transcript, when an accepted cleanup changed it
-//! library/20261026-140309/cleanup.reply.txt   the cleanup model's rejected reply, verbatim
+//! library/20261026-140309/cleanup.reply.txt   the rejected reply as the Cleaner returned it (after the adapter's `</think>` cut)
 //! library/20261026-140309/audio.m4a          the session's audio (audio.wav until encoded, or when encoding fails)
 //! ```
 //!

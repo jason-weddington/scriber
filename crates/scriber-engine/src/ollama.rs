@@ -2,6 +2,7 @@
 //! the optional cleanup pass over a finished transcript, each asking the
 //! model the call names (or the adapter's default), and the listing of the
 //! installed models ([`installed_models`], `GET /api/tags`, embedding models hidden).
+//! A reply containing `</think>` is cut to the trimmed text after its last occurrence, and an empty remainder is an error.
 
 use std::time::Duration;
 
@@ -59,7 +60,7 @@ impl Ollama {
     }
 
     /// `model`'s reply to `user` under the `system` prompt: one
-    /// non-streaming chat request, thinking off, within the timeout.
+    /// non-streaming chat request, thinking off, within the timeout; a reply containing `</think>` is cut to the trimmed text after its last occurrence (see `after_think`).
     fn chat(&self, model: &str, system: &str, user: &str) -> Result<String, PortError> {
         let url = format!("{}/api/chat", self.url.trim_end_matches('/'));
         let body = json!({
@@ -86,8 +87,25 @@ impl Ollama {
         reply
             .pointer("/message/content")
             .and_then(Value::as_str)
-            .map(str::to_string)
             .ok_or_else(|| PortError("the reply has no message content".to_string()))
+            .and_then(after_think)
+    }
+}
+
+/// The reply's text after its last `</think>` (trimmed), or the reply unchanged without one.
+fn after_think(content: &str) -> Result<String, PortError> {
+    match content.rsplit_once("</think>") {
+        None => Ok(content.to_string()),
+        Some((_, rest)) => {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                Err(PortError(
+                    "the reply has nothing after </think>".to_string(),
+                ))
+            } else {
+                Ok(rest.to_string())
+            }
+        }
     }
 }
 

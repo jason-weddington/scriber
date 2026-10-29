@@ -74,6 +74,57 @@ mod tests {
         );
     }
 
+    fn reply(content: &str) -> String {
+        ok(&json!({"message": {"role": "assistant", "content": content}, "done": true, "done_reason": "stop"}).to_string())
+    }
+
+    #[test]
+    fn a_leaked_closing_think_tag_is_cut_for_cleanup() {
+        let (base, _rx) = serve(&reply("Fix the parser.\n</think>\n\nFix the parser."));
+        let out = Ollama::with_timeout(&base, "m", CLEANUP_TIMEOUT)
+            .clean("", "S", "R")
+            .unwrap();
+        assert_eq!(out, "Fix the parser.");
+    }
+
+    #[test]
+    fn a_leading_think_block_is_dropped() {
+        let (base, _rx) = serve(&reply(
+            "<think>\nweighing it\n</think>\n\n A note about the board. ",
+        ));
+        let out = Ollama::new(&base, "m").summarize("", "x").unwrap();
+        assert_eq!(out, "A note about the board.");
+    }
+
+    #[test]
+    fn the_last_closing_tag_wins() {
+        let (base, _rx) = serve(&reply("first</think>second</think> third "));
+        assert_eq!(Ollama::new(&base, "m").summarize("", "x").unwrap(), "third");
+    }
+
+    #[test]
+    fn nothing_after_the_tag_is_an_error() {
+        let want = "the reply has nothing after </think>";
+        let (base1, _rx1) = serve(&reply("Fix the parser.\n</think>\n \n"));
+        let e1 = Ollama::new(&base1, "m").summarize("", "x").unwrap_err();
+        assert_eq!(e1.0, want);
+        let (base2, _rx2) = serve(&reply("Fix the parser.\n</think>\n \n"));
+        let e2 = Ollama::with_timeout(&base2, "m", CLEANUP_TIMEOUT)
+            .clean("", "S", "R")
+            .unwrap_err();
+        assert_eq!(e2.0, want);
+        let (base3, _rx3) = serve(&reply("</think>"));
+        let e3 = Ollama::new(&base3, "m").summarize("", "x").unwrap_err();
+        assert_eq!(e3.0, want);
+    }
+
+    #[test]
+    fn a_half_open_tag_is_unchanged() {
+        let (base, _rx) = serve(&reply(" <think> half open "));
+        let out = Ollama::new(&base, "m").summarize("", "x").unwrap();
+        assert_eq!(out, " <think> half open ");
+    }
+
     #[test]
     fn a_reply_is_its_content_as_is() {
         let (base, rx) = serve(&ok(REPLY));
