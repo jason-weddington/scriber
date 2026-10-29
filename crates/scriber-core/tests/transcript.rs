@@ -3,14 +3,15 @@
 #[cfg(test)]
 mod tests {
     use scriber_core::transcript::{
-        HALLUCINATIONS, SEGMENT_SEPARATOR, SHORT_SEGMENT, SILENCE_RMS, SILENCE_WINDOW, is_silent,
-        join, keep,
+        HALLUCINATIONS, SEGMENT_SEPARATOR, SHORT_SEGMENT, SILENCE_RMS, SILENCE_WINDOW,
+        TRAILING_PADDING, is_silent, join, keep, trim_trailing_silence,
     };
 
     #[test]
     fn the_constants_are_pinned() {
         assert_eq!(SILENCE_WINDOW, 1_600, "100 ms at 16 kHz");
         assert!((SILENCE_RMS - 0.01).abs() < f32::EPSILON, "-40 dBFS");
+        assert_eq!(TRAILING_PADDING, 8_000, "500 ms at 16 kHz");
         assert_eq!(SHORT_SEGMENT, 160_000, "10 s at 16 kHz");
         assert_eq!(SEGMENT_SEPARATOR, "\n\n", "a blank line between segments");
     }
@@ -148,5 +149,65 @@ mod tests {
         );
         assert_eq!(join(["only"]), "only", "one");
         assert_eq!(join([]), "", "none");
+    }
+
+    fn loud(n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
+            .collect()
+    }
+
+    fn trimmed(parts: &[Vec<f32>]) -> usize {
+        trim_trailing_silence(&parts.concat()).len()
+    }
+
+    #[test]
+    fn trimming_keeps_padding_after_the_last_loud_window() {
+        assert_eq!(trimmed(&[loud(32_000)]), 32_000, "a");
+        assert_eq!(trimmed(&[loud(16_000), vec![0.0; 48_000]]), 24_000, "b");
+        assert_eq!(trimmed(&[loud(16_000), vec![0.0; 8_000]]), 24_000, "c1");
+        assert_eq!(trimmed(&[loud(16_000), vec![0.0; 7_999]]), 23_999, "c2");
+    }
+
+    #[test]
+    fn a_window_exactly_at_the_level_is_loud() {
+        assert_eq!(trim_trailing_silence(&[SILENCE_RMS]).len(), 1, "d1");
+        assert_eq!(trim_trailing_silence(&[SILENCE_RMS * 0.99]).len(), 0, "d2");
+        assert_eq!(trimmed(&[vec![0.0; 1_600], vec![SILENCE_RMS]]), 1_601, "d3");
+        assert_eq!(
+            trimmed(&[loud(1_600), vec![0.0; 16_000], vec![SILENCE_RMS * 0.99]]),
+            9_600,
+            "d4"
+        );
+    }
+
+    #[test]
+    fn faint_clicks_and_leading_silence_are_handled() {
+        let click = vec![0.005; 1_600];
+        assert_eq!(
+            trimmed(&[loud(16_000), vec![0.0; 16_000], click, vec![0.0; 16_000]]),
+            24_000,
+            "e"
+        );
+        assert_eq!(trimmed(&[vec![0.0; 16_000], loud(100)]), 16_100, "f");
+        assert_eq!(
+            trimmed(&[vec![0.0; 16_000], loud(1_600), vec![0.0; 32_000]]),
+            25_600,
+            "g"
+        );
+    }
+
+    #[test]
+    fn quiet_audio_trims_to_nothing() {
+        assert_eq!(trimmed(&[]), 0, "h1");
+        assert_eq!(trimmed(&[vec![0.0; 16_000]]), 0, "h2");
+    }
+
+    #[test]
+    fn the_trimmed_audio_is_a_prefix_of_the_input() {
+        let s = [loud(16_000), vec![0.0; 48_000]].concat();
+        let r = trim_trailing_silence(&s);
+        assert_eq!(r, &s[..24_000], "prefix");
+        assert!(std::ptr::eq(r.as_ptr(), s.as_ptr()), "same start");
     }
 }

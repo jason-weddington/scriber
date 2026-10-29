@@ -21,7 +21,7 @@ mod tests {
     use scriber_core::settings::SETTINGS;
     use serde_json::{Value, json};
 
-    use crate::common::{World, at as time, speech};
+    use crate::common::{World, at as time, captured_speech, speech};
 
     fn idle(w: &World) -> Dictation {
         Dictation::recover(&w.ports())
@@ -350,6 +350,82 @@ mod tests {
             w.clipboard.writes.borrow().is_empty(),
             "an empty transcript is not copied"
         );
+    }
+
+    #[test]
+    fn trailing_silence_is_trimmed_for_the_transcriber_but_not_the_saved_audio() {
+        let w = World::default();
+        let long = [speech(16_000), vec![0.0; 48_000]].concat();
+        w.recorder
+            .captures
+            .borrow_mut()
+            .push_back(Ok(Captured::new(long, 1, 16_000)));
+        let (_d, jobs) = at(&w, Phase::Paused);
+        assert_eq!(
+            decode_wav(&w.files.segment(0).unwrap()).unwrap().len(),
+            64_000,
+            "saved whole"
+        );
+        let _o = w.run(&jobs[0]);
+        assert_eq!(w.transcriber.calls.borrow()[0].0, 24_000, "heard trimmed");
+        assert_eq!(
+            decode_wav(&w.files.segment(0).unwrap()).unwrap().len(),
+            64_000,
+            "still saved whole"
+        );
+    }
+
+    #[test]
+    fn a_long_segment_of_mostly_room_tone_drops_its_hallucination() {
+        let w = World::default();
+        {
+            let mut answers = w.transcriber.answers.borrow_mut();
+            answers.push_back(Ok("Hello.".to_string()));
+            answers.push_back(Ok(" Thank you. ".to_string()));
+            answers.push_back(Ok("Goodbye.".to_string()));
+            let mut captures = w.recorder.captures.borrow_mut();
+            captures.push_back(Ok(captured_speech(1)));
+            // 240_000 samples is >= SHORT_SEGMENT, so without the trim
+            // "Thank you." would have been kept.
+            captures.push_back(Ok(Captured::new(
+                [speech(16_000), vec![0.0; 224_000]].concat(),
+                1,
+                16_000,
+            )));
+            captures.push_back(Ok(captured_speech(1)));
+        }
+        let p = w.ports();
+        let (mut d, mut jobs) = at(&w, Phase::Paused);
+        for _ in 0..2 {
+            d.resume(&p).unwrap();
+            jobs.push(d.pause(&p).unwrap().unwrap());
+        }
+        let _none = d.done(&p).unwrap();
+        for job in &jobs {
+            finish(&mut d, &w, job);
+        }
+        assert_eq!(snap(&d, &w).text, "Hello.\n\nGoodbye.", "dropped");
+        assert_eq!(w.transcriber.calls.borrow()[1].0, 24_000, "trimmed");
+    }
+
+    #[test]
+    fn retry_transcribes_the_trimmed_saved_audio() {
+        let w = World::default();
+        let long = [speech(16_000), vec![0.0; 48_000]].concat();
+        w.recorder
+            .captures
+            .borrow_mut()
+            .push_back(Ok(Captured::new(long, 1, 16_000)));
+        let (mut d, _) = at(&w, Phase::Failed);
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok("Hello.".to_string()));
+        let retried = d.retry(&w.ports()).unwrap();
+        finish(&mut d, &w, &retried[0]);
+        assert_eq!(w.transcriber.calls.borrow().len(), 2, "twice");
+        assert_eq!(w.transcriber.calls.borrow()[1].0, 24_000, "trimmed");
+        assert_eq!(snap(&d, &w).text, "Hello.", "kept");
     }
 
     #[test]

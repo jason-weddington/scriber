@@ -32,7 +32,7 @@ use crate::ports::{Library, PortError, Ports};
 use crate::settings;
 use crate::store;
 use crate::sync::lock;
-use crate::transcript::{is_silent, join, keep};
+use crate::transcript::{is_silent, join, keep, trim_trailing_silence};
 use crate::vocabulary::{self, prompt};
 
 /// Why an action was refused. The session is unchanged.
@@ -159,7 +159,10 @@ impl Job {
         }
     }
 
-    /// Does the work. A silent segment is not sent to the transcriber, and a
+    /// Does the work. A silent segment is not sent to the transcriber, any
+    /// other segment is trimmed of trailing silence before transcription, and
+    /// the hallucination length test measures the trimmed audio, because that
+    /// is what Whisper heard. A
     /// hallucination or text with no letter or digit is dropped (see [`crate::transcript`]). A download
     /// calls `progress` with the bytes received as each whole percent
     /// arrives (see [`download::fetch`]). The warm-up's outcome changes
@@ -184,11 +187,14 @@ impl Job {
             Work::Segment { samples, .. } if is_silent(samples) => Ok(None),
             Work::Segment {
                 samples, prompt, ..
-            } => ports
-                .transcriber
-                .transcribe(samples, prompt.as_deref())
-                .map(|heard| keep(samples.len(), &heard))
-                .map_err(|e| e.to_string()),
+            } => {
+                let heard_audio = trim_trailing_silence(samples);
+                ports
+                    .transcriber
+                    .transcribe(heard_audio, prompt.as_deref())
+                    .map(|heard| keep(heard_audio.len(), &heard))
+                    .map_err(|e| e.to_string())
+            }
             Work::Encode { id } => encode(id, ports).map(|()| None),
             Work::Summary { id, text } => summarize(id, text, ports).map(Some),
             Work::Cleanup { text, terms, .. } => match ports.cleaner {

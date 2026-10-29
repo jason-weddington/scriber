@@ -1,6 +1,7 @@
 //! Real-model smoke check, never run by the gate: transcribes a 16 kHz mono
 //! WAV through the engine's Whisper adapter, warming it up first as the
-//! engine does at launch, and prints the text and how long each step took.
+//! engine does at launch (trimming trailing silence and applying `keep` as the
+//! app does), and prints the text and how long each step took.
 //! `scripts/smoke.sh` makes the WAV and runs this from the repo root:
 //!
 //! ```sh
@@ -11,7 +12,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use scriber_core::audio::decode_wav;
-use scriber_core::transcript::{is_silent, keep};
+use scriber_core::transcript::{is_silent, keep, trim_trailing_silence};
 use scriber_core::vocabulary::prompt;
 use scriber_engine::{Transcriber, Whisper};
 
@@ -21,11 +22,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (model, wav) = (args.next().ok_or(usage)?, args.next().ok_or(usage)?);
     let samples = decode_wav(&std::fs::read(wav)?)?;
     let seconds = f64::from(u32::try_from(samples.len())?) / 16_000.0;
+    let trimmed = trim_trailing_silence(&samples);
+    let trimmed_seconds = f64::from(u32::try_from(trimmed.len())?) / 16_000.0;
     let whisper = Whisper::new(model.into());
     let mut out = std::io::stdout();
     writeln!(
         out,
-        "audio: {seconds:.1} s, silent: {}",
+        "audio: {seconds:.1} s, trimmed to {trimmed_seconds:.1} s, silent: {}",
         is_silent(&samples)
     )?;
 
@@ -35,13 +38,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "warm-up (model load, as at launch): {load:.2?}")?;
 
     let first = Instant::now();
-    let heard = whisper.transcribe(&samples, None)?;
+    let heard = whisper.transcribe(trimmed, None)?;
     let first = first.elapsed();
     writeln!(
         out,
         "first transcription after the warm-up, no prompt: {first:.2?}"
     )?;
-    writeln!(out, "text: {:?}", keep(samples.len(), &heard))?;
+    writeln!(out, "text: {:?}", keep(trimmed.len(), &heard))?;
 
     let style = prompt("");
     let glossary = prompt("Scriber\ntalos\nagent-gtd");
@@ -52,10 +55,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (label, p) in runs {
         writeln!(out, "prompt: {p:?}")?;
         let start = Instant::now();
-        let again = whisper.transcribe(&samples, Some(p.as_str()))?;
+        let again = whisper.transcribe(trimmed, Some(p.as_str()))?;
         let elapsed = start.elapsed();
         writeln!(out, "{label}: {elapsed:.2?}")?;
-        writeln!(out, "text: {:?}", keep(samples.len(), &again))?;
+        writeln!(out, "text: {:?}", keep(trimmed.len(), &again))?;
     }
     Ok(())
 }
