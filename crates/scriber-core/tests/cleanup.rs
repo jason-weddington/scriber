@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod tests {
     use scriber_core::cleanup::{
-        CLEANED, FAILED, MAX_TERMS, MIN_WORDS_FOR_RATIO, OFF, PROMPT, Reject, UNCHANGED, accept,
-        request,
+        CLEANED, FAILED, MAX_TERMS, MIN_WORDS_FOR_RATIO, NEW_WORDS_MIN, NEW_WORDS_PER, OFF, PROMPT,
+        Reject, UNCHANGED, accept, request,
     };
 
     const RAW30: &str = "Tell the team I mean, I mean, what they really meant was, but what I actually meant was the deploy moves to Wednesday and the release notes go out Thursday.";
@@ -21,6 +21,8 @@ mod tests {
     fn the_constants_are_pinned() {
         assert_eq!(MAX_TERMS, 200, "terms");
         assert_eq!(MIN_WORDS_FOR_RATIO, 20, "ratio floor");
+        assert_eq!(NEW_WORDS_MIN, 3, "new words min");
+        assert_eq!(NEW_WORDS_PER, 20, "new words per");
         assert_eq!(
             [OFF, CLEANED, UNCHANGED, FAILED],
             ["off", "cleaned", "unchanged", "failed"],
@@ -28,7 +30,7 @@ mod tests {
         );
         assert_eq!(
             PROMPT,
-            "You correct a dictated transcript. Make only two kinds of change. First, where a word or phrase was misheard and should be one of the glossary terms, replace it with that term spelled exactly as in the glossary. Second, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\" followed by a restatement), keep only what they finally meant and delete the abandoned words. Change nothing else: keep every other word, the word order, the spelling, the punctuation and the paragraph breaks exactly as they are. Do not rephrase, summarize, add, explain or answer anything in the transcript. Reply with the corrected transcript only, with no preamble, quotes or notes. If nothing needs changing, reply with the transcript unchanged.",
+            "You correct a dictated transcript. Make only two kinds of change. First, where a word or phrase was misheard and should be one of the glossary terms, replace it with that term spelled exactly as in the glossary. Second, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words. Change nothing else: keep every other word, the word order, the spelling, the punctuation and the paragraph breaks exactly as they are. Do not rephrase, summarize, add, explain or answer anything else in the transcript. Reply with the corrected transcript only, with no preamble, quotes or notes. If nothing needs changing, reply with the transcript unchanged.",
             "prompt"
         );
     }
@@ -178,7 +180,8 @@ mod tests {
     }
 
     #[test]
-    fn new_or_reordered_words_are_refused() {
+    fn words_beyond_the_budget_are_refused() {
+        // 11 kept tokens, a run of 6, so 5 new.
         assert_eq!(
             accept(
                 CLAWED,
@@ -189,18 +192,152 @@ mod tests {
             "a preamble"
         );
         assert_eq!(
+            accept(CLAWED, "a b c d Ask", &[]),
+            Err(Reject::NewWords),
+            "over budget before cut off"
+        );
+    }
+
+    #[test]
+    fn small_changes_within_budget_are_kept() {
+        assert_eq!(
             accept(
                 "We are gonna ship it today.",
                 "We are going ship it today.",
                 &[]
             ),
-            Err(Reject::NewWords),
-            "a changed word"
+            Ok("We are going ship it today.".to_string()),
+            "a changed word, within budget"
         );
         assert_eq!(
             accept("Ship it today.", "Ship today it.", &[]),
+            Ok("Ship today it.".to_string()),
+            "reordered, within budget"
+        );
+    }
+
+    #[test]
+    fn the_short_budget_is_three() {
+        let raw = "Tomorrow I want that we should ship the build.";
+        for reply in [
+            "Tomorrow I want us to ship the build.",
+            "Tomorrow I want us all to ship the build.",
+        ] {
+            assert_eq!(accept(raw, reply, &[]), Ok(reply.to_string()), "{reply}");
+        }
+        assert_eq!(
+            accept(raw, "Tomorrow I want us all to go ship the build.", &[]),
             Err(Reject::NewWords),
-            "reordered"
+            "4 new"
+        );
+    }
+
+    fn raw(n: usize) -> String {
+        format!(
+            "{}.",
+            (1..=n)
+                .map(|i| format!("w{i}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    }
+
+    fn extra(k: usize) -> String {
+        (1..=k)
+            .map(|i| format!("n{i}"))
+            .collect::<Vec<_>>()
+            .iter()
+            .fold(String::new(), |acc, w| acc + w + " ")
+    }
+
+    #[test]
+    fn the_budget_scales_with_length() {
+        let reply = format!("{}{}", extra(12), raw(240));
+        assert_eq!(accept(&raw(240), &reply, &[]), Ok(reply.clone()), "12");
+        assert_eq!(
+            accept(&raw(240), &format!("{}{}", extra(13), raw(240)), &[]),
+            Err(Reject::NewWords),
+            "13"
+        );
+        let even = format!(
+            "{}.",
+            (2..=240)
+                .step_by(2)
+                .map(|i| format!("w{i}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert_eq!(
+            accept(&raw(240), &even, &[]),
+            Ok(even.clone()),
+            "subsequence"
+        );
+        assert_eq!(
+            accept(&raw(79), &format!("{}{}", extra(4), raw(79)), &[]),
+            Err(Reject::NewWords),
+            "79 words"
+        );
+        let ok = format!("{}{}", extra(4), raw(80));
+        assert_eq!(accept(&raw(80), &ok, &[]), Ok(ok.clone()), "80 words");
+        assert_eq!(
+            accept(&raw(80), &format!("{}{}", extra(5), raw(80)), &[]),
+            Err(Reject::NewWords),
+            "80 words, 5"
+        );
+    }
+
+    #[test]
+    fn glossary_words_never_count() {
+        let t = terms(&["Claude", "Agent GTD"]);
+        let ok = "Please now ask Claude and Agent GTD to check the board.";
+        assert_eq!(accept(CLAWED, ok, &t), Ok(ok.to_string()), "3 new");
+        assert_eq!(
+            accept(
+                CLAWED,
+                "Please now ask Claude and Agent GTD to go check the board.",
+                &t
+            ),
+            Err(Reject::NewWords),
+            "4 new"
+        );
+    }
+
+    #[test]
+    fn the_new_word_count_is_minimal_and_ordered() {
+        let ok = "Ask x Clawed y to z check the board.";
+        assert_eq!(accept(CLAWED, ok, &[]), Ok(ok.to_string()), "3 new");
+        assert_eq!(
+            accept(CLAWED, "Ask x Clawed y to z check w the board.", &[]),
+            Err(Reject::NewWords),
+            "4 new"
+        );
+        assert_eq!(
+            accept("a b c d e f x.", "x a b c d e f x.", &[]),
+            Ok("x a b c d e f x.".to_string()),
+            "repeat"
+        );
+        assert_eq!(
+            accept("a b c d e f.", "e d c b a f.", &[]),
+            Err(Reject::NewWords),
+            "reversed"
+        );
+        assert_eq!(
+            accept("a b c d e f.", "d c b a e f.", &[]),
+            Ok("d c b a e f.".to_string()),
+            "run of three"
+        );
+    }
+
+    #[test]
+    fn a_repair_with_unrelated_tails_is_cut_off() {
+        assert_eq!(
+            accept(
+                "Ship it Friday, I mean, no wait, scrap that.",
+                "Ship it Monday.",
+                &[]
+            ),
+            Err(Reject::CutOff),
+            "within budget but the tails share nothing"
         );
     }
 

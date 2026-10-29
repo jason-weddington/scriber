@@ -1609,10 +1609,9 @@ mod tests {
         let s = d.complete(w.run(retry.first().unwrap()), &p);
         assert_eq!(s.phase, Phase::Transcribing, "cleaning");
         let job = w.queue.jobs.borrow_mut().pop().unwrap();
-        w.cleaner
-            .answers
-            .borrow_mut()
-            .push_back(Ok(CLAUDE.to_string()));
+        w.cleaner.answers.borrow_mut().push_back(Ok(
+            "Ask Claude Claude Claude Claude to check the board.".to_string(),
+        ));
         w.files.set_vocabulary(Some("Claude"));
         let done = d.complete(w.run_with(&job, &p), &p);
         assert_eq!(done.phase, Phase::Finished, "finished");
