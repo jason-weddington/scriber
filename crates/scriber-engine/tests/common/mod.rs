@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use scriber_core::sync::LoadOnce;
 use scriber_engine::{
     Adapters, Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Engine, EngineConfig,
-    Event, LevelSink, LocalTime, PortError, Recorder, Snapshot, Summarizer, Transcriber,
+    Event, LevelSink, LocalTime, PortError, Recorder, Snapshot, Summarizer, Transcriber, Warmer,
 };
 
 /// How long a test waits for anything.
@@ -303,6 +303,78 @@ impl Cleaner for FakeCleaner {
     }
 }
 
+/// A warmer that records each call on entry, as `("warm", model)` or
+/// `("release", model)`, fails both while `fail` is set, and optionally waits
+/// for a message on a gate before answering.
+#[derive(Clone, Default)]
+pub(crate) struct FakeWarmer {
+    pub(crate) calls: Arc<Mutex<Vec<(String, String)>>>,
+    pub(crate) fail: Arc<AtomicBool>,
+    pub(crate) warm_gate: Option<Arc<Mutex<Receiver<()>>>>,
+    pub(crate) release_gate: Option<Arc<Mutex<Receiver<()>>>>,
+}
+
+impl FakeWarmer {
+    /// Each warm waits for a message on the returned sender.
+    pub(crate) fn gated_warm(self) -> (Self, Sender<()>) {
+        let (tx, rx) = mpsc::channel();
+        let gated = Self {
+            warm_gate: Some(Arc::new(Mutex::new(rx))),
+            ..self
+        };
+        (gated, tx)
+    }
+
+    /// Each release waits for a message on the returned sender.
+    pub(crate) fn gated_release(self) -> (Self, Sender<()>) {
+        let (tx, rx) = mpsc::channel();
+        let gated = Self {
+            release_gate: Some(Arc::new(Mutex::new(rx))),
+            ..self
+        };
+        (gated, tx)
+    }
+
+    /// A copy of the calls so far.
+    pub(crate) fn seen(&self) -> Vec<(String, String)> {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn call(
+        &self,
+        kind: &str,
+        model: &str,
+        gate: Option<&Arc<Mutex<Receiver<()>>>>,
+    ) -> Result<(), PortError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((kind.to_string(), model.to_string()));
+        if let Some(gate) = gate {
+            // A closed gate (the test ended) lets the answer through.
+            let _opened = gate.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        }
+        if self.fail.load(Ordering::SeqCst) {
+            Err(PortError("refused".to_string()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Warmer for FakeWarmer {
+    fn warm(&self, model: &str) -> Result<(), PortError> {
+        self.call("warm", model, self.warm_gate.as_ref())
+    }
+
+    fn release(&self, model: &str) -> Result<(), PortError> {
+        self.call("release", model, self.release_gate.as_ref())
+    }
+}
+
 /// A clipboard that keeps every write.
 #[derive(Clone, Default)]
 pub(crate) struct RecordingClipboard {
@@ -328,6 +400,7 @@ pub(crate) struct Fakes {
     pub(crate) encoder: FakeEncoder,
     pub(crate) summarizer: FakeSummarizer,
     pub(crate) cleaner: FakeCleaner,
+    pub(crate) warmer: FakeWarmer,
 }
 
 impl Fakes {
@@ -353,6 +426,7 @@ impl Fakes {
             self.summarizer.clone(),
             self.cleaner.clone(),
         );
+        let warmer = self.warmer.clone();
         let engine = Engine::with_adapters(
             config,
             move |level| {
@@ -368,6 +442,7 @@ impl Fakes {
                     encoder: Box::new(encoder),
                     summarizer: Box::new(summarizer),
                     cleaner: Box::new(cleaner),
+                    warmer: Arc::new(warmer),
                 }
             },
             events(tx),

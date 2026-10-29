@@ -10,8 +10,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use scriber_engine::{
-        CLEANUP_TIMEOUT, Cleaner as _, Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT, Summarizer as _,
-        TAGS_TIMEOUT, installed_models,
+        CLEANUP_TIMEOUT, Cleaner as _, KEEP_ALIVE, KEEP_WARM_INTERVAL, Ollama, RELEASE_TIMEOUT,
+        SUMMARY_TIMEOUT, SYSTEM_PROMPT, Summarizer as _, TAGS_TIMEOUT, WARM_TIMEOUT, Warmer as _,
+        installed_models,
     };
     use serde_json::{Value, json};
 
@@ -132,7 +133,7 @@ mod tests {
             .summarize("", "Check the board.")
             .unwrap();
         assert_eq!(summary, " A note about the board. ", "raw content");
-        let (line, body) = rx.recv().unwrap();
+        let (line, body) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(line, "POST /api/chat HTTP/1.1", "the request line");
         let body: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
@@ -141,6 +142,7 @@ mod tests {
                 "model": "qwen3.8:27b-mlx",
                 "stream": false,
                 "think": false,
+                "keep_alive": "10m",
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": "Check the board."},
@@ -156,7 +158,11 @@ mod tests {
         let _summary = Ollama::new(&format!("{base}/"), "m")
             .summarize("", "x")
             .unwrap();
-        assert_eq!(rx.recv().unwrap().0, "POST /api/chat HTTP/1.1", "one slash");
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+            "POST /api/chat HTTP/1.1",
+            "one slash"
+        );
     }
 
     #[test]
@@ -219,7 +225,7 @@ mod tests {
             .clean("", "S", "R")
             .unwrap();
         assert_eq!(reply, " A note about the board. ", "raw content");
-        let (line, body) = rx.recv().unwrap();
+        let (line, body) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(line, "POST /api/chat HTTP/1.1", "the request line");
         let body: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
@@ -228,6 +234,7 @@ mod tests {
                 "model": "m",
                 "stream": false,
                 "think": false,
+                "keep_alive": "10m",
                 "messages": [
                     {"role": "system", "content": "S"},
                     {"role": "user", "content": "R"},
@@ -268,7 +275,8 @@ mod tests {
     fn model_sent(call: impl FnOnce(&str)) -> Value {
         let (base, rx) = serve(&ok(REPLY));
         call(&base);
-        let body: Value = serde_json::from_str(&rx.recv().unwrap().1).unwrap();
+        let body: Value =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap().1).unwrap();
         body.get("model").cloned().unwrap()
     }
 
@@ -303,7 +311,12 @@ mod tests {
         let (base, rx) = serve(response);
         let url = if slash { format!("{base}/") } else { base };
         let models = installed_models(&url).map_err(|e| e.0);
-        (models, rx.recv().map(|r| r.0).unwrap_or_default())
+        (
+            models,
+            rx.recv_timeout(Duration::from_secs(5))
+                .map(|r| r.0)
+                .unwrap_or_default(),
+        )
     }
 
     #[test]
@@ -371,5 +384,130 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().unwrap());
         drop(listener);
         assert!(installed_models(&base).is_err(), "refused");
+    }
+
+    #[test]
+    fn the_keep_warm_constants_are_pinned() {
+        assert_eq!(KEEP_ALIVE, "10m", "keep alive");
+        assert_eq!(KEEP_WARM_INTERVAL, Duration::from_secs(240), "interval");
+        assert_eq!(WARM_TIMEOUT, Duration::from_secs(60), "warm timeout");
+        assert_eq!(RELEASE_TIMEOUT, Duration::from_secs(2), "release timeout");
+        assert!(
+            KEEP_WARM_INTERVAL < Duration::from_secs(600),
+            "renewed within the keep alive"
+        );
+    }
+
+    const FAILED: &str =
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+    /// The request line and parsed body `call` sent to a stub answering `{}`.
+    fn generated(slash: bool, call: impl FnOnce(&Ollama) -> bool) -> (String, Value) {
+        let (base, rx) = serve(&ok("{}"));
+        let url = if slash { format!("{base}/") } else { base };
+        assert!(call(&Ollama::with_timeout(&url, "m", WARM_TIMEOUT)), "ok");
+        let (line, body) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        (line, serde_json::from_str(&body).unwrap())
+    }
+
+    #[test]
+    fn a_warm_loads_the_model_with_the_keep_alive() {
+        let (line, body) = generated(false, |o| o.warm("llama3:8b").is_ok());
+        assert_eq!(line, "POST /api/generate HTTP/1.1", "the request line");
+        assert_eq!(
+            body,
+            json!({"model": "llama3:8b", "keep_alive": "10m"}),
+            "the body"
+        );
+    }
+
+    #[test]
+    fn a_release_unloads_the_model_now() {
+        let (line, body) = generated(false, |o| o.release("llama3:8b").is_ok());
+        assert_eq!(line, "POST /api/generate HTTP/1.1", "the request line");
+        assert_eq!(
+            body,
+            json!({"model": "llama3:8b", "keep_alive": 0}),
+            "the body"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_model_is_the_default_for_warm_and_release() {
+        let (_, warm) = generated(false, |o| o.warm("").is_ok());
+        assert_eq!(warm, json!({"model": "m", "keep_alive": "10m"}), "warm");
+        let (_, release) = generated(false, |o| o.release("").is_ok());
+        assert_eq!(release, json!({"model": "m", "keep_alive": 0}), "release");
+    }
+
+    #[test]
+    fn a_trailing_slash_warms_and_releases_at_the_same_path() {
+        let (warm, _) = generated(true, |o| o.warm("m").is_ok());
+        assert_eq!(warm, "POST /api/generate HTTP/1.1", "warm");
+        let (release, _) = generated(true, |o| o.release("m").is_ok());
+        assert_eq!(release, "POST /api/generate HTTP/1.1", "release");
+    }
+
+    #[test]
+    fn a_failed_status_is_an_error_for_warm_and_release() {
+        let (warm_base, _warm_rx) = serve(FAILED);
+        assert!(
+            Ollama::with_timeout(&warm_base, "m", WARM_TIMEOUT)
+                .warm("m")
+                .is_err(),
+            "warm"
+        );
+        let (release_base, _release_rx) = serve(FAILED);
+        assert!(
+            Ollama::with_timeout(&release_base, "m", WARM_TIMEOUT)
+                .release("m")
+                .is_err(),
+            "release"
+        );
+    }
+
+    #[test]
+    fn a_refused_connection_is_an_error_for_warm_and_release() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let ollama = Ollama::with_timeout(&base, "m", WARM_TIMEOUT);
+        assert!(ollama.warm("m").is_err(), "warm");
+        assert!(ollama.release("m").is_err(), "release");
+    }
+
+    /// A server that accepts one connection and never answers it, for 10 s.
+    fn silent_url() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let _server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_secs(10));
+            drop(stream);
+        });
+        base
+    }
+
+    #[test]
+    fn a_warm_waits_for_its_own_timeout() {
+        let base = silent_url();
+        let started = Instant::now();
+        let ollama = Ollama::with_timeout(&base, "m", Duration::from_millis(200));
+        assert!(ollama.warm("m").is_err(), "timed out");
+        assert!(started.elapsed() < Duration::from_secs(1), "promptly");
+    }
+
+    #[test]
+    fn a_release_waits_at_most_the_release_timeout() {
+        let base = silent_url();
+        let started = Instant::now();
+        let ollama = Ollama::with_timeout(&base, "m", WARM_TIMEOUT);
+        assert!(ollama.release("m").is_err(), "timed out");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(1900),
+            "the cap: {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(5), "not the warm timeout");
     }
 }

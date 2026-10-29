@@ -23,6 +23,7 @@
 //! misheard glossary terms and spoken self-corrections; the raw Whisper text
 //! is used whenever that fails or the reply does not pass the core's check
 //! (`scriber_core::cleanup::accept`).
+//! While it is on, the engine also keeps the cleanup model loaded in Ollama on a thread of its own ([`Warmer`]), renewing it every [`EngineConfig::keep_warm_every`] and releasing it when cleanup turns off, the model changes or the engine shuts down.
 //!
 //! ```rust,no_run
 //! use std::sync::{Arc, Mutex, mpsc};
@@ -53,6 +54,7 @@ mod encode;
 mod files;
 mod net;
 mod ollama;
+mod warm;
 mod whisper;
 
 use std::path::PathBuf;
@@ -74,7 +76,8 @@ pub use encode::{AFCONVERT, Afconvert};
 pub use files::DataDir;
 pub use net::HttpDownloader;
 pub use ollama::{
-    CLEANUP_TIMEOUT, Ollama, SUMMARY_TIMEOUT, SYSTEM_PROMPT, TAGS_TIMEOUT, installed_models,
+    CLEANUP_TIMEOUT, KEEP_ALIVE, KEEP_WARM_INTERVAL, Ollama, RELEASE_TIMEOUT, SUMMARY_TIMEOUT,
+    SYSTEM_PROMPT, TAGS_TIMEOUT, WARM_TIMEOUT, installed_models,
 };
 pub use scriber_core::dictation::DictationError;
 pub use scriber_core::download::Source;
@@ -83,7 +86,10 @@ pub use scriber_core::ports::{
     Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, LocalTime, PortError,
     Recorder, Summarizer, Transcriber, fail,
 };
+pub use warm::Warmer;
 pub use whisper::Whisper;
+
+use crate::warm::KeepWarm;
 
 /// Where the speech model comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,12 +141,16 @@ pub struct EngineConfig {
     /// The program that opens the glossary in a text editor
     /// ([`Engine::open_vocabulary`]); macOS's `open` ([`OPEN`]).
     pub editor: PathBuf,
+    /// How often the cleanup model's keep-alive is renewed while the cleanup
+    /// setting is on ([`KEEP_WARM_INTERVAL`]).
+    pub keep_warm_every: Duration,
 }
 
 impl EngineConfig {
     /// The default model, downloaded into `data_dir`, no clipboard, no
     /// library ([`DEFAULT_OLLAMA_URL`] and [`DEFAULT_SUMMARY_MODEL`] for
-    /// when it is turned on), and [`OPEN`] as the text editor.
+    /// when it is turned on), [`OPEN`] as the text editor, and
+    /// [`KEEP_WARM_INTERVAL`] between keep-alive renewals.
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
@@ -150,6 +160,7 @@ impl EngineConfig {
             ollama_url: DEFAULT_OLLAMA_URL.to_string(),
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             editor: PathBuf::from(OPEN),
+            keep_warm_every: KEEP_WARM_INTERVAL,
         }
     }
 }
@@ -233,6 +244,8 @@ pub struct Adapters {
     pub summarizer: Box<dyn Summarizer + Send + Sync>,
     /// Cleans up each transcript when the setting is on.
     pub cleaner: Box<dyn Cleaner + Send + Sync>,
+    /// Keeps the cleanup model loaded while the cleanup setting is on.
+    pub warmer: Arc<dyn Warmer + Send + Sync>,
 }
 
 /// A level sink that reports each level to `events` as [`Event::Level`].
@@ -293,6 +306,8 @@ struct Inner {
     ollama_url: String,
     /// The model asked when settings.json names none.
     default_model: String,
+    /// Keeps the cleanup model loaded while the cleanup setting is on.
+    keep_warm: KeepWarm,
 }
 
 impl Inner {
@@ -371,6 +386,11 @@ impl Engine {
                     &summary_model,
                     CLEANUP_TIMEOUT,
                 )),
+                warmer: Arc::new(Ollama::with_timeout(
+                    &ollama_url,
+                    &summary_model,
+                    WARM_TIMEOUT,
+                )),
             },
             events,
         )
@@ -398,6 +418,7 @@ impl Engine {
     ///         encoder: Box::new(Afconvert::new(AFCONVERT.into(), "/path/to/data".into())),
     ///         summarizer: Box::new(Ollama::new("http://127.0.0.1:11434", "qwen3.8:27b-mlx")),
     ///         cleaner: Box::new(Ollama::new("http://127.0.0.1:11434", "qwen3.8:27b-mlx")),
+    ///         warmer: Arc::new(Ollama::new("http://127.0.0.1:11434", "qwen3.8:27b-mlx")),
     ///     },
     ///     Arc::new(|_event| {}),
     /// );
@@ -417,7 +438,9 @@ impl Engine {
             ollama_url,
             summary_model,
             editor,
+            keep_warm_every,
         } = config;
+        let keep_warm = KeepWarm::start(Arc::clone(&adapters.warmer), keep_warm_every);
         let clipboard = clipboard.unwrap_or_else(|| Arc::new(NoClipboard));
         let inner = Arc::new_cyclic(|weak| Inner {
             dictation: Mutex::default(),
@@ -432,6 +455,7 @@ impl Engine {
             editor: TextEditor::new(editor),
             ollama_url,
             default_model: summary_model,
+            keep_warm,
         });
         let ports = inner.ports();
         // Launched with the lock held, so a job it queues cannot record its
@@ -442,7 +466,9 @@ impl Engine {
             ModelSource::Download(source) => Dictation::launch_from(source, &ports),
         };
         drop(guard);
-        Self(inner)
+        let engine = Self(inner);
+        engine.0.keep_warm.refresh(|| engine.settings());
+        engine
     }
 
     /// The session as it stands.
@@ -624,7 +650,7 @@ impl Engine {
     /// every other method. Afterwards actions are refused with
     /// [`EngineError::ShutDown`] while [`Self::state`] still answers, and a
     /// transcription that finished during shutdown may still record its
-    /// outcome on its job thread.
+    /// outcome on its job thread. It releases the cleanup model kept warm in Ollama (best effort, on the calling thread; the Ollama adapter waits at most [`RELEASE_TIMEOUT`], 2 s).
     #[must_use]
     pub fn shutdown(&self) -> ShutdownReport {
         let ports = self.0.ports();
@@ -633,6 +659,9 @@ impl Engine {
         let paused_recording = first && dictation.apply(Action::Pause, "", &ports).is_ok();
         drop(dictation);
         let freed_model = self.0.adapters.transcriber.unload();
+        if first {
+            self.0.keep_warm.shutdown();
+        }
         ShutdownReport {
             first,
             paused_recording,
@@ -738,6 +767,7 @@ impl Engine {
             }
         }
         settings::save(&self.0.files, &s).map_err(|e| EngineError::Settings(e.to_string()))?;
+        self.0.keep_warm.refresh(|| self.settings());
         Ok(self.settings())
     }
 

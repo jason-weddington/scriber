@@ -3,11 +3,26 @@
 //! model the call names (or the adapter's default), and the listing of the
 //! installed models ([`installed_models`], `GET /api/tags`, embedding models hidden).
 //! A reply containing `</think>` is cut to the trimmed text after its last occurrence, and an empty remainder is an error.
+//! It also keeps the cleanup model loaded ([`Warmer`]): `POST /api/generate` with no prompt and `keep_alive` [`KEEP_ALIVE`] loads it, and `keep_alive` 0 releases it; every chat request sends [`KEEP_ALIVE`] too, so it never shortens the model's stay.
 
 use std::time::Duration;
 
 use scriber_core::ports::{Cleaner, PortError, Summarizer, fail};
 use serde_json::{Value, json};
+
+use crate::warm::Warmer;
+
+/// The keep-alive every request to Ollama sends.
+pub const KEEP_ALIVE: &str = "10m";
+
+/// How often the cleanup model's keep-alive is renewed by default.
+pub const KEEP_WARM_INTERVAL: Duration = Duration::from_secs(240);
+
+/// How long loading a model may take, from connecting to the last byte.
+pub const WARM_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The most one release request may take, from connecting to the last byte.
+pub const RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long a summary may take, from connecting to the last byte.
 pub const SUMMARY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -67,6 +82,7 @@ impl Ollama {
             "model": model,
             "stream": false,
             "think": false,
+            "keep_alive": KEEP_ALIVE,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -89,6 +105,35 @@ impl Ollama {
             .and_then(Value::as_str)
             .ok_or_else(|| PortError("the reply has no message content".to_string()))
             .and_then(after_think)
+    }
+}
+
+impl Ollama {
+    /// One `POST /api/generate` with `body` within `timeout`: any 2xx status
+    /// is success, and the reply is read and ignored.
+    fn generate(&self, body: &Value, timeout: Duration) -> Result<(), PortError> {
+        let url = format!("{}/api/generate", self.url.trim_end_matches('/'));
+        let config = ureq::Agent::config_builder().timeout_global(Some(timeout));
+        let agent = config.build().new_agent();
+        let mut response = agent
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .send(body.to_string())
+            .map_err(fail)?;
+        let _ignored = response.body_mut().read_to_vec();
+        Ok(())
+    }
+}
+
+impl Warmer for Ollama {
+    fn warm(&self, model: &str) -> Result<(), PortError> {
+        let body = json!({"model": self.model_for(model), "keep_alive": KEEP_ALIVE});
+        self.generate(&body, self.timeout)
+    }
+
+    fn release(&self, model: &str) -> Result<(), PortError> {
+        let body = json!({"model": self.model_for(model), "keep_alive": 0});
+        self.generate(&body, self.timeout.min(RELEASE_TIMEOUT))
     }
 }
 

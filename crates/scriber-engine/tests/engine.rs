@@ -20,7 +20,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::common::{
-        FakeCleaner, FakeDownloader, FakeSummarizer, FakeTranscriber, Fakes, PATIENCE,
+        FakeCleaner, FakeDownloader, FakeSummarizer, FakeTranscriber, FakeWarmer, Fakes, PATIENCE,
         RecordingClipboard, closed_url, events, serve_once, until,
     };
 
@@ -678,6 +678,7 @@ mod tests {
         assert!(!c.library, "off");
         assert_eq!(c.ollama_url, "http://127.0.0.1:11434", "url");
         assert_eq!(c.summary_model, "qwen3.8:27b-mlx", "model");
+        assert_eq!(c.keep_warm_every, Duration::from_secs(240), "keep warm");
         assert_eq!(
             (DEFAULT_OLLAMA_URL, DEFAULT_SUMMARY_MODEL),
             ("http://127.0.0.1:11434", "qwen3.8:27b-mlx"),
@@ -1359,5 +1360,359 @@ mod tests {
         let text = listed.unwrap_err().to_string();
         assert!(text.starts_with("Local AI needs Ollama: "), "{text}");
         assert!(text.ends_with('.'), "{text}");
+    }
+
+    /// The keep-warm tests' heartbeat.
+    const TICK: Duration = Duration::from_millis(10);
+
+    /// How long a test waits to see that nothing follows.
+    const QUIET: Duration = Duration::from_millis(50);
+
+    /// A config renewing the keep-alive every `every`.
+    fn warm_config(dir: &TempDir, every: Duration) -> EngineConfig {
+        EngineConfig {
+            keep_warm_every: every,
+            ..config(dir)
+        }
+    }
+
+    /// One recorded warmer call.
+    fn call(kind: &str, model: &str) -> (String, String) {
+        (kind.to_string(), model.to_string())
+    }
+
+    /// The calls once `want` accepts them, polled every 5 ms within
+    /// [`PATIENCE`].
+    fn calls_until(
+        warmer: &FakeWarmer,
+        want: impl Fn(&[(String, String)]) -> bool,
+    ) -> Vec<(String, String)> {
+        let started = Instant::now();
+        loop {
+            let seen = warmer.seen();
+            if want(&seen) {
+                return seen;
+            }
+            assert!(started.elapsed() < PATIENCE, "in time: {seen:?}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// How many times `c` was recorded.
+    fn count(calls: &[(String, String)], c: &(String, String)) -> usize {
+        calls.iter().filter(|x| *x == c).count()
+    }
+
+    /// The settings with cleanup `on` and asking `model`.
+    fn cleanup(engine: &Engine, on: bool, model: &str) -> Settings {
+        Settings {
+            cleanup: on,
+            cleanup_model: model.to_string(),
+            ..engine.settings()
+        }
+    }
+
+    /// Writes settings with cleanup on, asking `model`.
+    fn cleanup_on(dir: &TempDir, model: &str) {
+        let json = format!(r#"{{"cleanup":true,"cleanup_model":"{model}"}}"#);
+        write(dir, "settings.json", json.as_bytes());
+    }
+
+    #[test]
+    fn with_cleanup_off_nothing_is_warmed() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        thread::sleep(QUIET);
+        let _report = engine.shutdown();
+        assert!(fakes.warmer.seen().is_empty(), "no call");
+    }
+
+    #[test]
+    fn with_cleanup_on_the_model_is_warmed_and_renewed() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "llama3:8b");
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let warm = call("warm", "llama3:8b");
+        let seen = calls_until(&fakes.warmer, |c| count(c, &warm) >= 3);
+        assert_eq!(seen.first(), Some(&warm), "warmed first");
+        assert!(seen.iter().all(|c| *c == warm), "no release: {seen:?}");
+        let _report = engine.shutdown();
+    }
+
+    #[test]
+    fn an_unset_cleanup_model_warms_the_default() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"cleanup":true}"#);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let warm = call("warm", DEFAULT_SUMMARY_MODEL);
+        let seen = calls_until(&fakes.warmer, |c| count(c, &warm) >= 2);
+        assert_eq!(seen.first(), Some(&warm), "the default");
+        let _report = engine.shutdown();
+        assert!(
+            fakes.warmer.seen().iter().all(|(_, m)| !m.is_empty()),
+            "never unnamed"
+        );
+    }
+
+    #[test]
+    fn turning_cleanup_off_releases_the_model() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let _warmed = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _off: Settings = engine.set_settings(cleanup(&engine, false, "a:1")).unwrap();
+        let release = call("release", "a:1");
+        let _released = calls_until(&fakes.warmer, |c| c.contains(&release));
+        thread::sleep(QUIET);
+        let seen = fakes.warmer.seen();
+        assert_eq!(seen.last(), Some(&release), "nothing after: {seen:?}");
+        let _report = engine.shutdown();
+        assert_eq!(fakes.warmer.seen(), seen, "shutdown sends nothing");
+    }
+
+    #[test]
+    fn changing_the_model_releases_the_old_and_warms_the_new() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let _warmed = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _b: Settings = engine.set_settings(cleanup(&engine, true, "b:1")).unwrap();
+        let (release, warm_a, warm_b) = (
+            call("release", "a:1"),
+            call("warm", "a:1"),
+            call("warm", "b:1"),
+        );
+        let seen = calls_until(&fakes.warmer, |c| {
+            c.iter()
+                .position(|x| *x == release)
+                .is_some_and(|i| c.iter().skip(i).any(|x| *x == warm_b))
+        });
+        let at = seen.iter().position(|x| *x == release).unwrap();
+        assert!(
+            !seen.iter().skip(at).any(|x| *x == warm_a),
+            "the old one is not warmed again: {seen:?}"
+        );
+        let _report = engine.shutdown();
+    }
+
+    #[test]
+    fn turning_cleanup_on_warms_without_reopening() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let _on: Settings = engine.set_settings(cleanup(&engine, true, "a:1")).unwrap();
+        let seen = calls_until(&fakes.warmer, |c| !c.is_empty());
+        assert_eq!(seen.first(), Some(&call("warm", "a:1")), "warmed");
+        let _report = engine.shutdown();
+    }
+
+    #[test]
+    fn shutdown_releases_the_warm_model_once() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let _warmed = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _report = engine.shutdown();
+        thread::sleep(QUIET);
+        let seen = fakes.warmer.seen();
+        assert_eq!(seen.last(), Some(&call("release", "a:1")), "released");
+        thread::sleep(QUIET);
+        assert_eq!(fakes.warmer.seen(), seen, "nothing follows");
+        let second = engine.shutdown();
+        assert!(!second.first, "not the first");
+        assert_eq!(fakes.warmer.seen(), seen, "a second shutdown sends nothing");
+    }
+
+    #[test]
+    fn shutdown_never_waits_for_a_warm_in_flight() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let (warmer, gate) = FakeWarmer::default().gated_warm();
+        let fakes = Fakes {
+            warmer,
+            ..Fakes::default()
+        };
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let _warming = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let report = engine.shutdown();
+        assert!(report.first, "shut down while the warm is blocked");
+        let (warm, release) = (call("warm", "a:1"), call("release", "a:1"));
+        assert_eq!(
+            fakes.warmer.seen(),
+            [warm.clone(), release.clone()],
+            "released"
+        );
+        gate.send(()).unwrap();
+        let _again = calls_until(&fakes.warmer, |c| c.len() >= 3);
+        thread::sleep(QUIET);
+        assert_eq!(
+            fakes.warmer.seen(),
+            [warm, release.clone(), release],
+            "the finished warm is released once more, and nothing is warmed"
+        );
+    }
+
+    #[test]
+    fn a_failing_warmer_is_retried_and_never_stops_dictation() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let fakes = Fakes::default();
+        fakes.warmer.fail.store(true, Ordering::SeqCst);
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let warm = call("warm", "a:1");
+        let _retried = calls_until(&fakes.warmer, |c| count(c, &warm) >= 2);
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE),
+            Ok("hello world".to_string()),
+            "the transcript"
+        );
+        let _report = engine.shutdown();
+    }
+
+    #[test]
+    fn dictation_never_waits_for_a_warm() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        write(&dir, "vocabulary.txt", b"Zed\n");
+        let (warmer, _gate) = FakeWarmer::default().gated_warm();
+        let fakes = Fakes {
+            warmer,
+            ..cleaning(Ok("Zed world"))
+        };
+        let (engine, _rx) = fakes.open(EngineConfig {
+            keep_warm_every: TICK,
+            ..library_config(&dir)
+        });
+        let _warming = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE),
+            Ok("Zed world".to_string()),
+            "cleaned while the warm is blocked"
+        );
+        let _report = engine.shutdown();
+    }
+
+    #[test]
+    fn saving_the_same_settings_warms_nothing_more() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, Duration::from_secs(60)));
+        let _warmed = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _same: Settings = engine.set_settings(engine.settings()).unwrap();
+        thread::sleep(QUIET);
+        assert_eq!(fakes.warmer.seen(), [call("warm", "a:1")], "one warm");
+        let _report = engine.shutdown();
+    }
+
+    #[test]
+    fn dropping_the_engine_stops_keeping_warm() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let fakes = Fakes::default();
+        let base = Arc::strong_count(&fakes.warmer.calls);
+        let (engine, rx) = fakes.open(warm_config(&dir, TICK));
+        let _warmed = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _launched = until(&rx, |_| true).unwrap();
+        drop(engine);
+        let started = Instant::now();
+        while Arc::strong_count(&fakes.warmer.calls) != base {
+            assert!(started.elapsed() < PATIENCE, "the thread let go in time");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            fakes.warmer.seen().iter().all(|(kind, _)| kind == "warm"),
+            "no release: {:?}",
+            fakes.warmer.seen()
+        );
+    }
+
+    #[test]
+    fn shutdown_during_a_release_warms_nothing_after() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let (warmer, gate) = FakeWarmer::default().gated_release();
+        let fakes = Fakes {
+            warmer,
+            ..Fakes::default()
+        };
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let _warmed = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _b: Settings = engine.set_settings(cleanup(&engine, true, "b:1")).unwrap();
+        let release = call("release", "a:1");
+        let _releasing = calls_until(&fakes.warmer, |c| c.contains(&release));
+        let _report = engine.shutdown();
+        gate.send(()).unwrap();
+        thread::sleep(QUIET);
+        assert!(
+            !fakes.warmer.seen().contains(&call("warm", "b:1")),
+            "never warmed: {:?}",
+            fakes.warmer.seen()
+        );
+    }
+
+    #[test]
+    fn turning_cleanup_off_mid_warm_releases_at_once() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let (warmer, gate) = FakeWarmer::default().gated_warm();
+        let fakes = Fakes {
+            warmer,
+            ..Fakes::default()
+        };
+        let (engine, _rx) = fakes.open(warm_config(&dir, Duration::from_secs(60)));
+        let _warming = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _off: Settings = engine.set_settings(cleanup(&engine, false, "a:1")).unwrap();
+        gate.send(()).unwrap();
+        let release = call("release", "a:1");
+        let _released = calls_until(&fakes.warmer, |c| c.contains(&release));
+        let _report = engine.shutdown();
+    }
+
+    #[test]
+    fn changing_the_model_mid_warm_switches_at_once() {
+        let dir = TempDir::new().unwrap();
+        cleanup_on(&dir, "a:1");
+        let (warmer, gate) = FakeWarmer::default().gated_warm();
+        let fakes = Fakes {
+            warmer,
+            ..Fakes::default()
+        };
+        let (engine, _rx) = fakes.open(warm_config(&dir, Duration::from_secs(60)));
+        let _warming = calls_until(&fakes.warmer, |c| !c.is_empty());
+        let _b: Settings = engine.set_settings(cleanup(&engine, true, "b:1")).unwrap();
+        gate.send(()).unwrap();
+        let (release, warm_b) = (call("release", "a:1"), call("warm", "b:1"));
+        let seen = calls_until(&fakes.warmer, |c| c.contains(&warm_b));
+        assert_eq!(
+            seen,
+            [call("warm", "a:1"), release, warm_b],
+            "released, then the new one"
+        );
+        drop(gate);
+        let _report = engine.shutdown();
+    }
+
+    #[test]
+    fn settings_after_shutdown_warm_nothing() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(warm_config(&dir, TICK));
+        let _report = engine.shutdown();
+        assert_eq!(
+            engine.set_settings(cleanup(&engine, true, "a:1")),
+            Err(EngineError::ShutDown),
+            "refused"
+        );
+        thread::sleep(QUIET);
+        assert!(fakes.warmer.seen().is_empty(), "no call");
     }
 }
