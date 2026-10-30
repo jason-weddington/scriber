@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 
-import { button, copied, open, press, release, status } from './helpers';
+import { button, copied, nextFrame, open, press, release, status } from './helpers';
 
 // The settings panel's vocabulary file: its path (the default one in the
 // data folder until another is picked), Browse… (the native open panel,
@@ -27,7 +27,7 @@ function editor(page: Page) {
 }
 
 function alert(page: Page) {
-  return page.getByRole('region', { name: 'Settings' }).getByRole('alert');
+  return page.getByRole('dialog', { name: 'Settings' }).getByRole('alert');
 }
 
 /** Every settings_set call the mock received. */
@@ -230,19 +230,21 @@ test('without Ollama the dropdowns are disabled, the switches are not, and one l
   await expect.poll(async () => ((await saved(page)).at(-1) as { summaries?: boolean } | undefined)?.summaries).toBe(false);
 });
 
-test('the models are listed each time the panel opens, and only then', async ({ page }) => {
+test('the models are listed each time the modal opens, and only then', async ({ page }) => {
   await open(page);
   expect(await listings(page)).toBe(0);
   await button(page, 'Settings').click();
   await expect(summaryModel(page)).toBeEnabled();
   expect(await listings(page)).toBe(1);
-  await button(page, 'Settings').click();
+  await page.keyboard.press('Escape');
+  await nextFrame(page);
   await expect(summaryModel(page)).toBeHidden();
   expect(await listings(page)).toBe(1);
   await button(page, 'Settings').click();
   await expect(summaryModel(page)).toBeVisible();
   expect(await listings(page)).toBe(2);
   await page.keyboard.press('Escape');
+  await nextFrame(page);
   await expect(summaryModel(page)).toBeHidden();
   expect(await listings(page)).toBe(2);
   await button(page, 'Settings').click();
@@ -279,7 +281,8 @@ test('without Ollama the panel fits the minimum size', async ({ page }) => {
 
 test('a stale listing is dropped and the latest one wins', async ({ page }) => {
   await openSettings(page, { hold: 'ollama_models' });
-  await button(page, 'Settings').click();
+  await page.keyboard.press('Escape');
+  await nextFrame(page);
   await expect(summaryModel(page)).toBeHidden();
   await button(page, 'Settings').click();
   await expect(summaryModel(page)).toBeVisible();
@@ -294,10 +297,131 @@ test('a stale listing is dropped and the latest one wins', async ({ page }) => {
 
 test('a stale failed listing is dropped too', async ({ page }) => {
   await openSettings(page, { hold: 'ollama_models', ollama: 'down' });
-  await button(page, 'Settings').click();
+  await page.keyboard.press('Escape');
+  await nextFrame(page);
   await button(page, 'Settings').click();
   await release(page, 'ollama_models');
   await expect(page.getByText(DOWN_NOTE)).toBeVisible();
   expect(await listings(page)).toBe(2);
   await expect(summaryModel(page)).toBeDisabled();
+});
+
+// The modal itself: a native dialog, centred over a dimming overlay.
+
+function modal(page: Page) {
+  return page.getByRole('dialog', { name: 'Settings' });
+}
+
+test('Settings is a native modal dialog over a dimming overlay', async ({ page }) => {
+  await open(page);
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toHaveCount(0);
+  await button(page, 'Settings').click();
+  await expect(modal(page)).toBeVisible();
+  expect(await modal(page).evaluate((d) => d.matches(':modal'))).toBe(true);
+  expect(await modal(page).evaluate((d) => getComputedStyle(d, '::backdrop').backgroundColor)).toBe('rgba(0, 0, 0, 0.45)');
+  await expect(page.getByRole('banner').getByRole('dialog')).toHaveCount(0);
+  await expect(modal(page).getByRole('heading', { name: 'Settings' })).toBeVisible();
+});
+
+test('the modal is centred in the window', async ({ page }) => {
+  await page.setViewportSize({ width: 960, height: 640 });
+  await openSettings(page);
+  const box = await modal(page).boundingBox();
+  expect(box).not.toBeNull();
+  expect(Math.abs((box?.x ?? 0) + (box?.width ?? 0) / 2 - 480)).toBeLessThanOrEqual(1);
+  expect(Math.abs((box?.y ?? 0) + (box?.height ?? 0) / 2 - 320)).toBeLessThanOrEqual(1);
+});
+
+test('the whole modal shows in the narrowest window', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 380 });
+  await openSettings(page);
+  const box = await modal(page).boundingBox();
+  expect(box?.width).toBe(488);
+  expect(box?.x).toBeGreaterThanOrEqual(0);
+  expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(520);
+  expect(box?.y).toBeGreaterThanOrEqual(0);
+  expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(380);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  for (const target of [path(page), browse(page), editor(page), cleanupSwitch(page), summarySwitch(page), summaryModel(page), cleanupModel(page)]) {
+    await target.scrollIntoViewIfNeeded();
+    await expect(target).toBeInViewport();
+  }
+});
+
+test('a modal taller than the window scrolls inside itself', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 240 });
+  await openSettings(page, { ollama: 'down' });
+  const body = page.locator('.settings-body');
+  expect(await body.evaluate((b) => b.scrollHeight > b.clientHeight)).toBe(true);
+  const box = await modal(page).boundingBox();
+  expect(box?.y).toBeGreaterThanOrEqual(0);
+  expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(240);
+  const note = page.getByText(DOWN_NOTE);
+  await note.scrollIntoViewIfNeeded();
+  await expect(note).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+});
+
+test('the vocabulary path has the focus on opening, by click or by Enter', async ({ page }) => {
+  await open(page);
+  await button(page, 'Settings').click();
+  await expect(path(page)).toBeFocused();
+  await page.keyboard.press('Escape');
+  await nextFrame(page);
+  await button(page, 'Settings').focus();
+  await page.keyboard.press('Enter');
+  await expect(path(page)).toBeFocused();
+});
+
+test('Tab stays inside the modal', async ({ page }) => {
+  await openSettings(page);
+  await expect(summaryModel(page)).toBeEnabled();
+  for (let i = 0; i < 10; i++) {
+    await page.keyboard.press('Tab');
+    const inside = await page.evaluate(() => document.activeElement === document.body || (document.querySelector('#settings')?.contains(document.activeElement) ?? false));
+    expect(inside).toBe(true);
+  }
+});
+
+test('Escape closes the modal from the textbox and from a switch', async ({ page }) => {
+  await openSettings(page);
+  await page.keyboard.press('Escape');
+  await expect(modal(page)).toBeHidden();
+  await nextFrame(page);
+  await button(page, 'Settings').click();
+  await cleanupSwitch(page).focus();
+  await page.keyboard.press('Escape');
+  await expect(modal(page)).toBeHidden();
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+});
+
+test('the Close button closes the modal and returns the focus to the gear', async ({ page }) => {
+  await openSettings(page);
+  await button(page, 'Close').click();
+  await expect(modal(page)).toBeHidden();
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+});
+
+test('a click on the overlay closes the modal; a click inside does not', async ({ page }) => {
+  await openSettings(page);
+  await page.locator('#settings .caption').click();
+  await expect(modal(page)).toBeVisible();
+  await page.mouse.click(5, 5);
+  await expect(modal(page)).toBeHidden();
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+});
+
+test('a drag from inside the modal released on the overlay leaves it open', async ({ page }) => {
+  await openSettings(page);
+  const box = await page.locator('#settings .caption').boundingBox();
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2);
+  await page.mouse.down();
+  await page.mouse.move(5, 5);
+  await page.mouse.up();
+  await nextFrame(page);
+  await expect(modal(page)).toBeVisible();
+  expect(await saved(page)).toEqual([]);
 });

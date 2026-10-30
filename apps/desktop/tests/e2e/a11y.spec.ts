@@ -133,7 +133,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
-    test('the settings panel open', async ({ page }) => {
+    test('the settings modal open', async ({ page }) => {
       await open(page, { library: '3' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await expect(page.getByRole('switch')).toHaveCount(2);
@@ -141,34 +141,42 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
-    test('the settings panel with the text editor failing', async ({ page }) => {
+    test('the settings modal with the text editor failing', async ({ page }) => {
       await open(page, { fail: 'vocabulary_open' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page.getByRole('button', { name: 'Open in Text Editor' }).click();
-      await expect(page.getByRole('region', { name: 'Settings' }).getByRole('alert')).toHaveText(
+      await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('alert')).toHaveText(
         'Could not open the vocabulary file: no text editor.',
       );
       await expectNoViolations(page);
     });
 
-    test('the settings panel listing the models', async ({ page }) => {
+    test('the settings modal listing the models', async ({ page }) => {
       await open(page, { hold: 'ollama_models' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await expect(page.getByRole('combobox', { name: 'Summary model' })).toBeDisabled();
       await expectNoViolations(page);
     });
 
-    test('the settings panel with the models listed', async ({ page }) => {
+    test('the settings modal with the models listed', async ({ page }) => {
       await open(page);
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await expect(page.getByRole('combobox', { name: 'Summary model' })).toBeEnabled();
       await expectNoViolations(page);
     });
 
-    test('the settings panel with Ollama unavailable', async ({ page }) => {
+    test('the settings modal with Ollama unavailable', async ({ page }) => {
       await open(page, { ollama: 'down' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await expect(page.getByText('Local AI needs Ollama. Start Ollama, then reopen Settings.')).toBeVisible();
+      await expectNoViolations(page);
+    });
+
+    test('the settings modal over a recording', async ({ page }) => {
+      await open(page);
+      await press(page, 'New', 'Record');
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await expect(page.getByRole('switch')).toHaveCount(2);
       await expectNoViolations(page);
     });
 

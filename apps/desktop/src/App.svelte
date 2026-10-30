@@ -71,6 +71,8 @@
   // The settings, as last read or chosen; the defaults until they load.
   let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '' });
   let settingsOpen = $state(false);
+  let settingsButton = $state<HTMLButtonElement>();
+  let settingsFromPointer = false;
   let settingsError = $state<string | null>(null);
   // The installed Ollama models, listed each time Settings opens; null while
   // the listing is in flight.
@@ -367,6 +369,8 @@
     return target instanceof HTMLButtonElement && !focusFromPointer;
   }
 
+  function settingsClosed(): void { settingsOpen = false; settingsButton?.focus(); focusFromPointer = settingsFromPointer; pointerDown = false; }
+
   // In-window shortcuts: ⌘N is New, Space is Record, Pause and Resume, Return
   // is Done. A key whose action the phase does not allow does nothing here.
   // Handling one cancels its default, so a button that merely has focus from
@@ -374,10 +378,7 @@
   // Return for itself. A held key's repeats are swallowed.
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === 'Tab') pointerDown = false;
-    if (e.key === 'Escape' && settingsOpen) {
-      settingsOpen = false;
-      return;
-    }
+    if (settingsOpen) return;
     if (entry !== null) {
       // An entry is shown: only ⌘N (back to the recorder) acts.
       if (shortcut(e, 'idle', true) === 'new') {
@@ -557,34 +558,37 @@
       type="button"
       class="icon"
       aria-label="Settings"
-      aria-expanded={settingsOpen}
-      aria-controls="settings"
-      onclick={() => {
-        settingsOpen = !settingsOpen;
-        if (settingsOpen) listModels();
+      aria-haspopup="dialog"
+      bind:this={settingsButton}
+      onclick={(e) => {
+        settingsOpen = true;
+        listModels();
+        settingsFromPointer = e.detail > 0;
       }}
     >
       <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
         <path fill="currentColor" fill-rule="evenodd" d="M6.11 3.00 6.81 0.85 9.19 0.85 9.89 3.00 10.20 3.12 12.22 2.10 13.90 3.78 12.88 5.80 13.00 6.11 15.15 6.81 15.15 9.19 13.00 9.89 12.88 10.20 13.90 12.22 12.22 13.90 10.20 12.88 9.89 13.00 9.19 15.15 6.81 15.15 6.11 13.00 5.80 12.88 3.78 13.90 2.10 12.22 3.12 10.20 3.00 9.89 0.85 9.19 0.85 6.81 3.00 6.11 3.12 5.80 2.10 3.78 3.78 2.10 5.80 3.12ZM8 5.65a2.35 2.35 0 1 0 0 4.7a2.35 2.35 0 1 0 0 -4.7Z" />
       </svg>
     </button>
-    <SettingsPanel
-      {settings}
-      open={settingsOpen}
-      error={settingsError}
-      {models}
-      {ollamaDown}
-      {ollamaReason}
-      onsummaries={setSummaries}
-      onsummarymodel={setSummaryModel}
-      oncleanupmodel={setCleanupModel}
-      oncleanup={setCleanup}
-      onbrowse={browseVocabulary}
-      onopenvocabulary={openVocabulary}
-    />
   </header>
 
   {#if version !== ''}
     <footer>Version {version}</footer>
   {/if}
+
+  <SettingsPanel
+    {settings}
+    open={settingsOpen}
+    error={settingsError}
+    {models}
+    {ollamaDown}
+    {ollamaReason}
+    onsummaries={setSummaries}
+    onsummarymodel={setSummaryModel}
+    oncleanupmodel={setCleanupModel}
+    oncleanup={setCleanup}
+    onbrowse={browseVocabulary}
+    onopenvocabulary={openVocabulary}
+    onclose={settingsClosed}
+  />
 </div>

@@ -60,3 +60,8 @@ export async function expectEveryItemReachable(items: Locator): Promise<void> {
   const squeezed = await items.evaluateAll((els) => els.filter((e) => e.scrollHeight > e.clientHeight + 1).length);
   expect(squeezed, 'items squeezed below their content height').toBe(0);
 }
+
+/** Waits one animation frame: the native `close` event reaches the app about a frame after `dialog.close()`. */
+export async function nextFrame(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise((r) => { requestAnimationFrame(r); }));
+}

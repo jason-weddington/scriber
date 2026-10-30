@@ -45,7 +45,7 @@ An optional glossary, `vocabulary.txt` in the same folder (one term per line, `#
 
 Each finished dictation with a transcript is kept in `library/<id>/` in the same folder: its transcript, its audio (AAC in M4A, made with macOS's `afconvert`; kept as WAV if that fails) and an `entry.json` with its title (the session's start, `2026-10-26 14:03:09`) and summary. The drawer lists them newest first; select one to read or copy its transcript, and New (or ⌘N) goes back to the recorder. The Library button in the band shows and hides the drawer.
 
-Summaries come from a local [Ollama](https://ollama.com) server, if one is running at `http://127.0.0.1:11434` with the `qwen3.8:27b-mlx` model (`ollama pull qwen3.8:27b-mlx`). Until a summary arrives, or when Ollama is not running, an entry shows the first words of its transcript instead. The switch "Summarize recordings with local AI (Ollama)" in the Settings panel (the gear) turns summaries off for new recordings. Nothing is sent anywhere but that local server.
+Summaries come from a local [Ollama](https://ollama.com) server, if one is running at `http://127.0.0.1:11434` with the `qwen3.8:27b-mlx` model (`ollama pull qwen3.8:27b-mlx`). Until a summary arrives, or when Ollama is not running, an entry shows the first words of its transcript instead. The switch "Summarize recordings with local AI (Ollama)" in Settings (the gear) turns summaries off for new recordings. Nothing is sent anywhere but that local server.
 
 ## Develop
 

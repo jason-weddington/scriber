@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 
-import { button, hold, open, press, release, status } from './helpers';
+import { button, hold, nextFrame, open, press, release, status } from './helpers';
 
 // The in-window shortcuts: ⌘N is New, Space is Record, Pause and Resume,
 // Return is Done. Each does nothing where its action is not allowed, Space
@@ -227,4 +227,131 @@ test('Space and Return while a library entry is shown send no action', async ({ 
   await key(page, 'Meta+n');
   await expect(status(page)).toHaveText('Click Record and start talking.');
   expect(await acts(page), 'ready: ⌘N only goes back').toEqual(['new']);
+});
+
+// Settings is modal: no shortcut acts behind it, and all of them come back.
+
+test('Space does nothing behind the open Settings (ready)', async ({ page }) => {
+  await open(page, { pick: 'cancel' });
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await button(page, 'Settings').click();
+  await page.getByRole('button', { name: 'Browse…' }).click();
+  await key(page, 'Space');
+  expect(await acts(page)).toEqual(['new']);
+});
+
+test('Space and Return do nothing behind the open Settings (recording)', async ({ page }) => {
+  await open(page, { pick: 'cancel' });
+  await press(page, 'New', 'Record');
+  await expect(status(page)).toContainText('Recording.');
+  await button(page, 'Settings').click();
+  await page.getByRole('button', { name: 'Browse…' }).click();
+  await key(page, 'Space');
+  await key(page, 'Enter');
+  expect(await acts(page)).toEqual(['new', 'record']);
+  await expect(status(page)).toContainText('Recording.');
+});
+
+test('⌘N does nothing behind the open Settings (idle)', async ({ page }) => {
+  await open(page);
+  await button(page, 'Settings').click();
+  await key(page, 'Meta+n');
+  expect(await acts(page)).toEqual([]);
+  await expect(status(page)).not.toHaveText('Click Record and start talking.');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+});
+
+test('⌘N does nothing behind the open Settings (entry shown)', async ({ page }) => {
+  await open(page, { library: '1' });
+  await page.locator('#library li').first().getByRole('button').click();
+  const transcript = page.getByRole('textbox', { name: 'Transcript' });
+  await expect(transcript).toHaveValue('This is preloaded recording number 1.');
+  await button(page, 'Settings').click();
+  await key(page, 'Meta+n');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+  await key(page, 'Escape');
+  await nextFrame(page);
+  await expect(transcript).toHaveValue('This is preloaded recording number 1.');
+});
+
+test('⌘N works again after Settings closes', async ({ page }) => {
+  await open(page);
+  await button(page, 'Settings').click();
+  await key(page, 'Escape');
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  expect(await acts(page)).toEqual(['new']);
+});
+
+test('Return finishes a dictation after Settings closes', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record');
+  await button(page, 'Settings').click();
+  await key(page, 'Escape');
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+  await key(page, 'Enter');
+  await expect.poll(() => acts(page)).toEqual(['new', 'record', 'done']);
+});
+
+for (const via of ['Escape', 'overlay']) {
+  const close = async (page: Page): Promise<void> => {
+    if (via === 'Escape') await key(page, 'Escape');
+    else await page.mouse.click(5, 5);
+    await nextFrame(page);
+  };
+
+  test(`Space dictates after a mouse user closes Settings (${via})`, async ({ page }) => {
+    await open(page);
+    await key(page, 'Meta+n');
+    await expect(status(page)).toHaveText('Click Record and start talking.');
+    await button(page, 'Settings').click();
+    await close(page);
+    await expect(button(page, 'Settings')).toBeFocused();
+    await key(page, 'Space');
+    await expect(status(page)).toContainText('Recording.');
+    await expect(page.getByRole('dialog', { name: 'Settings' })).toHaveCount(0);
+    expect(await acts(page)).toEqual(['new', 'record']);
+  });
+
+  test(`Space keeps the gear for a keyboard user (${via})`, async ({ page }) => {
+    await open(page);
+    await key(page, 'Meta+n');
+    await expect(status(page)).toHaveText('Click Record and start talking.');
+    await button(page, 'Settings').focus();
+    await key(page, 'Enter');
+    await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+    await close(page);
+    await key(page, 'Space');
+    await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+    expect(await acts(page)).toEqual(['new']);
+  });
+}
+
+test('the gear gets the focus back even when its click did not focus it', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await button(page, 'Settings').evaluate((b) => b.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+  await key(page, 'Escape');
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+  await key(page, 'Space');
+  await expect(status(page)).toContainText('Recording.');
+  expect(await acts(page)).toEqual(['new', 'record']);
+});
+
+test('with an entry shown, Space after Settings closes goes to the gear', async ({ page }) => {
+  await open(page, { library: '1' });
+  await page.locator('#library li').first().getByRole('button').click();
+  await button(page, 'Settings').click();
+  await key(page, 'Escape');
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+  await key(page, 'Space');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
 });

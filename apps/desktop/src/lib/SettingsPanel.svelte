@@ -5,7 +5,7 @@
   // switches, each followed by its model: post-processing of each transcript
   // by the local model (glossary fixes and spoken self-corrections), and
   // summaries by the local model. The models are chosen from the ones Ollama
-  // has installed, listed each time the panel opens (`models` is null while
+  // has installed, listed each time the modal opens (`models` is null while
   // the listing is in flight). While listing, and when Ollama cannot be
   // reached, each dropdown shows only its saved model and is disabled; once
   // listed, a saved model that is not installed is still shown, marked
@@ -29,6 +29,7 @@
     oncleanupmodel: (name: string) => void;
     onbrowse: () => void;
     onopenvocabulary: () => void;
+    onclose: () => void;
   }
 
   const {
@@ -44,7 +45,21 @@
     oncleanupmodel,
     onbrowse,
     onopenvocabulary,
+    onclose,
   }: Props = $props();
+
+  let dialog = $state<HTMLDialogElement>();
+  let path = $state<HTMLInputElement>();
+  // Whether the press that led to a click began on the overlay, so that a
+  // drag from inside the modal released on the overlay does not close it.
+  let pressedBackdrop = false;
+
+  $effect(() => {
+    if (!open) return;
+    dialog?.showModal();
+    // The heading row comes first, but the settings themselves are what opens.
+    path?.focus();
+  });
 
   // The installed models, once listed; null while loading or when Ollama is down.
   const listed = $derived(models !== null && !ollamaDown ? models : null);
@@ -61,11 +76,39 @@
   }
 </script>
 
-<section id="settings" class="settings" aria-label="Settings" hidden={!open}>
+<dialog
+  id="settings"
+  class="settings"
+  aria-labelledby="settings-title"
+  bind:this={dialog}
+  {onclose}
+  onpointerdown={(e) => {
+    pressedBackdrop = e.target === e.currentTarget;
+  }}
+  onclick={(e) => {
+    if (pressedBackdrop && e.target === e.currentTarget) e.currentTarget.close();
+  }}
+>
+  <div class="settings-head">
+    <h2 id="settings-title">Settings</h2>
+    <button
+      type="button"
+      class="icon quiet"
+      aria-label="Close"
+      onclick={() => {
+        dialog?.close();
+      }}
+    >
+      <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14">
+        <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10M13 3L3 13" />
+      </svg>
+    </button>
+  </div>
+  <div class="settings-body">
   <div class="vocabulary" role="group" aria-label="Vocabulary file">
     <span class="caption" aria-hidden="true">Vocabulary file</span>
     <div class="row">
-      <input readonly aria-label="Vocabulary file" value={settings.vocabulary} title={settings.vocabulary} />
+      <input readonly bind:this={path} aria-label="Vocabulary file" value={settings.vocabulary} title={settings.vocabulary} />
       <button type="button" onclick={onbrowse}>Browse…</button>
       <button type="button" onclick={onopenvocabulary}>Open in Text Editor</button>
     </div>
@@ -122,4 +165,5 @@
   {#if error !== null}
     <p class="error" role="alert">{error}</p>
   {/if}
-</section>
+  </div>
+</dialog>

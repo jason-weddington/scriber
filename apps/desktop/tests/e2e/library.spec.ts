@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 
-import { button, copied, expectEveryItemReachable, hold, open, press, release, status } from './helpers';
+import { button, copied, expectEveryItemReachable, hold, nextFrame, open, press, release, status } from './helpers';
 
 // The recording library: the drawer on the left lists every finished
 // dictation newest first, titled by its start in local time, with an
@@ -83,7 +83,9 @@ test('turning summaries off in the settings keeps the next excerpt', async ({ pa
   await open(page);
   await expect(summarySwitch(page)).toBeHidden();
   await button(page, 'Settings').click();
-  await expect(button(page, 'Settings')).toHaveAttribute('aria-expanded', 'true');
+  await expect(button(page, 'Settings')).toHaveAttribute('aria-haspopup', 'dialog');
+  await expect(button(page, 'Settings')).not.toHaveAttribute('aria-expanded', /.*/);
+  await expect(button(page, 'Settings')).not.toHaveAttribute('aria-controls', /.*/);
   await expect(summarySwitch(page)).toBeChecked();
   await summarySwitch(page).uncheck();
   await expect.poll(() => saved(page)).toEqual([{ summaries: false, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx' }]);
@@ -95,7 +97,8 @@ test('turning summaries off in the settings keeps the next excerpt', async ({ pa
   await expect(rows(page).locator('.entry-summary')).toHaveText([EXCERPT, EXCERPT]);
   await button(page, 'Settings').click();
   await expect(summarySwitch(page)).not.toBeChecked();
-  await button(page, 'Settings').click();
+  await page.keyboard.press('Escape');
+  await nextFrame(page);
   await expect(summarySwitch(page)).toBeHidden();
 });
 
@@ -198,8 +201,9 @@ test('settings that cannot be saved say why, and the drawer still flips', async 
   await open(page, { fail: 'settings_set' });
   await button(page, 'Settings').click();
   await summarySwitch(page).uncheck();
-  await expect(page.getByRole('region', { name: 'Settings' }).getByRole('alert')).toHaveText('Mock failure: settings_set');
-  await button(page, 'Settings').click();
+  await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('alert')).toHaveText('Mock failure: settings_set');
+  await page.keyboard.press('Escape');
+  await nextFrame(page);
   await button(page, 'Library').click();
   await expect(drawer(page)).toBeHidden();
   await expect(page.getByRole('banner').getByRole('alert')).toHaveText('Mock failure: settings_set');
@@ -212,7 +216,8 @@ test('settings that cannot be read leave the defaults, silently', async ({ page 
   await expect(summarySwitch(page)).toBeChecked();
   await expect(page.getByRole('textbox', { name: 'Vocabulary file' })).toHaveValue('');
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await button(page, 'Settings').click();
+  await page.keyboard.press('Escape');
+  await nextFrame(page);
   await button(page, 'Library').click();
   await expect.poll(() => saved(page)).toEqual([{ summaries: true, libraryOpen: false, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '' }]);
 });
