@@ -178,7 +178,8 @@ main {
 
 /* Live input level: 4 px bars on a 6 px pitch in the recording colour, as many
    as fit, newest on the right, mirrored about the centre line; grey (frozen)
-   while paused. It fills the free height below the controls. Each bar's
+   while paused. It fills the free height below the controls and the bar strip is 60% of it,
+   56 to 360 px, centred. Each bar's
    height is its level (0 to 1) via --level. */
 .meter {
   flex: 1 1 auto;
@@ -194,7 +195,7 @@ main {
   align-items: center;
   justify-content: flex-end;
   gap: 2px;
-  height: 100%;
+  height: clamp(56px, 60%, 360px);
 }
 
 .bar {
@@ -412,12 +413,18 @@ button.icon {
 .day {
   margin: 8px 10px 2px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .library-scroll > .day:first-child {
   margin-top: 2px;
+}
+
+.library-scroll > .day:not(:first-child) {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 8px;
 }
 
 .library li {

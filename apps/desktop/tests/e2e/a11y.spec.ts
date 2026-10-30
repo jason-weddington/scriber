@@ -176,6 +176,15 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
+    test('the library with two day groups', async ({ page }) => {
+      await page.clock.setFixedTime(Date.UTC(2026, 9, 28, 12));
+      await open(page, { library: '3' });
+      await press(page, 'New', 'Record', 'Done');
+      await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue(/^This is part 1 of the dictation\./);
+      await expect(page.locator('#library .day')).toHaveText(['Today', 'Oct 26']);
+      await expectNoViolations(page);
+    });
+
     test('the library grouped by day at the narrowest width', async ({ page }) => {
       await page.clock.setFixedTime(Date.UTC(2026, 9, 27, 12));
       await open(page, { library: '3', libraryWidth: '110' });

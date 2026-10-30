@@ -26,7 +26,7 @@ mod tests {
     fn the_pinned_constants() {
         assert_eq!(
             (WINDOW_MS, FLOOR_DBFS, CEILING_DBFS),
-            (50, -52.0, -20.0),
+            (50, -52.0, -6.0),
             "window, floor, ceiling"
         );
     }
@@ -37,22 +37,28 @@ mod tests {
         assert_eq!(level(f64::NAN), 0.0, "not a number reads as silence");
         assert_eq!(level(0.001), 0.0, "-60 dBFS clamps to 0");
         assert_eq!(level(0.002), 0.0, "about -54 dBFS clamps to 0");
-        assert_eq!(level(0.2), 1.0, "about -14 dBFS clamps to 1");
         assert_eq!(level(1.0), 1.0, "0 dBFS");
         assert_eq!(level(2.0), 1.0, "above full scale");
+        assert_eq!(level(0.6), 1.0, "about -4.4 dBFS clamps to 1");
+        close(level(10f64.powf(-14.0 / 20.0)), 38.0 / 46.0, "-14 dBFS");
         close(
             level(10f64.powf(-52.0 / 20.0)),
             0.0,
             "the floor, room silence",
         );
-        close(level(10f64.powf(-20.0 / 20.0)), 1.0, "the ceiling");
-        close(level(10f64.powf(-36.0 / 20.0)), 0.5, "half way");
-        close(level(0.01), 0.375, "-40 dBFS");
-        close(level(10f64.powf(-41.0 / 20.0)), 11.0 / 32.0, "quiet speech");
-        close(level(10f64.powf(-33.0 / 20.0)), 19.0 / 32.0, "loud speech");
+        close(level(10f64.powf(-6.0 / 20.0)), 1.0, "the ceiling");
+        close(
+            level(10f64.powf(-20.0 / 20.0)),
+            32.0 / 46.0,
+            "the old ceiling, now below the top",
+        );
+        close(level(10f64.powf(-29.0 / 20.0)), 0.5, "half way");
+        close(level(0.01), 12.0 / 46.0, "-40 dBFS");
+        close(level(10f64.powf(-41.0 / 20.0)), 11.0 / 46.0, "quiet speech");
+        close(level(10f64.powf(-33.0 / 20.0)), 19.0 / 46.0, "loud speech");
         close(
             level(10f64.powf(-27.0 / 20.0)),
-            25.0 / 32.0,
+            25.0 / 46.0,
             "the loudest measured",
         );
         for amplitude in [0.005, 0.01, 0.02] {
@@ -70,7 +76,7 @@ mod tests {
         let quiet = 0.01_f32 * std::f32::consts::SQRT_2;
         close(
             meter.feed(&sine(quiet, 800)).unwrap(),
-            0.375,
+            12.0 / 46.0,
             "a -40 dBFS sine",
         );
     }
@@ -87,7 +93,7 @@ mod tests {
             None,
             "the leftover sample counts"
         );
-        close(meter.feed(&[0.01]).unwrap(), 0.375, "a fresh window");
+        close(meter.feed(&[0.01]).unwrap(), 12.0 / 46.0, "a fresh window");
     }
 
     #[test]

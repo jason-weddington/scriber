@@ -209,11 +209,23 @@ test('the controls stay put when recording starts', async ({ page }) => {
   expect(Math.abs((await top()) - ready)).toBeLessThanOrEqual(1);
 });
 
-test('the strip fills the free height', async ({ page }) => {
+test('the strip is 60% of the free height, centred', async ({ page }) => {
   await page.setViewportSize({ width: 960, height: 640 });
   await record(page);
-  const box = await page.locator('.wave').boundingBox();
-  expect(box?.height ?? 0).toBeGreaterThanOrEqual(300);
+  const w = await page.locator('.wave').boundingBox();
+  const m = await page.locator('.meter').boundingBox();
+  const content = (await page.locator('.meter').evaluate((e) => e.clientHeight)) - 8;
+  if (w === null || m === null) throw new Error('no boxes');
+  expect(Math.abs(w.height - 0.6 * content)).toBeLessThanOrEqual(1);
+  expect(w.height).toBeGreaterThanOrEqual(170);
+  expect(Math.abs(w.y + w.height / 2 - (m.y + m.height / 2))).toBeLessThanOrEqual(2);
+});
+
+test('the strip stops growing at 360 px', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1400 });
+  await record(page);
+  const wave = await page.locator('.wave').boundingBox();
+  expect(Math.abs((wave?.height ?? 0) - 360)).toBeLessThanOrEqual(1);
 });
 
 test('a full-level bar is as tall as the strip', async ({ page }) => {

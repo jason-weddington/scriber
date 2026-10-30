@@ -4,10 +4,10 @@
 //! a [`Tap`], which keeps them for the segment and meters them: one reading
 //! per [`WINDOW_MS`] of sound, the RMS of the window's samples in dBFS,
 //! mapped linearly from [`FLOOR_DBFS`] (0.0) to [`CEILING_DBFS`] (1.0) and clamped.
-//! Decibels, not linear RMS, and a ceiling well below full scale: dictation
-//! into a laptop mic sits around -41 to -33 dBFS with a quiet room near -52,
-//! so a 0 dBFS ceiling would draw speech at half height or less. The ceiling
-//! leaves headroom above quiet-room dictation for louder voices in large rooms.
+//! Decibels, not linear RMS. The ceiling sits near clipping so that only
+//! genuinely loud input reads 1.0; close-mic condenser speech that pinned the
+//! old -20 dBFS ceiling now draws below the top; and laptop-mic dictation
+//! (-41 to -33 dBFS, quiet room near -52) still reads about 0.24 to 0.41.
 
 use std::sync::{Arc, Mutex};
 
@@ -21,8 +21,8 @@ pub const WINDOW_MS: u32 = 50;
 /// The level drawn as silence: an RMS at or below this many dBFS reads 0.0.
 pub const FLOOR_DBFS: f64 = -52.0;
 
-/// The level drawn full height: an RMS at or above this many dBFS reads 1.0.
-pub const CEILING_DBFS: f64 = -20.0;
+/// The level drawn full height: an RMS at or above this many dBFS (near clipping over a 50 ms window) reads 1.0.
+pub const CEILING_DBFS: f64 = -6.0;
 
 /// An RMS (0 to 1, full scale) as a level from 0.0 to 1.0: its dBFS mapped
 /// linearly from [`FLOOR_DBFS`] to [`CEILING_DBFS`] and clamped. Silence, and
