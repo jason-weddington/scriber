@@ -81,7 +81,9 @@ mod tests {
 
     #[test]
     fn a_leaked_closing_think_tag_is_cut_for_cleanup() {
-        let (base, _rx) = serve(&reply("Fix the parser.\n</think>\n\nFix the parser."));
+        let (base, _rx) = serve(&reply(
+            "Fix the parser.\n</think>\n\n{\"transcript\":\"Fix the parser.\"}",
+        ));
         let out = Ollama::with_timeout(&base, "m", CLEANUP_TIMEOUT)
             .clean("", "S", "R")
             .unwrap();
@@ -150,6 +152,7 @@ mod tests {
             }),
             "the body"
         );
+        assert!(body.get("format").is_none(), "no format on a summary");
     }
 
     #[test]
@@ -220,11 +223,11 @@ mod tests {
 
     #[test]
     fn a_cleanup_sends_its_system_prompt_and_request() {
-        let (base, rx) = serve(&ok(REPLY));
+        let (base, rx) = serve(&reply(r#"{"transcript":" A note about the board. "}"#));
         let reply = Ollama::with_timeout(&base, "m", CLEANUP_TIMEOUT)
             .clean("", "S", "R")
             .unwrap();
-        assert_eq!(reply, " A note about the board. ", "raw content");
+        assert_eq!(reply, " A note about the board. ", "the field verbatim");
         let (line, body) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(line, "POST /api/chat HTTP/1.1", "the request line");
         let body: Value = serde_json::from_str(&body).unwrap();
@@ -235,6 +238,11 @@ mod tests {
                 "stream": false,
                 "think": false,
                 "keep_alive": "10m",
+                "format": {
+                    "type": "object",
+                    "properties": {"transcript": {"type": "string"}},
+                    "required": ["transcript"],
+                },
                 "messages": [
                     {"role": "system", "content": "S"},
                     {"role": "user", "content": "R"},
@@ -262,7 +270,7 @@ mod tests {
             "cleanup: {cleaned:?}"
         );
         let (stop_base, _stop_rx) = serve(&ok(
-            r#"{"message":{"role":"assistant","content":"A note"},"done":true,"done_reason":"stop"}"#,
+            r#"{"message":{"role":"assistant","content":"{\"transcript\":\"A note\"}"},"done":true,"done_reason":"stop"}"#,
         ));
         assert_eq!(
             Ollama::new(&stop_base, "m").clean("", "S", "R").unwrap(),
@@ -272,8 +280,8 @@ mod tests {
     }
 
     /// The `"model"` the request made by `call` against a stub named.
-    fn model_sent(call: impl FnOnce(&str)) -> Value {
-        let (base, rx) = serve(&ok(REPLY));
+    fn model_sent(response: &str, call: impl FnOnce(&str)) -> Value {
+        let (base, rx) = serve(response);
         call(&base);
         let body: Value =
             serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap().1).unwrap();
@@ -283,14 +291,14 @@ mod tests {
     #[test]
     fn each_call_asks_its_model_or_the_default() {
         let summary = |chosen: &'static str| {
-            model_sent(move |base| {
+            model_sent(&ok(REPLY), move |base| {
                 let _reply = Ollama::new(base, "d").summarize(chosen, "t").unwrap();
             })
         };
         assert_eq!(summary(""), json!("d"), "summary: the default");
         assert_eq!(summary("m2"), json!("m2"), "summary: chosen");
         let cleanup = |chosen: &'static str| {
-            model_sent(move |base| {
+            model_sent(&reply(r#"{"transcript":"x"}"#), move |base| {
                 let _reply = Ollama::with_timeout(base, "d", CLEANUP_TIMEOUT)
                     .clean(chosen, "S", "R")
                     .unwrap();
@@ -298,6 +306,73 @@ mod tests {
         };
         assert_eq!(cleanup(""), json!("d"), "cleanup: the default");
         assert_eq!(cleanup("c2"), json!("c2"), "cleanup: chosen");
+    }
+
+    fn cleaned(content: &str) -> Result<String, String> {
+        let (base, _rx) = serve(&reply(content));
+        Ollama::with_timeout(&base, "m", CLEANUP_TIMEOUT)
+            .clean("", "S", "R")
+            .map_err(|e| e.0)
+    }
+
+    #[test]
+    fn a_cleanup_returns_its_transcript_field() {
+        assert_eq!(
+            cleaned(r#"{"transcript":" Fix the parser. "}"#),
+            Ok(" Fix the parser. ".to_string()),
+            "verbatim"
+        );
+        assert_eq!(cleaned(r#"{"transcript":""}"#), Ok(String::new()), "empty");
+        assert_eq!(
+            cleaned(r#"{"transcript":"x","note":"y"}"#),
+            Ok("x".to_string()),
+            "extra keys"
+        );
+    }
+
+    #[test]
+    fn a_cleanup_reply_that_is_not_json_is_an_error() {
+        let text = "Fix the parser. I also removed a repeat.";
+        assert_eq!(
+            cleaned(text),
+            Err(format!("the reply is not JSON: {text}")),
+            "prose"
+        );
+        let long = "a".repeat(250);
+        assert_eq!(
+            cleaned(&long),
+            Err(format!("the reply is not JSON: {}…", "a".repeat(200))),
+            "250 chars"
+        );
+        let exact = "a".repeat(200);
+        assert_eq!(
+            cleaned(&exact),
+            Err(format!("the reply is not JSON: {exact}")),
+            "200 chars"
+        );
+        let wide = "é".repeat(201);
+        assert_eq!(
+            cleaned(&wide),
+            Err(format!("the reply is not JSON: {}…", "é".repeat(200))),
+            "multibyte"
+        );
+    }
+
+    #[test]
+    fn a_cleanup_reply_without_a_string_transcript_is_an_error() {
+        for content in [
+            r#"["x"]"#,
+            "{}",
+            r#"{"text":"x"}"#,
+            r#"{"transcript":3}"#,
+            r#"{"transcript":null}"#,
+        ] {
+            assert_eq!(
+                cleaned(content),
+                Err(format!("the reply has no transcript field: {content}")),
+                "{content}"
+            );
+        }
     }
 
     #[test]

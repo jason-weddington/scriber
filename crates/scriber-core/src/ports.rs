@@ -251,15 +251,16 @@ pub trait Summarizer {
 /// A local language model, for the optional cleanup pass over a finished
 /// transcript ([`crate::cleanup`]).
 pub trait Cleaner {
-    /// The model's raw answer to the cleanup `request`, under the `system`
-    /// prompt; judging the answer is the core's job
+    /// The answer to the cleanup `request` under the `system` prompt, as the
+    /// adapter extracts it from the model's reply (Ollama: the reply's
+    /// `transcript` field); judging the answer is the core's job
     /// ([`crate::cleanup::accept`]). `model` is the Ollama model to ask;
     /// `""` means the adapter's own default.
     ///
     /// # Errors
     ///
-    /// The model cannot be reached, answers with an error, or the reply was
-    /// cut off.
+    /// The model cannot be reached, answers with an error, the reply was cut
+    /// off, or the reply is not in the expected shape.
     fn clean(&self, model: &str, system: &str, request: &str) -> Result<String, PortError>;
 }
 

@@ -3,6 +3,7 @@
 //! model the call names (or the adapter's default), and the listing of the
 //! installed models ([`installed_models`], `GET /api/tags`, embedding models hidden).
 //! A reply containing `</think>` is cut to the trimmed text after its last occurrence, and an empty remainder is an error.
+//! The cleanup request sends Ollama's `format` with the one-field `transcript` schema, and `clean` returns that field, so a reply that is not JSON or has no string `transcript` is an error quoting the start of the reply.
 //! It also keeps the cleanup model loaded ([`Warmer`]): `POST /api/generate` with no prompt and `keep_alive` [`KEEP_ALIVE`] loads it, and `keep_alive` 0 releases it; every chat request sends [`KEEP_ALIVE`] too, so it never shortens the model's stay.
 
 use std::time::Duration;
@@ -75,10 +76,17 @@ impl Ollama {
     }
 
     /// `model`'s reply to `user` under the `system` prompt: one
-    /// non-streaming chat request, thinking off, within the timeout; a reply containing `</think>` is cut to the trimmed text after its last occurrence (see `after_think`).
-    fn chat(&self, model: &str, system: &str, user: &str) -> Result<String, PortError> {
+    /// non-streaming chat request, thinking off, within the timeout; a reply containing `</think>` is cut to the trimmed text after its last occurrence (see `after_think`). With a `format` the request sends it as Ollama's structured output (the cleanup request sends the one-field `transcript` schema, and `clean` returns that field, so a reply that is not JSON or has no string `transcript` is an error quoting the start of the reply).
+    fn chat(
+        &self,
+        model: &str,
+        system: &str,
+        user: &str,
+        format: Option<&Value>,
+    ) -> Result<String, PortError> {
         let url = format!("{}/api/chat", self.url.trim_end_matches('/'));
-        let body = json!({
+        let mut body = serde_json::Map::new();
+        let base = json!({
             "model": model,
             "stream": false,
             "think": false,
@@ -88,6 +96,13 @@ impl Ollama {
                 {"role": "user", "content": user},
             ],
         });
+        if let Value::Object(fields) = base {
+            body.extend(fields);
+        }
+        if let Some(format) = format {
+            let _previous = body.insert("format".to_string(), format.clone());
+        }
+        let body = Value::Object(body);
         let config = ureq::Agent::config_builder().timeout_global(Some(self.timeout));
         let agent = config.build().new_agent();
         let mut response = agent
@@ -156,14 +171,39 @@ fn after_think(content: &str) -> Result<String, PortError> {
 
 impl Summarizer for Ollama {
     fn summarize(&self, model: &str, transcript: &str) -> Result<String, PortError> {
-        self.chat(self.model_for(model), SYSTEM_PROMPT, transcript)
+        self.chat(self.model_for(model), SYSTEM_PROMPT, transcript, None)
     }
 }
 
 impl Cleaner for Ollama {
     fn clean(&self, model: &str, system: &str, request: &str) -> Result<String, PortError> {
-        self.chat(self.model_for(model), system, request)
+        let schema = json!({
+            "type": "object",
+            "properties": {"transcript": {"type": "string"}},
+            "required": ["transcript"],
+        });
+        let content = self.chat(self.model_for(model), system, request, Some(&schema))?;
+        transcript_field(&content)
     }
+}
+
+/// The string `transcript` field of the JSON `content`, verbatim.
+fn transcript_field(content: &str) -> Result<String, PortError> {
+    let excerpt = || {
+        let start: String = content.chars().take(200).collect();
+        if content.chars().count() > 200 {
+            format!("{start}…")
+        } else {
+            start
+        }
+    };
+    let value: Value = serde_json::from_str(content)
+        .map_err(|_| PortError(format!("the reply is not JSON: {}", excerpt())))?;
+    value
+        .get("transcript")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| PortError(format!("the reply has no transcript field: {}", excerpt())))
 }
 
 /// Whether a `/api/tags` entry is a model that can write text.
