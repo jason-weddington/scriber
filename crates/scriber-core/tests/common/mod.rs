@@ -10,7 +10,7 @@ use scriber_core::dictation::{Job, Outcome};
 use scriber_core::model::InputDevices;
 use scriber_core::ports::{
     Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, JobQueue, Library, LocalTime,
-    PortError, Ports, Recorder, Summarizer, Transcriber,
+    Phrase, PortError, Ports, Recorder, Summarizer, Transcriber,
 };
 use scriber_core::store::{VOCABULARY, segment_index, segment_path};
 
@@ -74,12 +74,14 @@ impl Recorder for FakeRecorder {
     }
 }
 
-/// A transcriber that answers from a queue ("segment N" when it is empty)
-/// and records every call's sample count and prompt, and every warm-up.
+/// A transcriber that answers from `phrases` first, then from `answers` as
+/// one phrase spanning the audio ("segment N" when both are empty), and
+/// records every call's sample count and prompt, and every warm-up.
 #[derive(Default)]
 pub(crate) struct FakeTranscriber {
     pub(crate) missing: RefCell<Option<String>>,
     pub(crate) answers: RefCell<VecDeque<Result<String, String>>>,
+    pub(crate) phrases: RefCell<VecDeque<Vec<Phrase>>>,
     pub(crate) calls: RefCell<Vec<(usize, Option<String>)>>,
     pub(crate) warms: Cell<u32>,
     pub(crate) warm_error: RefCell<Option<String>>,
@@ -98,15 +100,25 @@ impl Transcriber for FakeTranscriber {
         }
     }
 
-    fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<String, PortError> {
+    fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<Vec<Phrase>, PortError> {
         let n = self.calls.borrow().len();
         self.calls
             .borrow_mut()
             .push((samples.len(), prompt.map(str::to_string)));
+        if let Some(phrases) = self.phrases.borrow_mut().pop_front() {
+            return Ok(phrases);
+        }
         self.answers
             .borrow_mut()
             .pop_front()
             .unwrap_or_else(|| Ok(format!(" segment {n} ")))
+            .map(|text| {
+                vec![Phrase {
+                    text,
+                    start: 0,
+                    end: samples.len(),
+                }]
+            })
             .map_err(PortError)
     }
 

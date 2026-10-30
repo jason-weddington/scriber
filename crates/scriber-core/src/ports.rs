@@ -24,6 +24,19 @@ impl From<crate::sync::Closed> for PortError {
     }
 }
 
+/// One stretch of the transcriber's reply. `start` and `end` are sample
+/// offsets (16 kHz) into the exact audio the transcriber was given, with `end`
+/// exclusive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phrase {
+    /// The text, exactly as the model produced it.
+    pub text: String,
+    /// The first sample of the stretch.
+    pub start: usize,
+    /// One past the last sample of the stretch.
+    pub end: usize,
+}
+
 /// Sound as the input device delivered it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Captured {
@@ -89,12 +102,14 @@ pub trait Transcriber {
     /// The model cannot be loaded.
     fn warm(&self) -> Result<(), PortError>;
 
-    /// The text spoken in `samples` (16 kHz mono), steered by `prompt`.
+    /// The text spoken in `samples` (16 kHz mono), steered by `prompt`, as
+    /// phrases in order. Each phrase's text is exactly what the model
+    /// produced, leading spaces included.
     ///
     /// # Errors
     ///
     /// The model cannot be loaded or the transcription fails.
-    fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<String, PortError>;
+    fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<Vec<Phrase>, PortError>;
 
     /// Frees the loaded model, first waiting for a load or transcription
     /// already in progress to finish (calls still waiting for the model are

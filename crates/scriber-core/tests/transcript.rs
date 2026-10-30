@@ -2,9 +2,11 @@
 
 #[cfg(test)]
 mod tests {
+    use scriber_core::ports::Phrase;
     use scriber_core::transcript::{
-        HALLUCINATIONS, SEGMENT_SEPARATOR, SHORT_SEGMENT, SILENCE_RMS, SILENCE_WINDOW,
-        TRAILING_PADDING, is_silent, join, keep, trim_trailing_silence,
+        HALLUCINATIONS, SAMPLES_PER_CENTISECOND, SEGMENT_SEPARATOR, SHORT_SEGMENT, SILENCE_RMS,
+        SILENCE_WINDOW, TRAILING_PADDING, TRAILING_SILENCE_RMS, is_silent, join, keep, kept_text,
+        phantom, phrase_audio, samples_at, trim_trailing_silence,
     };
 
     #[test]
@@ -12,6 +14,10 @@ mod tests {
         assert_eq!(SILENCE_WINDOW, 1_600, "100 ms at 16 kHz");
         assert!((SILENCE_RMS - 0.01).abs() < f32::EPSILON, "-40 dBFS");
         assert_eq!(TRAILING_PADDING, 8_000, "500 ms at 16 kHz");
+        assert!(
+            (TRAILING_SILENCE_RMS - 0.002).abs() < f32::EPSILON,
+            "-54 dBFS"
+        );
         assert_eq!(SHORT_SEGMENT, 160_000, "10 s at 16 kHz");
         assert_eq!(SEGMENT_SEPARATOR, "\n\n", "a blank line between segments");
     }
@@ -171,11 +177,27 @@ mod tests {
 
     #[test]
     fn a_window_exactly_at_the_level_is_loud() {
-        assert_eq!(trim_trailing_silence(&[SILENCE_RMS]).len(), 1, "d1");
-        assert_eq!(trim_trailing_silence(&[SILENCE_RMS * 0.99]).len(), 0, "d2");
-        assert_eq!(trimmed(&[vec![0.0; 1_600], vec![SILENCE_RMS]]), 1_601, "d3");
         assert_eq!(
-            trimmed(&[loud(1_600), vec![0.0; 16_000], vec![SILENCE_RMS * 0.99]]),
+            trim_trailing_silence(&[TRAILING_SILENCE_RMS]).len(),
+            1,
+            "d1"
+        );
+        assert_eq!(
+            trim_trailing_silence(&[TRAILING_SILENCE_RMS * 0.99]).len(),
+            0,
+            "d2"
+        );
+        assert_eq!(
+            trimmed(&[vec![0.0; 1_600], vec![TRAILING_SILENCE_RMS]]),
+            1_601,
+            "d3"
+        );
+        assert_eq!(
+            trimmed(&[
+                loud(1_600),
+                vec![0.0; 16_000],
+                vec![TRAILING_SILENCE_RMS * 0.99]
+            ]),
             9_600,
             "d4"
         );
@@ -186,14 +208,23 @@ mod tests {
         let click = vec![0.005; 1_600];
         assert_eq!(
             trimmed(&[loud(16_000), vec![0.0; 16_000], click, vec![0.0; 16_000]]),
-            24_000,
-            "e"
+            41_600,
+            "e: the click reaches the trim level, so it is kept"
         );
         assert_eq!(trimmed(&[vec![0.0; 16_000], loud(100)]), 16_100, "f");
         assert_eq!(
             trimmed(&[vec![0.0; 16_000], loud(1_600), vec![0.0; 32_000]]),
             25_600,
             "g"
+        );
+    }
+
+    #[test]
+    fn quiet_speech_between_the_levels_is_kept() {
+        assert_eq!(
+            trimmed(&[loud(16_000), vec![0.005; 16_000], vec![0.0; 48_000]]),
+            40_000,
+            "speech at 0.005 is under the silence level but over the trim level"
         );
     }
 
@@ -209,5 +240,190 @@ mod tests {
         let r = trim_trailing_silence(&s);
         assert_eq!(r, &s[..24_000], "prefix");
         assert!(std::ptr::eq(r.as_ptr(), s.as_ptr()), "same start");
+    }
+
+    #[test]
+    fn centiseconds_convert_to_samples() {
+        assert_eq!(SAMPLES_PER_CENTISECOND, 160, "16 kHz");
+        assert_eq!(samples_at(0), 0, "zero");
+        assert_eq!(samples_at(1), 160, "one");
+        assert_eq!(samples_at(2_980), 476_800, "29.8 s");
+        assert_eq!(samples_at(-1), 0, "negative");
+        assert_eq!(samples_at(i64::MIN), 0, "most negative");
+        assert_eq!(samples_at(i64::MAX), usize::MAX, "saturates");
+    }
+
+    fn p(text: &str, start: usize, end: usize) -> Phrase {
+        Phrase {
+            text: text.into(),
+            start,
+            end,
+        }
+    }
+
+    /// Ten seconds of speech, then two of digital silence.
+    fn audio_a() -> Vec<f32> {
+        [loud(320_000), vec![0.0; 32_000]].concat()
+    }
+
+    fn hello() -> Phrase {
+        p(" Hello there.", 0, 320_000)
+    }
+
+    #[test]
+    fn a_phantom_last_phrase_over_silence_is_dropped() {
+        let a = audio_a();
+        let thanks = p(" Thank you.", 320_000, 352_000);
+        assert_eq!(
+            kept_text(&a, &[hello(), thanks.clone()]),
+            Some("Hello there.".to_string()),
+            "a"
+        );
+        let hum = [loud(320_000), vec![SILENCE_RMS * 0.99; 32_000]].concat();
+        assert_eq!(
+            kept_text(&hum, &[hello(), thanks.clone()]),
+            Some("Hello there.".to_string()),
+            "a2"
+        );
+        let spoken = [loud(320_000), loud(32_000)].concat();
+        assert_eq!(
+            kept_text(&spoken, &[hello(), thanks]),
+            Some("Hello there. Thank you.".to_string()),
+            "b"
+        );
+    }
+
+    #[test]
+    fn a_window_at_the_silence_level_is_evidence_of_speech() {
+        let short = p(" Thank you.", 320_000, 350_401);
+        let mut at = audio_a();
+        if let Some(s) = at.get_mut(350_400) {
+            *s = SILENCE_RMS;
+        }
+        assert_eq!(
+            kept_text(&at, &[hello(), short.clone()]),
+            Some("Hello there. Thank you.".to_string()),
+            "b2 at the level"
+        );
+        let mut below = audio_a();
+        if let Some(s) = below.get_mut(350_400) {
+            *s = SILENCE_RMS * 0.99;
+        }
+        assert_eq!(
+            kept_text(&below, &[hello(), short]),
+            Some("Hello there.".to_string()),
+            "b2 below the level"
+        );
+    }
+
+    #[test]
+    fn only_a_whole_text_match_of_the_last_phrase_is_dropped() {
+        let a = audio_a();
+        assert_eq!(
+            kept_text(&a, &[hello(), p(" Thank you. Okay.", 320_000, 352_000)]),
+            Some("Hello there. Thank you. Okay.".to_string()),
+            "c"
+        );
+        assert_eq!(
+            kept_text(&a, &[hello(), p("  thank YOU.  ", 320_000, 352_000)]),
+            Some("Hello there.".to_string()),
+            "d"
+        );
+        let first = [vec![0.0; 32_000], loud(320_000)].concat();
+        assert_eq!(
+            kept_text(
+                &first,
+                &[
+                    p(" Thank you.", 0, 32_000),
+                    p(" Hello there.", 32_000, 352_000)
+                ]
+            ),
+            Some("Thank you. Hello there.".to_string()),
+            "e"
+        );
+        assert_eq!(
+            kept_text(
+                &a,
+                &[
+                    hello(),
+                    p(" Thank you.", 320_000, 336_000),
+                    p(" Thank you.", 336_000, 352_000)
+                ]
+            ),
+            Some("Hello there. Thank you.".to_string()),
+            "f"
+        );
+    }
+
+    #[test]
+    fn the_last_phrase_is_judged_on_its_own_span() {
+        let a = audio_a();
+        assert_eq!(
+            kept_text(&a, &[hello(), p(" Thank you.", 318_400, 352_000)]),
+            Some("Hello there. Thank you.".to_string()),
+            "g: start is honoured"
+        );
+        for (start, end) in [
+            (320_000, 352_000),
+            (320_000, 400_000),
+            (400_000, 410_000),
+            (345_000, 330_000),
+        ] {
+            assert_eq!(
+                kept_text(&a, &[hello(), p(" Thank you.", start, end)]),
+                Some("Hello there.".to_string()),
+                "g: {start}..{end}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_phrase_follows_the_same_rules() {
+        assert_eq!(
+            kept_text(&vec![0.0; 16_000], &[p(" Thank you.", 0, 16_000)]),
+            None,
+            "h silent"
+        );
+        assert_eq!(
+            kept_text(&loud(176_000), &[p(" Thank you.", 0, 176_000)]),
+            Some("Thank you.".to_string()),
+            "h spoken, long"
+        );
+        assert_eq!(
+            kept_text(&loud(16_000), &[p(" Thank you.", 0, 16_000)]),
+            None,
+            "h spoken, short"
+        );
+        assert_eq!(kept_text(&loud(16_000), &[]), None, "i");
+        assert_eq!(kept_text(&loud(16_000), &[p(" .", 0, 16_000)]), None, "j");
+    }
+
+    #[test]
+    fn a_phrase_audio_is_its_span_clamped_to_the_audio() {
+        let a = audio_a();
+        assert_eq!(phrase_audio(&a, &p("x", 400_000, 410_000)).len(), 0, "past");
+        assert_eq!(
+            phrase_audio(&a, &p("x", 345_000, 330_000)).len(),
+            0,
+            "inverted"
+        );
+        assert_eq!(
+            phrase_audio(&a, &p("x", 320_000, 400_000)).len(),
+            32_000,
+            "clamped"
+        );
+        let inside = phrase_audio(&a, &p("x", 10, 20));
+        assert_eq!(inside.len(), 10, "inside");
+        assert!(
+            std::ptr::eq(inside.as_ptr(), a[10..].as_ptr()),
+            "same start"
+        );
+    }
+
+    #[test]
+    fn a_phantom_is_an_invention_over_silence() {
+        let a = audio_a();
+        assert!(phantom(&a, &p(" Thank you.", 320_000, 352_000)), "invented");
+        assert!(!phantom(&a, &p(" Hello.", 320_000, 352_000)), "real words");
     }
 }

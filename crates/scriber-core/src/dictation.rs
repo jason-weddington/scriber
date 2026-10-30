@@ -32,7 +32,7 @@ use crate::ports::{Library, PortError, Ports};
 use crate::settings;
 use crate::store;
 use crate::sync::lock;
-use crate::transcript::{is_silent, join, keep, trim_trailing_silence};
+use crate::transcript::{is_silent, join, kept_text, trim_trailing_silence};
 use crate::vocabulary::{self, prompt};
 use serde::Serialize;
 
@@ -170,8 +170,10 @@ impl Job {
     /// Does the work. A silent segment is not sent to the transcriber, any
     /// other segment is trimmed of trailing silence before transcription, and
     /// the hallucination length test measures the trimmed audio, because that
-    /// is what Whisper heard. A
-    /// hallucination or text with no letter or digit is dropped (see [`crate::transcript`]). A download
+    /// is what Whisper heard. A final phrase that is a known hallucination
+    /// over silent audio is dropped, and so is a short segment's
+    /// hallucination or text with no letter or digit (see
+    /// [`crate::transcript`]). A download
     /// calls `progress` with the bytes received as each whole percent
     /// arrives (see [`download::fetch`]). The warm-up's outcome changes
     /// nothing: a model that failed to load is loaded again by the first
@@ -200,7 +202,7 @@ impl Job {
                 ports
                     .transcriber
                     .transcribe(heard_audio, prompt.as_deref())
-                    .map(|heard| keep(heard_audio.len(), &heard))
+                    .map(|phrases| kept_text(heard_audio, &phrases))
                     .map_err(|e| e.to_string())
             }
             Work::Encode { id } => encode(id, ports).map(|()| None),

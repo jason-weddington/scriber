@@ -85,7 +85,7 @@ pub use scriber_core::model::{
     Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot,
 };
 pub use scriber_core::ports::{
-    Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, LocalTime, PortError,
+    Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, LocalTime, Phrase, PortError,
     Recorder, Summarizer, Transcriber, fail,
 };
 pub use warm::Warmer;

@@ -9,7 +9,7 @@ mod tests {
         COPIED, Dictation, DictationError, Job, NOTHING_HEARD, input_fallback, model_missing,
     };
     use scriber_core::model::{Action, Phase, Snapshot};
-    use scriber_core::ports::{Captured, PortError};
+    use scriber_core::ports::{Captured, Phrase, PortError};
     use scriber_core::vocabulary::STYLE;
 
     use scriber_core::library::{entry_path, list};
@@ -374,6 +374,50 @@ mod tests {
             64_000,
             "still saved whole"
         );
+    }
+
+    /// Ten seconds of speech and two of silence, transcribed as "Hello."
+    /// up to `split` and "Thank you." from there to the end of the trimmed
+    /// audio; returns the transcript and the transcribed length.
+    fn hello_then_thanks(split: usize) -> (String, usize) {
+        let w = World::default();
+        w.recorder.captures.borrow_mut().push_back(Ok(Captured::new(
+            [speech(320_000), vec![0.0; 32_000]].concat(),
+            1,
+            16_000,
+        )));
+        w.transcriber.phrases.borrow_mut().push_back(vec![
+            Phrase {
+                text: " Hello.".into(),
+                start: 0,
+                end: split,
+            },
+            Phrase {
+                text: " Thank you.".into(),
+                start: split,
+                end: 328_000,
+            },
+        ]);
+        let p = w.ports();
+        let (mut d, jobs) = at(&w, Phase::Paused);
+        let _none = d.done(&p).unwrap();
+        finish(&mut d, &w, &jobs[0]);
+        let heard = w.transcriber.calls.borrow()[0].0;
+        (snap(&d, &w).text, heard)
+    }
+
+    #[test]
+    fn a_phantom_last_phrase_over_silence_is_dropped() {
+        let (text, heard) = hello_then_thanks(320_000);
+        assert_eq!(heard, 328_000, "trimmed to the padding");
+        assert_eq!(text, "Hello.", "dropped");
+    }
+
+    #[test]
+    fn a_spoken_last_thank_you_is_kept() {
+        let (text, heard) = hello_then_thanks(300_000);
+        assert_eq!(heard, 328_000, "trimmed to the padding");
+        assert_eq!(text, "Hello. Thank you.", "kept");
     }
 
     #[test]

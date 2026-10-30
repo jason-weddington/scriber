@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use scriber_core::sync::LoadOnce;
 use scriber_engine::{
     Adapters, Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Engine, EngineConfig,
-    Event, InputDevices, LevelSink, LocalTime, PortError, Recorder, Snapshot, Summarizer,
+    Event, InputDevices, LevelSink, LocalTime, Phrase, PortError, Recorder, Snapshot, Summarizer,
     Transcriber, Warmer,
 };
 
@@ -150,7 +150,7 @@ impl Transcriber for FakeTranscriber {
         })
     }
 
-    fn transcribe(&self, _samples: &[f32], _prompt: Option<&str>) -> Result<String, PortError> {
+    fn transcribe(&self, samples: &[f32], _prompt: Option<&str>) -> Result<Vec<Phrase>, PortError> {
         let _asked = self.asks.fetch_add(1, Ordering::SeqCst);
         self.once.with(&mut || Ok(()), &mut |()| {
             if let Some(entered) = &self.entered {
@@ -169,6 +169,13 @@ impl Transcriber for FakeTranscriber {
                 .unwrap_or_else(PoisonError::into_inner)
                 .pop_front();
             next.unwrap_or_else(|| Ok("hello world".to_string()))
+                .map(|text| {
+                    vec![Phrase {
+                        text,
+                        start: 0,
+                        end: samples.len(),
+                    }]
+                })
                 .map_err(PortError)
         })
     }

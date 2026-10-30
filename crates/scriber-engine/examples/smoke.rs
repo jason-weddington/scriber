@@ -1,7 +1,7 @@
 //! Real-model smoke check, never run by the gate: transcribes a 16 kHz mono
 //! WAV through the engine's Whisper adapter, warming it up first as the
-//! engine does at launch (trimming trailing silence and applying `keep` as the
-//! app does), and prints the text and how long each step took.
+//! engine does at launch (trimming trailing silence and applying `kept_text` as
+//! the app does), and prints the text and how long each step took.
 //! `scripts/smoke.sh` makes the WAV and runs this from the repo root:
 //!
 //! ```sh
@@ -12,9 +12,11 @@ use std::io::Write;
 use std::time::Instant;
 
 use scriber_core::audio::decode_wav;
-use scriber_core::transcript::{is_silent, keep, trim_trailing_silence};
+use scriber_core::transcript::{
+    is_silent, kept_text, phantom, phrase_audio, trim_trailing_silence,
+};
 use scriber_core::vocabulary::prompt;
-use scriber_engine::{Transcriber, Whisper};
+use scriber_engine::{Phrase, Transcriber, Whisper};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -44,7 +46,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         out,
         "first transcription after the warm-up, no prompt: {first:.2?}"
     )?;
-    writeln!(out, "text: {:?}", keep(trimmed.len(), &heard))?;
+    print_phrases(&mut out, trimmed, &heard)?;
+    writeln!(out, "text: {:?}", kept_text(trimmed, &heard))?;
 
     let style = prompt("");
     let glossary = prompt("Scriber\ntalos\nagent-gtd");
@@ -58,7 +61,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let again = whisper.transcribe(trimmed, Some(p.as_str()))?;
         let elapsed = start.elapsed();
         writeln!(out, "{label}: {elapsed:.2?}")?;
-        writeln!(out, "text: {:?}", keep(trimmed.len(), &again))?;
+        print_phrases(&mut out, trimmed, &again)?;
+        writeln!(out, "text: {:?}", kept_text(trimmed, &again))?;
+    }
+    Ok(())
+}
+
+/// One line per phrase: its span in seconds, whether its own audio is
+/// silent, whether it is a phantom, and its text.
+fn print_phrases(
+    out: &mut impl Write,
+    trimmed: &[f32],
+    phrases: &[Phrase],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for p in phrases {
+        let start_s = f64::from(u32::try_from(p.start)?) / 16_000.0;
+        let end_s = f64::from(u32::try_from(p.end)?) / 16_000.0;
+        writeln!(
+            out,
+            "[{start_s:.2}-{end_s:.2}] silent={} phantom={} text={:?}",
+            is_silent(phrase_audio(trimmed, p)),
+            phantom(trimmed, p),
+            p.text
+        )?;
     }
     Ok(())
 }

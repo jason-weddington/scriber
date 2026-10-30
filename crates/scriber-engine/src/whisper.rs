@@ -2,8 +2,9 @@
 
 use std::path::PathBuf;
 
-use scriber_core::ports::{PortError, Transcriber, fail};
+use scriber_core::ports::{Phrase, PortError, Transcriber, fail};
 use scriber_core::sync::LoadOnce;
+use scriber_core::transcript::samples_at;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 /// whisper.cpp, on Metal on macOS and on the CPU elsewhere; the model loads
@@ -34,7 +35,7 @@ impl Transcriber for Whisper {
         self.1.with(&mut || self.load(), &mut |_| Ok(()))
     }
 
-    fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<String, PortError> {
+    fn transcribe(&self, samples: &[f32], prompt: Option<&str>) -> Result<Vec<Phrase>, PortError> {
         self.1
             .with(&mut || self.load(), &mut |m| decode(m, samples, prompt))
     }
@@ -45,7 +46,11 @@ impl Transcriber for Whisper {
 }
 
 /// Beam search (beam 5), English, non-speech tokens suppressed.
-fn decode(model: &WhisperContext, pcm: &[f32], prompt: Option<&str>) -> Result<String, PortError> {
+fn decode(
+    model: &WhisperContext,
+    pcm: &[f32],
+    prompt: Option<&str>,
+) -> Result<Vec<Phrase>, PortError> {
     let beam = SamplingStrategy::BeamSearch {
         beam_size: 5,
         patience: -1.0,
@@ -58,6 +63,12 @@ fn decode(model: &WhisperContext, pcm: &[f32], prompt: Option<&str>) -> Result<S
     }
     let mut state = model.create_state().map_err(fail)?;
     state.full(params, pcm).map_err(fail)?;
-    let text = state.as_iter().map(|s| s.to_str_lossy().map(String::from));
-    text.collect::<Result<String, _>>().map_err(fail)
+    let phrases = state.as_iter().map(|s| {
+        s.to_str_lossy().map(|text| Phrase {
+            text: text.into_owned(),
+            start: samples_at(s.start_timestamp()),
+            end: samples_at(s.end_timestamp()),
+        })
+    });
+    phrases.collect::<Result<Vec<_>, _>>().map_err(fail)
 }
