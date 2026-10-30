@@ -7,7 +7,9 @@ mod common;
 mod tests {
     use scriber_core::model::Settings;
     use scriber_core::ports::Files as _;
-    use scriber_core::settings::{SETTINGS, load, save};
+    use scriber_core::settings::{
+        LIBRARY_WIDTH_DEFAULT, LIBRARY_WIDTH_MAX, LIBRARY_WIDTH_MIN, SETTINGS, load, save,
+    };
     use serde_json::{Value, json};
 
     use crate::common::FakeFiles;
@@ -19,6 +21,7 @@ mod tests {
         cleanup: false,
         summary_model: String::new(),
         cleanup_model: String::new(),
+        library_width: 220,
     };
 
     fn with(bytes: &[u8]) -> FakeFiles {
@@ -59,6 +62,7 @@ mod tests {
                     cleanup: false,
                     summary_model: String::new(),
                     cleanup_model: String::new(),
+                    library_width: 220,
                 },
             ),
             (
@@ -70,6 +74,7 @@ mod tests {
                     cleanup: false,
                     summary_model: String::new(),
                     cleanup_model: String::new(),
+                    library_width: 220,
                 },
             ),
             (
@@ -81,6 +86,7 @@ mod tests {
                     cleanup: false,
                     summary_model: String::new(),
                     cleanup_model: String::new(),
+                    library_width: 220,
                 },
             ),
             (
@@ -92,6 +98,7 @@ mod tests {
                     cleanup: false,
                     summary_model: String::new(),
                     cleanup_model: String::new(),
+                    library_width: 220,
                 },
             ),
             (br#"{"libraryOpen":false}"#, DEFAULTS),
@@ -115,6 +122,7 @@ mod tests {
             cleanup: false,
             summary_model: String::new(),
             cleanup_model: String::new(),
+            library_width: 220,
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
@@ -127,13 +135,14 @@ mod tests {
                 "vocabulary": "",
                 "cleanup": false,
                 "summary_model": "",
-                "cleanup_model": ""
+                "cleanup_model": "",
+                "library_width": 220
             }),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":""}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220}"#,
             "compact"
         );
         assert!(
@@ -176,7 +185,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -214,7 +223,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -252,7 +261,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -262,5 +271,51 @@ mod tests {
         };
         save(&files, &other).unwrap();
         assert_eq!(load(&files), other, "cleanup model read back");
+    }
+
+    #[test]
+    fn the_width_constants_are_pinned() {
+        assert_eq!(LIBRARY_WIDTH_DEFAULT, 220, "default");
+        assert_eq!(LIBRARY_WIDTH_MIN, 110, "min");
+        assert_eq!(LIBRARY_WIDTH_MAX, 440, "max");
+    }
+
+    #[test]
+    fn the_library_width_is_clamped_or_defaulted_on_read() {
+        for (value, want) in [
+            ("300", 300),
+            ("109", 110),
+            ("110", 110),
+            ("111", 111),
+            ("439", 439),
+            ("440", 440),
+            ("441", 440),
+            ("0", 110),
+            ("-1", 220),
+            ("1.5", 220),
+            (r#""wide""#, 220),
+            ("null", 220),
+        ] {
+            let json = format!(r#"{{"library_width":{value}}}"#);
+            assert_eq!(load(&with(json.as_bytes())).library_width, want, "{value}");
+        }
+        assert_eq!(load(&with(b"{}")).library_width, 220, "missing");
+    }
+
+    #[test]
+    fn the_library_width_is_saved_last() {
+        let files = FakeFiles::default();
+        let s = Settings {
+            library_width: 300,
+            ..DEFAULTS
+        };
+        save(&files, &s).unwrap();
+        let bytes = files.read(SETTINGS).unwrap();
+        assert!(
+            bytes.ends_with(br#","library_width":300}"#),
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert_eq!(load(&files), s, "read back");
     }
 }

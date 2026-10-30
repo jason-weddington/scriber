@@ -2,7 +2,7 @@
 //!
 //! On disk the file is a JSON object with the `snake_case` keys `summaries`,
 //! `library_open`, `vocabulary`, `cleanup`, `summary_model` and
-//! `cleanup_model`. Reading is lenient: a missing, unreadable or invalid file
+//! `cleanup_model` and `library_width`. Reading is lenient: a missing, unreadable or invalid file
 //! means the defaults (`summaries` and `library_open` true, `vocabulary`
 //! empty, `cleanup` false, both models `""`, meaning the engine's default
 //! model),
@@ -10,7 +10,9 @@
 //! takes its default and unknown keys are ignored. `vocabulary` is kept only
 //! when it is an absolute path (it starts with `/`); anything else means `""`,
 //! the default glossary. `summary_model` and `cleanup_model` are kept exactly
-//! as stored when they are strings, else `""`. Saving writes the file beside itself and renames it
+//! as stored when they are strings, else `""`. `library_width` is a
+//! non-negative integer clamped to 110..=440 on read; anything else (a
+//! negative number, a fraction, another type) means 220. Saving writes the file beside itself and renames it
 //! into place.
 
 use serde::Serialize;
@@ -18,6 +20,15 @@ use serde_json::{Map, Value};
 
 use crate::model::Settings;
 use crate::ports::{Files, PortError, fail};
+
+/// The library drawer's default width in pixels.
+pub const LIBRARY_WIDTH_DEFAULT: u64 = 220;
+
+/// The narrowest the drawer may be, in pixels.
+pub const LIBRARY_WIDTH_MIN: u64 = 110;
+
+/// The widest the drawer may be, in pixels.
+pub const LIBRARY_WIDTH_MAX: u64 = 440;
 
 /// The settings file.
 pub const SETTINGS: &str = "settings.json";
@@ -34,6 +45,7 @@ struct Disk {
     cleanup: bool,
     summary_model: String,
     cleanup_model: String,
+    library_width: u64,
 }
 
 /// The saved settings, or the defaults where there are none.
@@ -65,6 +77,12 @@ pub fn load(files: &dyn Files) -> Settings {
         cleanup: flag("cleanup", false),
         summary_model: text("summary_model"),
         cleanup_model: text("cleanup_model"),
+        library_width: object
+            .get("library_width")
+            .and_then(Value::as_u64)
+            .map_or(LIBRARY_WIDTH_DEFAULT, |w| {
+                w.clamp(LIBRARY_WIDTH_MIN, LIBRARY_WIDTH_MAX)
+            }),
     }
 }
 
@@ -81,6 +99,7 @@ pub fn save(files: &dyn Files, s: &Settings) -> Result<(), PortError> {
         cleanup: s.cleanup,
         summary_model: s.summary_model.clone(),
         cleanup_model: s.cleanup_model.clone(),
+        library_width: s.library_width,
     };
     let bytes = serde_json::to_vec(&disk).map_err(fail)?;
     files.write(SETTINGS_PARTIAL, &bytes)?;

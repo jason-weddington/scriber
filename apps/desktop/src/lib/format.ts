@@ -1,7 +1,7 @@
 // Display rules for the dictation screen. Pure functions, unit-tested in
 // tests/unit/format.spec.ts.
 
-import type { Action, Download, Phase, Snapshot } from './types';
+import type { Action, Download, LibraryEntry, Phase, Snapshot } from './types';
 
 /**
  * The actions the core accepts in each phase (crates/scriber-core/src/dictation.rs).
@@ -165,4 +165,71 @@ export function percent(d: Download): number {
 /** The download's line: why Record waits, and how far it has got. */
 export function downloadText(d: Download): string {
   return `Downloading the speech model, needed once: ${String(percent(d))}% (${formatBytes(d.receivedBytes)} of ${formatBytes(d.totalBytes)}). Record works when it is done.`;
+}
+
+// ---- the library drawer ------------------------------------------------------------
+
+/** The drawer's default width in px (crates/scriber-core/src/settings.rs). */
+export const LIBRARY_WIDTH_DEFAULT = 220;
+
+/** The narrowest the drawer may be, in px. */
+export const LIBRARY_WIDTH_MIN = 110;
+
+/** The widest the drawer may be, in px. */
+export const LIBRARY_WIDTH_MAX = 440;
+
+/** How far an arrow key moves the drawer's edge, in px. */
+export const LIBRARY_WIDTH_STEP = 10;
+
+/** `px` rounded to a whole number of px and held to the allowed range; the bridge's u64 refuses a fraction. */
+export function clampLibraryWidth(px: number): number {
+  return Math.min(LIBRARY_WIDTH_MAX, Math.max(LIBRARY_WIDTH_MIN, Math.round(px)));
+}
+
+const TITLE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+/**
+ * The day group a library entry belongs to, from its title (local time,
+ * `YYYY-MM-DD HH:MM:SS`) and `now`'s local date: Today, Yesterday, `Oct 26`
+ * (with the year when it is not now's), or Earlier for a title that is not
+ * well formed. Field ranges are not checked: the parts go to `new Date`.
+ */
+export function dayLabel(title: string, now: Date): string {
+  if (!TITLE.test(title)) return 'Earlier';
+  const [y = 0, m = 0, d = 0] = title.slice(0, 10).split('-').map(Number);
+  const day = new Date(y, m - 1, d);
+  const same = (a: Date, b: Date): boolean =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (same(day, now)) return 'Today';
+  if (same(day, new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1))) return 'Yesterday';
+  return day.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(day.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  });
+}
+
+/** The title's time as `9:44 AM` (an ASCII space; Intl would put U+202F there), or a malformed title unchanged. */
+export function timeLabel(title: string): string {
+  if (!TITLE.test(title)) return title;
+  const [hh, mm] = title.slice(11, 16).split(':');
+  const h = Number(hh);
+  return `${String(h % 12 || 12)}:${mm ?? ''} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
+/** A row's text: its summary, or `Untitled recording` when that is blank. */
+export function rowSummary(summary: string): string {
+  return summary.trim() === '' ? 'Untitled recording' : summary;
+}
+
+/** `entries` grouped by day label, in list order, the groups in order of first appearance. */
+export function groupByDay(entries: LibraryEntry[], now: Date): { label: string; entries: LibraryEntry[] }[] {
+  const groups: { label: string; entries: LibraryEntry[] }[] = [];
+  for (const entry of entries) {
+    const label = dayLabel(entry.title, now);
+    const group = groups.find((g) => g.label === label);
+    if (group === undefined) groups.push({ label, entries: [entry] });
+    else group.entries.push(entry);
+  }
+  return groups;
 }

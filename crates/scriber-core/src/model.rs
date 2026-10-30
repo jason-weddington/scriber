@@ -159,4 +159,7 @@ pub struct Settings {
     /// The Ollama model for the cleanup pass, or `""` for the engine's
     /// default. Over the bridge the engine always answers a model name.
     pub cleanup_model: String,
+    /// The library drawer's width in pixels, 110 to 440 (default 220). Read
+    /// leniently from disk; see [`crate::settings`].
+    pub library_width: u64,
 }

@@ -126,6 +126,19 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
+    test('the library grouped by day at the narrowest width', async ({ page }) => {
+      await page.clock.setFixedTime(Date.UTC(2026, 9, 27, 12));
+      await open(page, { library: '3', libraryWidth: '110' });
+      await page.locator('#library li').nth(1).getByRole('button').click();
+      await expectNoViolations(page);
+    });
+
+    test('the drawer handle focused', async ({ page }) => {
+      await open(page, { library: '3' });
+      await page.locator('.library-handle').focus();
+      await expectNoViolations(page);
+    });
+
     test('a library entry selected', async ({ page }) => {
       await open(page, { library: '3' });
       await page.locator('#library li').nth(1).getByRole('button').click();

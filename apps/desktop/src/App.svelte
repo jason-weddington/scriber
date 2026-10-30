@@ -35,6 +35,7 @@
     percent,
     pushLevel,
     shortcut,
+    LIBRARY_WIDTH_DEFAULT,
     SHORTCUTS,
     statusText,
   } from './lib/format';
@@ -70,7 +71,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '' });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT });
   let settingsOpen = $state(false);
   let settingsButton = $state<HTMLButtonElement>();
   let settingsFromPointer = false;
@@ -83,7 +84,7 @@
   let ollamaReason = $state('');
   // Which listing is the latest, so a slow earlier answer cannot overwrite it.
   let modelListing = 0;
-  // A failure to save the drawer's open state, shown in the band.
+  // A failure to save the drawer's open state or width, shown in the band.
   let toggleError = $state<string | null>(null);
   let fullscreen = $state(false);
   let entries = $state<LibraryEntry[]>([]);
@@ -131,6 +132,22 @@
 
   function toggleLibrary(): void {
     settings = { ...settings, libraryOpen: !settings.libraryOpen };
+    settingsSet(settings).then(
+      () => {
+        toggleError = null;
+      },
+      (e: unknown) => {
+        toggleError = errorText(e);
+      },
+    );
+  }
+
+  /** The drawer's width while it is dragged or keyed: shown at once, saved by saveLibraryWidth. */
+  function resizeLibrary(width: number): void {
+    settings = { ...settings, libraryWidth: width };
+  }
+
+  function saveLibraryWidth(): void {
     settingsSet(settings).then(
       () => {
         toggleError = null;
@@ -516,7 +533,10 @@
     open={settings.libraryOpen}
     selected={entry?.id ?? null}
     error={libraryError}
+    width={settings.libraryWidth}
     onselect={pick}
+    onresize={resizeLibrary}
+    onresizeend={saveLibraryWidth}
   />
 
   <header class="band" class:fullscreen data-tauri-drag-region>

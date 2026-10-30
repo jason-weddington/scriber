@@ -60,4 +60,6 @@ export interface Settings {
   summaryModel: string;
   /** The Ollama model for post-processing. */
   cleanupModel: string;
+  /** The library drawer's width in px, a whole number from 110 to 440 (a fraction is refused by the bridge). */
+  libraryWidth: number;
 }

@@ -116,6 +116,7 @@ mod tests {
                 cleanup: true,
                 summary_model: "gemma3:4b".to_string(),
                 cleanup_model: "qwen3.8:27b-mlx".to_string(),
+                library_width: 300,
             },
         );
     }
@@ -172,6 +173,22 @@ mod tests {
             serde_json::from_value::<Settings>(no_cleanup_model).is_err(),
             "settings: missing cleanupModel"
         );
+        let (_, no_library_width) = altered("settings", "libraryWidth");
+        assert!(
+            serde_json::from_value::<Settings>(no_library_width).is_err(),
+            "settings: missing libraryWidth"
+        );
+        for bad in [json!(300.5), json!(-1)] {
+            let mut settings = fixture("settings");
+            let _: Option<Value> = settings
+                .as_object_mut()
+                .unwrap()
+                .insert("libraryWidth".to_string(), bad.clone());
+            assert!(
+                serde_json::from_value::<Settings>(settings).is_err(),
+                "settings: libraryWidth {bad}"
+            );
+        }
     }
 
     #[test]

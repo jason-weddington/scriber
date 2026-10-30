@@ -23,6 +23,7 @@
 //   ?library=<n>          the recording library starts with n entries (see preloaded)
 //   ?summaries=off        summaries start off in the settings
 //   ?libraryOpen=0        the library drawer starts closed in the settings
+//   ?libraryWidth=<n>   the drawer starts at that width in the settings
 //   ?ollama=down          the summarizer fails, so each entry keeps its excerpt, and ollama_models
 //                         rejects with "Local AI needs Ollama: connection refused."
 //   ?summaryModel=<name>  the summary model starts as that name in the settings (else '', the default)
@@ -49,6 +50,7 @@
 // window.__mockBridge.modelListings. Segment durations and the level and download timers run on
 // Date.now() and setTimeout, so Playwright's clock controls them.
 
+import { clampLibraryWidth, LIBRARY_WIDTH_DEFAULT } from './format';
 import type { Action, Download, LibraryEntry, Phase, Settings, Snapshot } from './types';
 
 /** The version the mock reports, so a mock can never pass for the real app. */
@@ -222,6 +224,11 @@ export function join(texts: (string | null)[]): string {
   return texts.filter((t): t is string => t !== null).join('\n\n');
 }
 
+/** The width the core's `load` reads from `settings.json`: a non-negative integer clamped, else the default. */
+export function storedWidth(n: number): number {
+  return Number.isInteger(n) && n >= 0 ? clampLibraryWidth(n) : LIBRARY_WIDTH_DEFAULT;
+}
+
 /** The engine's write rule for a model: '' keeps the saved one, the default is saved as ''. */
 function stored(sent: string, saved: string): string {
   if (sent === '') return saved;
@@ -323,6 +330,7 @@ export class Mock {
       cleanup: params.get('cleanup') === 'on',
       summaryModel: params.get('summaryModel') ?? '',
       cleanupModel: params.get('cleanupModel') ?? '',
+      libraryWidth: Number(params.get('libraryWidth') ?? LIBRARY_WIDTH_DEFAULT),
     };
     const pick = params.get('pick') ?? MOCK_PICK;
     this.pick = pick === 'cancel' ? null : pick;
@@ -443,6 +451,7 @@ export class Mock {
       vocabulary: this.settings.vocabulary || MOCK_VOCABULARY,
       summaryModel: this.settings.summaryModel || MOCK_DEFAULT_MODEL,
       cleanupModel: this.settings.cleanupModel || MOCK_DEFAULT_MODEL,
+      libraryWidth: storedWidth(this.settings.libraryWidth),
     };
   }
 

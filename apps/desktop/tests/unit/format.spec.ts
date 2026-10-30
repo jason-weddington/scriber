@@ -7,6 +7,11 @@ import {
   GAP_PX,
   MAX_BARS,
   bars,
+  clampLibraryWidth,
+  dayLabel,
+  groupByDay,
+  rowSummary,
+  timeLabel,
   downloadText,
   controlsFor,
   formatBytes,
@@ -231,4 +236,68 @@ test('the download shows whole percent and bytes, and why Record waits', () => {
   expect(downloadText({ receivedBytes: 680_000_000, totalBytes: 1_624_555_275 })).toBe(
     'Downloading the speech model, needed once: 41% (680 MB of 1.6 GB). Record works when it is done.',
   );
+});
+
+// ---- the library drawer -------------------------------------------------------------
+
+test('clampLibraryWidth rounds to whole px within 110 to 440', () => {
+  for (const [px, want] of [[109.4, 110], [110, 110], [220.5, 221], [440, 440], [441, 440]] as const) {
+    expect(clampLibraryWidth(px), String(px)).toBe(want);
+  }
+});
+
+test('dayLabel names the day from the title and the local date', () => {
+  const now = new Date(2026, 9, 30, 12, 0);
+  const cases: [string, string][] = [
+    ['2026-10-30 12:00:00', 'Today'],
+    ['2026-10-30 00:00:00', 'Today'],
+    ['2026-10-30 23:59:59', 'Today'],
+    ['2026-10-29 18:00:00', 'Yesterday'],
+    ['2026-10-28 18:00:00', 'Oct 28'],
+    ['2025-12-31 09:00:00', 'Dec 31, 2025'],
+    ['2026-10-31 09:00:00', 'Oct 31'],
+    ['2026-13-45 00:00:00', 'Feb 14, 2027'],
+    ['not a title', 'Earlier'],
+    ['2026-10-30 12:00', 'Earlier'],
+    ['', 'Earlier'],
+  ];
+  for (const [title, want] of cases) expect(dayLabel(title, now), title).toBe(want);
+  expect(dayLabel('2026-10-31 08:00:00', new Date(2026, 10, 1, 9, 0)), 'across a month').toBe('Yesterday');
+  expect(dayLabel('2026-12-31 08:00:00', new Date(2027, 0, 1, 9, 0)), 'across a year').toBe('Yesterday');
+});
+
+test('timeLabel is a 12-hour clock with an ASCII space', () => {
+  const cases: [string, string][] = [
+    ['2026-10-26 09:44:12', '9:44 AM'],
+    ['2026-10-26 00:05:00', '12:05 AM'],
+    ['2026-10-26 11:59:59', '11:59 AM'],
+    ['2026-10-26 12:00:00', '12:00 PM'],
+    ['2026-10-26 13:07:00', '1:07 PM'],
+    ['2026-10-26 23:59:00', '11:59 PM'],
+    ['2026-10-26 25:00:00', '1:00 PM'],
+    ['whenever', 'whenever'],
+  ];
+  for (const [title, want] of cases) expect(timeLabel(title), title).toBe(want);
+});
+
+test('rowSummary falls back for a blank summary', () => {
+  expect(rowSummary('')).toBe('Untitled recording');
+  expect(rowSummary('   ')).toBe('Untitled recording');
+  expect(rowSummary('A note.')).toBe('A note.');
+});
+
+test('groupByDay groups by label in order of first appearance', () => {
+  const now = new Date(2026, 9, 30, 12, 0);
+  const e = (id: string, title: string) => ({ id, title, summary: id });
+  expect(groupByDay([], now)).toEqual([]);
+  const a = e('a', '2026-10-30 10:00:00');
+  const b = e('b', '2026-10-29 10:00:00');
+  const c = e('c', '2026-10-30 09:00:00');
+  const d = e('d', 'odd');
+  const f = e('f', 'also odd');
+  expect(groupByDay([a, b, c, d, f], now)).toEqual([
+    { label: 'Today', entries: [a, c] },
+    { label: 'Yesterday', entries: [b] },
+    { label: 'Earlier', entries: [d, f] },
+  ]);
 });

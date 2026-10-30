@@ -344,10 +344,13 @@ button.icon {
   font-size: 12px;
 }
 
-/* The library drawer: a fixed-width column whose list scrolls inside it. */
+/* The library drawer: a column whose width the user sets (the nav's inline
+   width; 110 to 440 px) and whose day-grouped list scrolls inside it. It never
+   takes the recorder's last 240 px. */
 .library {
   grid-area: library;
-  width: 220px;
+  position: relative;
+  max-width: calc(100vw - 240px);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -368,13 +371,28 @@ button.icon {
   color: var(--muted);
 }
 
-.library ul {
+.library-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  margin: 0;
   padding: 6px;
+}
+
+.library ul {
+  margin: 0;
+  padding: 0;
   list-style: none;
+}
+
+.day {
+  margin: 8px 10px 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.library-scroll > .day:first-child {
+  margin-top: 2px;
 }
 
 .library li {
@@ -398,17 +416,43 @@ button.icon {
   background: var(--line);
 }
 
-.entry-title {
-  font-weight: 600;
+.entry-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.entry-time {
+  color: var(--muted);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
-.entry-summary {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--muted);
-  font-size: 12px;
+.library-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  z-index: 1;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.library-handle:hover,
+.library-handle:focus-visible {
+  background: var(--accent);
+}
+
+.library-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* An entry shown in the main pane. */

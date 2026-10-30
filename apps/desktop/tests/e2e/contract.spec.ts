@@ -85,9 +85,9 @@ const CALLS: Call[] = [
   { fn: 'settingsGet', args: [], command: 'settings_get', sent: {} },
   {
     fn: 'settingsSet',
-    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx' }],
+    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300 }],
     command: 'settings_set',
-    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx' } },
+    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300 } },
   },
   { fn: 'vocabularyOpen', args: [], command: 'vocabulary_open', sent: {} },
   { fn: 'ollamaModels', args: [], command: 'ollama_models', sent: {} },

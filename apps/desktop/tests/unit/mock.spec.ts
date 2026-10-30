@@ -28,6 +28,7 @@ import {
   NOT_IN_LIBRARY,
   NOTHING_HEARD,
   partFailed,
+  storedWidth,
   preloaded,
   refusal,
   syntheticLevel,
@@ -412,16 +413,17 @@ test('summaries off, or Ollama down, keep the excerpt; nothing is archived from 
 
 test('settings round-trip, and the library calls fail on request', async () => {
   const mock = new Mock('?libraryOpen=0&summaries=off');
-  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL });
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '' })).toEqual({
+  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220 });
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220 })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: '/x/terms.txt',
     cleanup: true,
     summaryModel: 'gemma3:4b',
     cleanupModel: MOCK_DEFAULT_MODEL,
+    libraryWidth: 220,
   });
-  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL });
+  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220 });
   await expect(mock.libraryGet('../segments')).rejects.toThrow(NOT_IN_LIBRARY);
   for (const call of ['library_list', 'library_get', 'library_copy', 'settings_get', 'settings_set'] as const) {
     const failing = new Mock(`?fail=${call}&library=1`);
@@ -430,7 +432,7 @@ test('settings round-trip, and the library calls fail on request', async () => {
       library_get: () => failing.libraryGet('20261026-090000'),
       library_copy: () => failing.libraryCopy('20261026-090000'),
       settings_get: () => failing.settingsGet(),
-      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '' }),
+      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 }),
     }[call];
     await expect(attempt(), call).rejects.toThrow(`Mock failure: ${call}`);
   }
@@ -445,18 +447,19 @@ test('settings round-trip, and the library calls fail on request', async () => {
 test('the vocabulary file is kept like the engine keeps it', async () => {
   const mock = new Mock('');
   expect((await mock.settingsGet()).vocabulary, 'the default, as a path').toBe(MOCK_VOCABULARY);
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '' });
-  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '' })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '' })).toEqual({
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 });
+  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: MOCK_VOCABULARY,
     cleanup: false,
     summaryModel: MOCK_DEFAULT_MODEL,
     cleanupModel: MOCK_DEFAULT_MODEL,
+    libraryWidth: 220,
   });
   // Stored as '': a later '' keeps the default rather than an old path.
-  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '' })).vocabulary).toBe(MOCK_VOCABULARY);
+  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 })).vocabulary).toBe(MOCK_VOCABULARY);
   expect(mock.handle.saved.map((s) => s.vocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', MOCK_VOCABULARY, '']);
 });
 
@@ -497,7 +500,7 @@ test('the open panel picks ?pick=, a default, or nothing, and fails on request',
 test('opening the vocabulary file records the resolved path, or fails like the engine', async () => {
   const mock = new Mock('');
   await mock.vocabularyOpen();
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '' });
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 });
   await mock.vocabularyOpen();
   expect(mock.handle.opened).toEqual([MOCK_VOCABULARY, '/x/terms.txt']);
   const failing = new Mock('?fail=vocabulary_open');
@@ -511,13 +514,13 @@ test('the models are kept like the engine keeps them', async () => {
   expect([got.summaryModel, got.cleanupModel], 'the defaults, by name').toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   expect((await new Mock('?summaryModel=llama3:70b').settingsGet()).summaryModel).toBe('llama3:70b');
   expect((await new Mock('?cleanupModel=llama3:70b').settingsGet()).cleanupModel).toBe('llama3:70b');
-  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false };
+  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220 };
   await mock.settingsSet({ ...base, summaryModel: 'gemma3:4b', cleanupModel: 'llama3:8b' });
   const kept = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '' });
   expect([kept.summaryModel, kept.cleanupModel], "'' keeps them").toEqual(['gemma3:4b', 'llama3:8b']);
   await mock.settingsSet({ ...base, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL });
   // Stored as '': a later '' keeps the default rather than an old model.
-  const after = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '' });
+  const after = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '', libraryWidth: 220 });
   expect([after.summaryModel, after.cleanupModel]).toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   const read = await mock.settingsGet();
   expect([read.summaryModel, read.cleanupModel]).toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
@@ -578,4 +581,16 @@ test('full screen: starts as the URL says, fails and holds like any call, and te
   held.handle.release('window_fullscreen');
   await read;
   expect(got).toBe(false);
+});
+
+test('the drawer width is read like the core reads it', async () => {
+  for (const [n, want] of [[300, 300], [109, 110], [110, 110], [440, 440], [441, 440], [-1, 220], [1.5, 220]] as const) {
+    expect(storedWidth(n), String(n)).toBe(want);
+  }
+  expect((await new Mock('').settingsGet()).libraryWidth).toBe(220);
+  expect((await new Mock('?libraryWidth=300').settingsGet()).libraryWidth).toBe(300);
+  const mock = new Mock('');
+  const current = await mock.settingsGet();
+  expect((await mock.settingsSet({ ...current, libraryWidth: 5000 })).libraryWidth, 'clamped on read').toBe(440);
+  expect(mock.handle.saved.map((s) => s.libraryWidth), 'saved as sent').toEqual([5000]);
 });

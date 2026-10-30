@@ -5,15 +5,16 @@ import { expect, test } from './fixtures';
 import { button, copied, expectEveryItemReachable, hold, nextFrame, open, press, release, status } from './helpers';
 
 // The recording library: the drawer on the left lists every finished
-// dictation newest first, titled by its start in local time, with an
-// excerpt that the local model's summary replaces when it lands. The
+// dictation newest first, grouped by day, each row its summary on up to two
+// lines with its start time (local) beneath. An excerpt stands in until the
+// local model's summary replaces it. The
 // mock archives like the core (src/lib/mock.ts) and summarizes every entry
 // as "A dictated note." unless summaries are off or Ollama is down.
 
 // The page's clock is fixed at 14:03:09 in the page's own time zone.
 test.use({ timezoneId: 'UTC' });
 const NOW = Date.UTC(2026, 9, 26, 14, 3, 9);
-const TITLE = '2026-10-26 14:03:09';
+const TIME = '2:03 PM';
 const EXCERPT = 'This is part 1 of the...';
 const SUMMARY = 'A dictated note.';
 
@@ -49,7 +50,7 @@ test('a finished session appears at the top with its excerpt, then its summary',
   await hold(page, 'summarize');
   await dictate(page);
   await expect(rows(page)).toHaveCount(1);
-  await expect(rows(page).first().locator('.entry-title')).toHaveText(TITLE);
+  await expect(rows(page).first().locator('.entry-time')).toHaveText(TIME);
   await expect(rows(page).first().locator('.entry-summary')).toHaveText(EXCERPT);
   await expect(drawer(page)).not.toContainText('No recordings yet.');
   await expect(page.getByText(/ollama|summar/i).filter({ visible: true })).toHaveCount(0);
@@ -57,14 +58,6 @@ test('a finished session appears at the top with its excerpt, then its summary',
   await expect(rows(page).first().locator('.entry-summary')).toHaveText(SUMMARY);
   // No status about Ollama or the summary's progress, anywhere.
   await expect(page.getByText(/ollama|summar/i).filter({ visible: true })).toHaveCount(0);
-});
-
-test('the summary line is one line, cut with an ellipsis', async ({ page }) => {
-  await open(page, { long: '1', summaries: 'off' });
-  await dictate(page);
-  const summary = rows(page).first().locator('.entry-summary');
-  await expect(summary).toHaveCSS('text-overflow', 'ellipsis');
-  await expect(summary).toHaveCSS('white-space', 'nowrap');
 });
 
 for (const params of [{ summaries: 'off' }, { ollama: 'down' }]) {
@@ -88,7 +81,7 @@ test('turning summaries off in the settings keeps the next excerpt', async ({ pa
   await expect(button(page, 'Settings')).not.toHaveAttribute('aria-controls', /.*/);
   await expect(summarySwitch(page)).toBeChecked();
   await summarySwitch(page).uncheck();
-  await expect.poll(() => saved(page)).toEqual([{ summaries: false, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx' }]);
+  await expect.poll(() => saved(page)).toEqual([{ summaries: false, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220 }]);
   await page.keyboard.press('Escape');
   await expect(summarySwitch(page)).toBeHidden();
   await dictate(page);
@@ -106,13 +99,13 @@ test('a leftover session finished by Retry is titled by the time it finished', a
   await open(page, { leftover: '2' });
   await press(page, 'Retry');
   await expect(rows(page)).toHaveCount(1);
-  await expect(rows(page).first().locator('.entry-title')).toHaveText(TITLE);
+  await expect(rows(page).first().locator('.entry-time')).toHaveText(TIME);
 });
 
 test('selecting an entry shows its transcript read-only, Copy copies it, New goes back', async ({ page }) => {
   await open(page, { library: '3' });
   await expect(rows(page)).toHaveCount(3);
-  await expect(rows(page).locator('.entry-title')).toHaveText(['2026-10-26 09:00:00', '2026-10-26 08:59:00', '2026-10-26 08:58:00']);
+  await expect(rows(page).locator('.entry-time')).toHaveText(['9:00 AM', '8:59 AM', '8:58 AM']);
   await rows(page).nth(1).getByRole('button').click();
   await expect(rows(page).nth(1).getByRole('button')).toHaveAttribute('aria-current', 'true');
   await expect(page.getByRole('heading', { level: 2 })).toHaveText('2026-10-26 08:59:00');
@@ -157,8 +150,8 @@ test('the Library button hides and shows the drawer and saves the choice', async
   await expect
     .poll(() => saved(page))
     .toEqual([
-      { summaries: true, libraryOpen: false, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx' },
-      { summaries: true, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx' },
+      { summaries: true, libraryOpen: false, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220 },
+      { summaries: true, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220 },
     ]);
 });
 
@@ -171,6 +164,15 @@ test('the drawer starts closed when the settings say so', async ({ page }) => {
 test('a long library scrolls inside the drawer at the minimum window size', async ({ page }) => {
   await page.setViewportSize({ width: 520, height: 380 });
   await open(page, { library: '30' });
+  await expect(rows(page)).toHaveCount(30);
+  await expectEveryItemReachable(rows(page));
+  const fits = await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
+  expect(fits, 'the window itself never scrolls').toBe(true);
+});
+
+test('a long library scrolls inside the narrowest drawer too', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 380 });
+  await open(page, { library: '30', libraryWidth: '110' });
   await expect(rows(page)).toHaveCount(30);
   await expectEveryItemReachable(rows(page));
   const fits = await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
@@ -219,5 +221,5 @@ test('settings that cannot be read leave the defaults, silently', async ({ page 
   await page.keyboard.press('Escape');
   await nextFrame(page);
   await button(page, 'Library').click();
-  await expect.poll(() => saved(page)).toEqual([{ summaries: true, libraryOpen: false, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '' }]);
+  await expect.poll(() => saved(page)).toEqual([{ summaries: true, libraryOpen: false, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 }]);
 });

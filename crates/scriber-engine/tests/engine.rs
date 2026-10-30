@@ -939,6 +939,7 @@ mod tests {
             cleanup: false,
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            library_width: 220,
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -949,7 +950,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":""}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -959,6 +960,19 @@ mod tests {
             "refused after shutdown"
         );
         assert_eq!(engine.settings(), off, "still readable after shutdown");
+    }
+
+    #[test]
+    fn the_library_width_passes_through_and_is_clamped() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let wide = |library_width| Settings {
+            library_width,
+            ..engine.settings()
+        };
+        assert_eq!(engine.set_settings(wide(300)).unwrap().library_width, 300);
+        assert_eq!(engine.settings().library_width, 300, "read back");
+        assert_eq!(engine.set_settings(wide(5000)).unwrap().library_width, 440);
     }
 
     #[test]
@@ -974,6 +988,7 @@ mod tests {
             cleanup: false,
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            library_width: 220,
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1002,6 +1017,7 @@ mod tests {
             cleanup: false,
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            library_width: 220,
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1020,6 +1036,7 @@ mod tests {
             cleanup: false,
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
+            library_width: 220,
         };
         let kept = Settings {
             summaries: false,
@@ -1042,6 +1059,7 @@ mod tests {
                 cleanup: false,
                 summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
+                library_width: 220,
             })
             .unwrap();
         let back = engine
@@ -1052,6 +1070,7 @@ mod tests {
                 cleanup: false,
                 summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
+                library_width: 220,
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1082,6 +1101,7 @@ mod tests {
                 cleanup: false,
                 summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
+                library_width: 220,
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1149,6 +1169,7 @@ mod tests {
                 cleanup: false,
                 summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
+                library_width: 220,
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1198,6 +1219,7 @@ mod tests {
             cleanup: false,
             summary_model: summary_model.to_string(),
             cleanup_model: cleanup_model.to_string(),
+            library_width: 220,
         }
     }
 
@@ -1408,6 +1430,7 @@ mod tests {
         Settings {
             cleanup: on,
             cleanup_model: model.to_string(),
+            library_width: 220,
             ..engine.settings()
         }
     }
