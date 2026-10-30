@@ -125,10 +125,13 @@ test.describe('bridge.ts against the Rust command signatures', () => {
       const callbacks: ((e: unknown) => void)[] = [];
       // What the stubbed open panel answers: a file, then a cancel.
       let picked: string | null = '/picked/terms.txt';
+      let fullscreen: boolean | 'reject' | Promise<boolean> = true;
       const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
       w.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
         invoke: (command: string, args?: Record<string, unknown>) => {
           log.push({ command, args });
+          if (command === 'plugin:window|is_fullscreen') return fullscreen === 'reject' ? Promise.reject(new Error('gone')) : Promise.resolve(fullscreen);
           if (command === 'plugin:dialog|open') return Promise.resolve(picked);
           return Promise.resolve(command === 'plugin:app|version' ? '9.9.9' : null);
         },
@@ -150,6 +153,30 @@ test.describe('bridge.ts against the Rust command signatures', () => {
         callbacks[0]?.({ event: 'dictation-changed', id: 1, payload: snapshot });
         callbacks[1]?.({ event: 'dictation-level', id: 2, payload: 0.5 });
         log.push({ command: 'received', args: { received } });
+        const read = await bridge.windowFullscreen?.();
+        const resized: unknown[] = [];
+        await bridge.onFullscreenChanged?.((on: unknown) => resized.push(on));
+        const tick = () => new Promise((r) => setTimeout(r));
+        const resize = { event: 'tauri://resize', id: 3, payload: { width: 800, height: 600 } };
+        callbacks[2]?.(resize);
+        await tick();
+        fullscreen = false;
+        callbacks[2]?.(resize);
+        await tick();
+        fullscreen = 'reject';
+        callbacks[2]?.(resize);
+        await tick();
+        let answerFirst: (on: boolean) => void = () => undefined;
+        fullscreen = new Promise<boolean>((r) => {
+          answerFirst = r;
+        });
+        callbacks[2]?.(resize);
+        fullscreen = true;
+        callbacks[2]?.(resize);
+        await tick();
+        answerFirst(false);
+        await tick();
+        log.push({ command: 'fullscreen', args: { read, resized } });
         const version = await bridge.appVersion?.();
         log.push({ command: 'version', args: { version } });
       } finally {
@@ -158,7 +185,7 @@ test.describe('bridge.ts against the Rust command signatures', () => {
       return log;
     }, [CALLS, SNAPSHOT] as const);
 
-    const commandCalls = sent.filter((c) => !c.command.startsWith('plugin:') && !['version', 'received', 'picked'].includes(c.command));
+    const commandCalls = sent.filter((c) => !c.command.startsWith('plugin:') && !['version', 'received', 'picked', 'fullscreen'].includes(c.command));
     expect(commandCalls.map((c) => c.command)).toEqual(CALLS.map((c) => c.command));
 
     for (const [i, call] of CALLS.entries()) {
@@ -176,7 +203,13 @@ test.describe('bridge.ts against the Rust command signatures', () => {
     const listened = sent
       .filter((c) => c.command === 'plugin:event|listen')
       .map((c) => (c.args as { event: string }).event);
-    expect(listened).toEqual([constant(src, 'DICTATION_EVENT'), constant(src, 'LEVEL_EVENT')]);
+    expect(listened).toEqual([constant(src, 'DICTATION_EVENT'), constant(src, 'LEVEL_EVENT'), 'tauri://resize']);
+
+    // Full screen is read through Tauri's window API, re-read on each resize; the latest answer wins and a failed read delivers nothing.
+    expect(sent.find((c) => c.command === 'fullscreen')?.args).toEqual({ read: true, resized: [true, false, true] });
+    const reads = sent.filter((c) => c.command === 'plugin:window|is_fullscreen');
+    expect(reads).toHaveLength(6);
+    for (const r of reads) expect(r.args).toEqual({ label: 'main' });
 
     expect(sent.find((c) => c.command === 'received')?.args).toEqual({ received: [SNAPSHOT, 0.5] });
 

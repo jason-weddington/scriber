@@ -24,6 +24,12 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
+    test('the window in full screen', async ({ page }) => {
+      await open(page, { fullscreen: '1' });
+      await expect(page.locator('.band')).toHaveClass(/\bfullscreen\b/);
+      await expectNoViolations(page);
+    });
+
     test('ready', async ({ page }) => {
       await open(page);
       await press(page, 'New');

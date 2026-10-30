@@ -10,7 +10,8 @@
   --accent-text: #ffffff;
   --error: #a3261b;
   --band-height: 52px;
-  --traffic-lights: 84px;
+  --traffic-lights: 96px;
+  --band-inset: 16px;
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
   font-size: 14px;
 }
@@ -60,8 +61,7 @@ body {
   height: 100%;
 }
 
-/* The top band holds the pane's controls and drags the window; it starts
-   after the traffic lights (titleBarStyle Overlay in tauri.conf.json). */
+/* The top band holds the pane's controls and drags the window; windowed it starts after the traffic lights (titleBarStyle Overlay in tauri.conf.json), and in full screen, where the lights leave the window, at --band-inset. */
 .band {
   grid-area: band;
   position: relative;
@@ -69,16 +69,23 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 16px 0 var(--traffic-lights);
+  padding: 0 var(--band-inset) 0 var(--traffic-lights);
   border-bottom: 1px solid var(--line);
   user-select: none;
 }
 
-h1 {
+.band.fullscreen {
+  padding-left: var(--band-inset);
+}
+
+.band-spacer {
   flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+}
+
+h1 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
 }
 
 button {

@@ -17,11 +17,13 @@
     libraryList,
     onDictationChanged,
     ollamaModels,
+    onFullscreenChanged,
     onLevel,
     pickVocabularyFile,
     settingsGet,
     settingsSet,
     vocabularyOpen,
+    windowFullscreen,
   } from './lib/bridge';
   import {
     allowed,
@@ -80,6 +82,7 @@
   let modelListing = 0;
   // A failure to save the drawer's open state, shown in the band.
   let toggleError = $state<string | null>(null);
+  let fullscreen = $state(false);
   let entries = $state<LibraryEntry[]>([]);
   let libraryError = $state<string | null>(null);
   // The highest libraryRevision the list has been fetched for.
@@ -301,6 +304,16 @@
   onMount(() => {
     void onDictationChanged(accept);
     void onLevel(hear);
+    void onFullscreenChanged((on) => {
+      fullscreen = on;
+    });
+    // An unreadable state leaves the windowed inset, silently.
+    windowFullscreen().then(
+      (on) => {
+        fullscreen = on;
+      },
+      () => undefined,
+    );
     void list(0);
     // Unreadable settings leave the defaults, silently.
     settingsGet().then(
@@ -513,7 +526,7 @@
     onselect={pick}
   />
 
-  <header class="band" data-tauri-drag-region>
+  <header class="band" class:fullscreen data-tauri-drag-region>
     <button
       type="button"
       class="icon"
@@ -527,7 +540,8 @@
         <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" />
       </svg>
     </button>
-    <h1 data-tauri-drag-region>Dictation</h1>
+    <h1 class="visually-hidden">Dictation</h1>
+    <div class="band-spacer" data-tauri-drag-region></div>
     {#if toggleError !== null}
       <p class="error" role="alert">{toggleError}</p>
     {/if}
@@ -551,11 +565,7 @@
       }}
     >
       <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
-        <circle cx="8" cy="8" r="2.5" fill="none" stroke="currentColor" />
-        <path
-          d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"
-          stroke="currentColor"
-        />
+        <path fill="currentColor" fill-rule="evenodd" d="M6.11 3.00 6.81 0.85 9.19 0.85 9.89 3.00 10.20 3.12 12.22 2.10 13.90 3.78 12.88 5.80 13.00 6.11 15.15 6.81 15.15 9.19 13.00 9.89 12.88 10.20 13.90 12.22 12.22 13.90 10.20 12.88 9.89 13.00 9.19 15.15 6.81 15.15 6.11 13.00 5.80 12.88 3.78 13.90 2.10 12.22 3.12 10.20 3.00 9.89 0.85 9.19 0.85 6.81 3.00 6.11 3.12 5.80 2.10 3.78 3.78 2.10 5.80 3.12ZM8 5.65a2.35 2.35 0 1 0 0 4.7a2.35 2.35 0 1 0 0 -4.7Z" />
       </svg>
     </button>
     <SettingsPanel

@@ -12,6 +12,7 @@
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { Mock } from './mock';
@@ -123,6 +124,33 @@ export async function onDictationChanged(cb: (snapshot: Snapshot) => void): Prom
   if (!underTauri()) return mock().onChange(cb);
   return listen<Snapshot>(DICTATION_EVENT, (e) => {
     cb(e.payload);
+  });
+}
+
+/** Whether the window is in full screen (the traffic lights are then outside it). */
+export async function windowFullscreen(): Promise<boolean> {
+  if (!underTauri()) return mock().fullscreen();
+  return getCurrentWindow().isFullscreen();
+}
+
+/**
+ * Subscribes to full-screen changes. Tauri 2 has no such event, so each resize re-reads the
+ * state; only the latest read's answer is kept (the read is async), and a failed read keeps
+ * the last known state. Resolves to the unsubscribe function.
+ */
+export async function onFullscreenChanged(cb: (on: boolean) => void): Promise<() => void> {
+  if (!underTauri()) return mock().onFullscreen(cb);
+  const win = getCurrentWindow();
+  let reads = 0;
+  return win.onResized(() => {
+    reads += 1;
+    const mine = reads;
+    win.isFullscreen().then(
+      (on) => {
+        if (mine === reads) cb(on);
+      },
+      () => undefined,
+    );
   });
 }
 

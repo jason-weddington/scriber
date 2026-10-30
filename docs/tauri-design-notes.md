@@ -10,6 +10,8 @@ Lessons from shipping Tauri 2 desktop apps on macOS, written as defaults to foll
 
 **No app name in the window.** The menu bar already shows it.
 
+**Full screen moves the band's inset.** In macOS full screen the traffic lights leave the window, so the band's left inset collapses; Tauri has no full-screen event, so re-read `isFullscreen()` on every resize and keep only the latest answer.
+
 **Skip the translucent sidebar unless it earns its keep.** Vibrancy needs a transparent window and `macOSPrivateApi`, which the App Store rejects. The space saving comes from dropping the strip, not from the glass.
 
 ## Layout that survives real data

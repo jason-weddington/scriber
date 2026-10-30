@@ -13,9 +13,10 @@
 //   ?leftover=<n>         launch finds n segments of an unfinished session
 //   ?long=1               each segment is heard as a long paragraph
 //   ?fail=<call>          that call rejects: "dictation_state", "app_version", an action,
-//                         "library_list", "library_get", "library_copy", "settings_get", "settings_set"
-//                         or "pick_vocabulary_file" (with "Mock failure: <call>"); ?fail=vocabulary_open
+//                         "library_list", "library_get", "library_copy", "settings_get", "settings_set",
+//                         "window_fullscreen" or "pick_vocabulary_file" (with "Mock failure: <call>"); ?fail=vocabulary_open
 //                         rejects with the engine's "Could not open the vocabulary file: no text editor."
+//   ?fullscreen=1         the window starts in full screen
 //   ?pick=<path>          the open panel picks that file (default /mock/Documents/terms.txt);
 //                         ?pick=cancel cancels it
 //   ?hold=<call>          that call is held from launch (see hold below)
@@ -28,7 +29,8 @@
 //   ?cleanupModel=<name>  the post-processing model starts as that name in the settings (else '')
 //   ?cleanup=on           post-processing with the local model starts on in the settings
 // A test can hold a call so the UI is seen mid-call, and release it:
-//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup' | 'ollama_models') ... release(...)
+//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup' | 'ollama_models' | 'window_fullscreen') ... release(...)
+// window.__mockBridge.setFullscreen(on) changes the full-screen state and tells the listeners.
 // ('download' holds each step of the model's download; 'summarize' holds
 // each new library entry's summary; 'cleanup' holds the cleanup pass over a
 // finished transcript, with cleanup on, which keeps the session
@@ -230,7 +232,7 @@ type Slot = { state: 'pending' } | { state: 'heard'; text: string | null } | { s
 
 /** What a test reaches through `window.__mockBridge`. */
 export interface MockHandle {
-  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download', 'summarize', 'cleanup' or 'ollama_models') wait until `release(name)`. */
+  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download', 'summarize', 'cleanup', 'ollama_models' or 'window_fullscreen') wait until `release(name)`. */
   hold(name: string): void;
   release(name: string): void;
   /** Every text the mock clipboard was given, in order. */
@@ -245,6 +247,8 @@ export interface MockHandle {
   readonly browsed: string[];
   /** How many times ollama_models was called. */
   readonly modelListings: number;
+  /** Puts the window in or out of full screen and tells the listeners. */
+  setFullscreen(on: boolean): void;
 }
 
 declare global {
@@ -293,6 +297,8 @@ export class Mock {
   private received: number | null = null;
   private downloadError: string | null = null;
   private downloads = 0;
+  private fullscreenOn: boolean;
+  private readonly fullscreenListeners = new Set<(on: boolean) => void>();
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private levelCount = 0;
 
@@ -308,6 +314,7 @@ export class Mock {
     this.clipboardFails = params.get('clipboard') === 'fail';
     this.long = params.get('long') === '1';
     this.failing = params.get('fail');
+    this.fullscreenOn = params.get('fullscreen') === '1';
     this.ollamaDown = params.get('ollama') === 'down';
     this.settings = {
       summaries: params.get('summaries') !== 'off',
@@ -349,6 +356,10 @@ export class Mock {
       saved: this.saved,
       opened: this.opened,
       browsed: this.browsed,
+      setFullscreen: (on) => {
+        this.fullscreenOn = on;
+        for (const cb of this.fullscreenListeners) cb(on);
+      },
       get modelListings() {
         return listings();
       },
@@ -477,6 +488,17 @@ export class Mock {
   onChange(cb: (s: Snapshot) => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
+  }
+
+  async fullscreen(): Promise<boolean> {
+    await this.gate('window_fullscreen');
+    this.check('window_fullscreen');
+    return this.fullscreenOn;
+  }
+
+  onFullscreen(cb: (on: boolean) => void): () => void {
+    this.fullscreenListeners.add(cb);
+    return () => this.fullscreenListeners.delete(cb);
   }
 
   onLevel(cb: (level: number) => void): () => void {

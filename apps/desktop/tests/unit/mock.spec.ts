@@ -552,3 +552,30 @@ test('a held listing waits for its release', async () => {
   await listing;
   expect(got).toEqual(MOCK_MODELS);
 });
+
+test('full screen: starts as the URL says, fails and holds like any call, and tells its listeners', async () => {
+  await expect(new Mock('?fullscreen=1').fullscreen()).resolves.toBe(true);
+  await expect(new Mock('').fullscreen()).resolves.toBe(false);
+  await expect(new Mock('?fail=window_fullscreen').fullscreen()).rejects.toThrow(/^Mock failure: window_fullscreen$/);
+
+  const mock = new Mock('');
+  const heard: boolean[] = [];
+  const stop = mock.onFullscreen((on) => heard.push(on));
+  mock.handle.setFullscreen(true);
+  expect(heard).toEqual([true]);
+  await expect(mock.fullscreen()).resolves.toBe(true);
+  stop();
+  mock.handle.setFullscreen(false);
+  expect(heard).toEqual([true]);
+
+  const held = new Mock('?hold=window_fullscreen');
+  let got: boolean | null = null;
+  const read = held.fullscreen().then((on) => {
+    got = on;
+  });
+  await settled();
+  expect(got).toBeNull();
+  held.handle.release('window_fullscreen');
+  await read;
+  expect(got).toBe(false);
+});
