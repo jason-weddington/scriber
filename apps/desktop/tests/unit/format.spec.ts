@@ -8,6 +8,7 @@ import {
   MAX_BARS,
   bars,
   downloadText,
+  controlsFor,
   formatBytes,
   formatElapsed,
   type KeyPress,
@@ -63,6 +64,30 @@ test('the buttons follow the legal actions per phase', () => {
   expect(allowed('transcribing', 'discard')).toBe(false);
   for (const phase of Object.keys(LEGAL) as Phase[]) {
     for (const action of LEGAL[phase]) expect(allowed(phase, action), `${phase} ${action}`).toBe(true);
+  }
+});
+
+test('the recorder row offers exactly these controls in each phase', () => {
+  const record = { action: 'record', label: 'Record', rank: 'primary' };
+  const pause = { action: 'pause', label: 'Pause', rank: 'primary' };
+  const resume = { action: 'resume', label: 'Resume', rank: 'primary' };
+  const done = { action: 'done', label: 'Done', rank: 'secondary' };
+  const retry = { action: 'retry', label: 'Retry', rank: 'primary' };
+  const discard = { action: 'discard', label: 'Discard', rank: 'quiet' };
+  const table: Record<Phase, object[]> = {
+    idle: [],
+    ready: [record, discard],
+    recording: [pause, done, discard],
+    paused: [resume, done, discard],
+    transcribing: [],
+    finished: [discard],
+    failed: [retry, discard],
+  };
+  for (const phase of Object.keys(table) as Phase[]) {
+    expect(controlsFor(phase), phase).toEqual(table[phase]);
+    const offered = controlsFor(phase).map((c) => c.action).sort();
+    const legal = LEGAL[phase].filter((a) => a !== 'new' && a !== 'copy').sort();
+    expect(offered, phase).toEqual(legal);
   }
 });
 

@@ -13,7 +13,7 @@ test('a long transcript scrolls inside its box and the controls stay put', async
   await expect(transcript).toHaveValue(/part 3 of the dictation\.$/);
   const overflow = await transcript.evaluate((el) => el.scrollHeight - el.clientHeight);
   expect(overflow, 'the text overflows the box').toBeGreaterThan(100);
-  for (const name of ['New', 'Copy', 'Done']) {
+  for (const name of ['New', 'Copy', 'Discard']) {
     await expect(button(page, name)).toBeInViewport({ ratio: 1 });
   }
   await expect(transcript).toBeInViewport();
@@ -30,7 +30,7 @@ test('at the minimum size with the drawer open the controls stay in view and not
   await expect(page.getByRole('navigation', { name: 'Recordings' })).toBeVisible();
   await press(page, 'New', 'Record', 'Pause', 'Resume', 'Done');
   await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue(/part 2 of the dictation\.$/);
-  for (const name of ['New', 'Copy', 'Done']) {
+  for (const name of ['New', 'Copy', 'Discard']) {
     await expect(button(page, name)).toBeInViewport({ ratio: 1 });
   }
   const fits = await page.evaluate(

@@ -11,7 +11,7 @@ const BUTTONS = ['New', 'Record', 'Pause', 'Resume', 'Done', 'Discard'];
 
 async function enabled(page: import('@playwright/test').Page): Promise<string[]> {
   const names: string[] = [];
-  for (const name of BUTTONS) if (await button(page, name).isEnabled()) names.push(name);
+  for (const name of BUTTONS) if ((await button(page, name).count()) > 0 && (await button(page, name).isEnabled())) names.push(name);
   return names;
 }
 
@@ -65,6 +65,8 @@ test('segments transcribe while paused, and Done waits for the last one', async 
   await expect(status(page)).toHaveText('Paused. Transcribing 1 part while you think.');
   await press(page, 'Resume', 'Done');
   await expect(status(page)).toHaveText('Transcribing the last 2 parts…');
+  await expect(page.locator('.controls button')).toHaveCount(0);
+  await expect(page.locator('.controls')).toHaveCount(1);
   expect(await enabled(page)).toEqual([]);
   expect(await copied(page)).toEqual([]);
   await release(page, 'transcribe');
@@ -105,6 +107,8 @@ test('buttons wait while an action is in flight', async ({ page }) => {
   await hold(page, 'dictation_act');
   await button(page, 'Record').click();
   expect(await enabled(page)).toEqual([]);
+  await expect(button(page, 'Record')).toBeDisabled();
+  await expect(button(page, 'Discard')).toBeDisabled();
   await release(page, 'dictation_act');
   await expect(button(page, 'Pause')).toBeEnabled();
 });
@@ -175,4 +179,59 @@ test('the window still works when the version cannot be read', async ({ page }) 
   await press(page, 'New');
   await expect(status(page)).toHaveText('Click Record and start talking.');
   await expect(page.getByText(/^Version/)).toHaveCount(0);
+});
+
+test('buttons the phase does not offer are absent, not disabled', async ({ page }) => {
+  await open(page);
+  const absent = async (names: string[]): Promise<void> => {
+    for (const name of names) await expect(button(page, name), name).toHaveCount(0);
+  };
+  await press(page, 'New');
+  await absent(['Pause', 'Resume', 'Done']);
+  await press(page, 'Record');
+  await absent(['Record', 'Resume']);
+  await press(page, 'Pause');
+  await absent(['Record', 'Pause']);
+  await press(page, 'Done');
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toBeVisible();
+  await absent(['Record', 'Pause', 'Resume', 'Done']);
+  await open(page, { transcribe: 'fail' });
+  await press(page, 'New', 'Record', 'Done');
+  await expect(button(page, 'Retry')).toBeVisible();
+  await absent(['Record', 'Pause', 'Resume', 'Done']);
+});
+
+test('each phase lists its controls in order, with the primary first and Discard quiet', async ({ page }) => {
+  const labels = (): Promise<(string | undefined)[]> =>
+    page.locator('.controls button').evaluateAll((els) => els.map((el) => el.childNodes[0]?.textContent?.trim()));
+  await open(page);
+  await press(page, 'New');
+  expect(await labels()).toEqual(['Record', 'Discard']);
+  await expect(button(page, 'Record')).toHaveClass(/primary/);
+  await expect(button(page, 'Discard')).toHaveClass(/quiet/);
+  await press(page, 'Record');
+  expect(await labels()).toEqual(['Pause', 'Done', 'Discard']);
+  await expect(button(page, 'Pause')).toHaveClass(/primary/);
+  await expect(button(page, 'Done')).not.toHaveClass(/primary/);
+  await press(page, 'Pause');
+  expect(await labels()).toEqual(['Resume', 'Done', 'Discard']);
+  await expect(button(page, 'Resume')).toHaveClass(/primary/);
+  await press(page, 'Done');
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toBeVisible();
+  expect(await labels()).toEqual(['Discard']);
+  await open(page, { transcribe: 'fail' });
+  await press(page, 'New', 'Record', 'Done');
+  await expect(button(page, 'Retry')).toBeVisible();
+  expect(await labels()).toEqual(['Retry', 'Discard']);
+  await expect(button(page, 'Retry')).toHaveClass(/primary/);
+});
+
+test('New is the primary button only in a fresh window', async ({ page }) => {
+  await open(page, { library: '1' });
+  await expect(button(page, 'New')).toHaveClass(/primary/);
+  await page.locator('#library li').first().getByRole('button').click();
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toBeVisible();
+  await expect(button(page, 'New')).not.toHaveClass(/primary/);
+  await press(page, 'New');
+  await expect(button(page, 'New')).not.toHaveClass(/primary/);
 });

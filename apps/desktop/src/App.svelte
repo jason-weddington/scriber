@@ -29,6 +29,7 @@
     allowed,
     bars,
     barCount,
+    controlsFor,
     downloadText,
     formatElapsed,
     percent,
@@ -344,8 +345,8 @@
     };
   });
 
-  // A focused button left disabled once an action settles (Record, once
-  // recording) would keep the focus and swallow every key after it,
+  // A focused button left disabled once an action settles (New, once
+  // ready) would keep the focus and swallow every key after it,
   // shortcuts included; hand the focus back to the window instead.
   $effect(() => {
     if (!busy && snapshot !== null) {
@@ -479,30 +480,21 @@
       {/if}
 
       <div class="controls">
-        <button
-          type="button"
-          class="primary"
-          onclick={() => run('record')}
-          disabled={!can('record')}
-          aria-keyshortcuts={SHORTCUTS.record?.aria}>Record<kbd aria-hidden="true">{SHORTCUTS.record?.hint}</kbd></button
-        >
-        <button type="button" onclick={() => run('pause')} disabled={!can('pause')} aria-keyshortcuts={SHORTCUTS.pause?.aria}
-          >Pause<kbd aria-hidden="true">{SHORTCUTS.pause?.hint}</kbd></button
-        >
-        <button
-          type="button"
-          class="primary"
-          onclick={() => run('resume')}
-          disabled={!can('resume')}
-          aria-keyshortcuts={SHORTCUTS.resume?.aria}>Resume<kbd aria-hidden="true">{SHORTCUTS.resume?.hint}</kbd></button
-        >
-        <button type="button" onclick={() => run('done')} disabled={!can('done')} aria-keyshortcuts={SHORTCUTS.done?.aria}
-          >Done<kbd aria-hidden="true">{SHORTCUTS.done?.hint}</kbd></button
-        >
-        <button type="button" class="quiet" onclick={() => run('discard')} disabled={!can('discard')}>Discard</button>
-        {#if snapshot.phase === 'failed'}
-          <button type="button" class="primary" onclick={() => run('retry')} disabled={!can('retry')}>Retry</button>
-        {/if}
+        {#each controlsFor(snapshot.phase) as control (control.action)}
+          {@const keys = SHORTCUTS[control.action]}
+          <button
+            type="button"
+            class={control.rank}
+            disabled={!can(control.action)}
+            aria-keyshortcuts={keys?.aria}
+            onclick={(e) => {
+              if (e.detail <= 1) void run(control.action);
+            }}
+          >
+            {control.label}
+            {#if keys !== undefined}<kbd aria-hidden="true">{keys.hint}</kbd>{/if}
+          </button>
+        {/each}
       </div>
 
       {#if snapshot.phase === 'finished'}
@@ -551,7 +543,11 @@
         <span class="visually-hidden">Recorded&nbsp;</span>{formatElapsed(elapsed)}
       </span>
     {/if}
-    <button type="button" onclick={newPressed} disabled={entry === null && !can('new')} aria-keyshortcuts={SHORTCUTS.new?.aria}>
+    <button
+      type="button"
+      class:primary={snapshot?.phase === 'idle' && entry === null}
+      onclick={newPressed}
+      disabled={entry === null && !can('new')} aria-keyshortcuts={SHORTCUTS.new?.aria}>
       New<kbd aria-hidden="true">{SHORTCUTS.new?.hint}</kbd>
     </button>
     <button

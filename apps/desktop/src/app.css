@@ -89,6 +89,10 @@ h1 {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 6px 14px;
@@ -105,7 +109,15 @@ button.primary {
 }
 
 button.quiet {
+  border-color: transparent;
+  background: none;
   color: var(--muted);
+}
+
+button.primary kbd {
+  border-color: currentcolor;
+  background: none;
+  color: inherit;
 }
 
 button:disabled {
@@ -219,9 +231,18 @@ main {
 
 /* A shortcut's hint inside its button (the name and aria-keyshortcuts carry it for assistive tech). */
 kbd {
-  margin-left: 8px;
+  margin-left: auto;
+  min-width: 20px;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--muted);
   font: inherit;
   font-size: 11px;
+  line-height: 1.3;
+  text-align: center;
 }
 
 .download,
@@ -247,6 +268,22 @@ progress {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.controls button {
+  white-space: nowrap;
+}
+
+.controls .primary {
+  min-width: 148px;
+}
+
+.controls .quiet {
+  margin-left: auto;
+}
+
+.controls .quiet:only-child {
+  margin-left: 0;
 }
 
 /* The transcript fills the rest of the window and scrolls inside itself. */

@@ -141,19 +141,22 @@ test('Record waits for the speech model even from the keyboard', async ({ page }
 });
 
 test('each button shows its shortcut and names it for assistive tech', async ({ page }) => {
-  await open(page);
-  const want: [string, string, string][] = [
-    ['New', '⌘N', 'Meta+N'],
-    ['Record', 'Space', 'Space'],
-    ['Pause', 'Space', 'Space'],
-    ['Resume', 'Space', 'Space'],
-    ['Done', '⏎', 'Enter'],
-  ];
-  for (const [name, hint, aria] of want) {
+  const check = async (name: string, hint: string, aria: string): Promise<void> => {
     await expect(button(page, name), name).toHaveAttribute('aria-keyshortcuts', aria);
     await expect(button(page, name).locator('kbd'), name).toHaveText(hint);
-  }
+  };
+  await open(page);
+  await check('New', '⌘N', 'Meta+N');
+  await press(page, 'New');
+  await check('Record', 'Space', 'Space');
+  await expect(button(page, 'Discard')).toBeVisible();
   await expect(button(page, 'Discard')).not.toHaveAttribute('aria-keyshortcuts');
+  await expect(button(page, 'Discard').locator('kbd')).toHaveCount(0);
+  await press(page, 'Record');
+  await check('Pause', 'Space', 'Space');
+  await check('Done', '⏎', 'Enter');
+  await press(page, 'Pause');
+  await check('Resume', 'Space', 'Space');
 });
 
 test('Tab to a button, and Return clicks it rather than finishing', async ({ page }) => {
@@ -161,7 +164,7 @@ test('Tab to a button, and Return clicks it rather than finishing', async ({ pag
   await key(page, 'Meta+n');
   await key(page, 'Space');
   await expect(status(page)).toContainText('Recording.');
-  // Pause, Done, Discard are the enabled buttons, in that order.
+  // Pause, Done, Discard are the buttons offered, in that order.
   for (let i = 0; i < 3; i++) await key(page, 'Tab');
   await expect(button(page, 'Discard')).toBeFocused();
   await key(page, 'Enter');
@@ -354,4 +357,135 @@ test('with an entry shown, Space after Settings closes goes to the gear', async 
   await expect(button(page, 'Settings')).toBeFocused();
   await key(page, 'Space');
   await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+});
+
+test('a double-click on the shared primary slot pauses once, and cannot resume', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record');
+  await button(page, 'Pause').dblclick();
+  await expect(status(page)).toContainText('Paused');
+  expect(await acts(page)).toEqual(['new', 'record', 'pause']);
+  await button(page, 'Resume').evaluate((el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 })));
+  await expect(status(page)).toContainText('Paused');
+  expect(await acts(page)).toEqual(['new', 'record', 'pause']);
+  await button(page, 'Resume').click();
+  await expect(status(page)).toContainText('Recording.');
+});
+
+test('after mouse clicks, the keys still work because no button holds the focus', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record');
+  await expect(status(page)).toContainText('Recording.');
+  const onBody = (): Promise<boolean> => page.evaluate(() => document.activeElement === document.body);
+  expect(await onBody()).toBe(true);
+  await key(page, 'Space');
+  await expect(status(page)).toContainText('Paused');
+  expect(await onBody()).toBe(true);
+  await key(page, 'Space');
+  await expect(status(page)).toContainText('Recording.');
+  expect(await onBody()).toBe(true);
+  await key(page, 'Enter');
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toBeVisible();
+  expect(await acts(page)).toEqual(['new', 'record', 'pause', 'resume', 'done']);
+});
+
+test('a focused button that unmounts hands the keys back to the window', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await button(page, 'Record').focus();
+  await key(page, 'Space');
+  await expect(status(page)).toContainText('Recording.');
+  await key(page, 'Space');
+  await expect(status(page)).toContainText('Paused');
+  expect(await acts(page)).toEqual(['new', 'record', 'pause']);
+});
+
+test('a keycap is a small raised label, not bare text', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record');
+  const style = await button(page, 'Pause')
+    .locator('kbd')
+    .evaluate((el) => {
+      const c = getComputedStyle(el);
+      return {
+        borderTopWidth: c.borderTopWidth,
+        borderBottomWidth: c.borderBottomWidth,
+        fontSize: c.fontSize,
+        backgroundColor: c.backgroundColor,
+      };
+    });
+  expect(style).toEqual({
+    borderTopWidth: '1px',
+    borderBottomWidth: '2px',
+    fontSize: '11px',
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+  });
+});
+
+test('the keycap sits at the same x for Record, Pause and Resume', async ({ page }) => {
+  await open(page);
+  const right = async (name: string): Promise<number> => {
+    const box = await button(page, name).locator('kbd').boundingBox();
+    if (box === null) throw new Error(`${name} has no keycap`);
+    return box.x + box.width;
+  };
+  await press(page, 'New');
+  const record = await right('Record');
+  await press(page, 'Record');
+  const pause = await right('Pause');
+  await press(page, 'Pause');
+  const resume = await right('Resume');
+  expect(Math.abs(record - pause)).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(pause - resume)).toBeLessThanOrEqual(0.5);
+});
+
+test('Discard sits left of Copy in finished, not stacked at one x', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record', 'Done');
+  await expect(button(page, 'Copy')).toBeVisible();
+  const discard = await button(page, 'Discard').boundingBox();
+  const copy = await button(page, 'Copy').boundingBox();
+  if (discard === null || copy === null) throw new Error('missing box');
+  expect(discard.x + discard.width).toBeLessThanOrEqual(copy.x);
+});
+
+test.describe('at the minimum window size', () => {
+  test.use({ viewport: { width: 520, height: 380 } });
+
+  test('the controls and their keycaps fit, with the drawer open', async ({ page }) => {
+    await open(page, { library: '30' });
+    const check = async (): Promise<void> => {
+      const buttons = page.locator('.controls button');
+      const n = await buttons.count();
+      expect(n).toBeGreaterThan(0);
+      for (let i = 0; i < n; i++) {
+        const b = buttons.nth(i);
+        await expect(b).toBeInViewport({ ratio: 1 });
+        const box = await b.boundingBox();
+        const caps = b.locator('kbd');
+        if (box === null) throw new Error('no button box');
+        if ((await caps.count()) > 0) {
+          const kbd = await caps.boundingBox();
+          if (kbd === null) throw new Error('no keycap box');
+          expect(kbd.x).toBeGreaterThanOrEqual(box.x - 0.5);
+          expect(kbd.x + kbd.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
+          expect(kbd.y).toBeGreaterThanOrEqual(box.y - 0.5);
+          expect(kbd.y + kbd.height).toBeLessThanOrEqual(box.y + box.height + 0.5);
+        }
+      }
+      const overflow = await page.evaluate(() => ({
+        x: document.documentElement.scrollWidth - window.innerWidth,
+        y: document.documentElement.scrollHeight - window.innerHeight,
+      }));
+      expect(overflow.x).toBeLessThanOrEqual(0);
+      expect(overflow.y).toBeLessThanOrEqual(0);
+    };
+    await press(page, 'New');
+    await check();
+    await press(page, 'Record');
+    await check();
+    await press(page, 'Pause');
+    await check();
+  });
 });

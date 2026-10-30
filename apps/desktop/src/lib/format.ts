@@ -5,7 +5,8 @@ import type { Action, Download, Phase, Snapshot } from './types';
 
 /**
  * The actions the core accepts in each phase (crates/scriber-core/src/dictation.rs).
- * The window disables every other button; the core refuses them anyway.
+ * The window offers only the buttons controlsFor gives for the phase, except
+ * New, which stays in the band, disabled; the core refuses anything else anyway.
  */
 export const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
   idle: ['new'],
@@ -16,6 +17,33 @@ export const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
   finished: ['new', 'discard', 'copy'],
   failed: ['new', 'discard', 'retry'],
 };
+
+export type Control = { action: Action; label: string; rank: 'primary' | 'secondary' | 'quiet' };
+
+const DISCARD: Control = { action: 'discard', label: 'Discard', rank: 'quiet' };
+
+/** The buttons the recorder row offers in each phase, in DOM order. */
+export const CONTROLS: Readonly<Record<Phase, readonly Control[]>> = {
+  idle: [],
+  ready: [{ action: 'record', label: 'Record', rank: 'primary' }, DISCARD],
+  recording: [
+    { action: 'pause', label: 'Pause', rank: 'primary' },
+    { action: 'done', label: 'Done', rank: 'secondary' },
+    DISCARD,
+  ],
+  paused: [
+    { action: 'resume', label: 'Resume', rank: 'primary' },
+    { action: 'done', label: 'Done', rank: 'secondary' },
+    DISCARD,
+  ],
+  transcribing: [],
+  finished: [DISCARD],
+  failed: [{ action: 'retry', label: 'Retry', rank: 'primary' }, DISCARD],
+};
+
+export function controlsFor(phase: Phase): readonly Control[] {
+  return CONTROLS[phase];
+}
 
 export function allowed(phase: Phase, action: Action): boolean {
   return LEGAL[phase].includes(action);
