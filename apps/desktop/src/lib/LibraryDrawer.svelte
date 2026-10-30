@@ -45,7 +45,8 @@
   });
 
   let nav = $state<HTMLElement>();
-  let dragging = false;
+  let dragging = $state(false);
+  let pressFocused = false;
   let startX = 0;
   let startWidth = 0;
   let startValue = 0;
@@ -53,6 +54,9 @@
 
   function onpointerdown(e: PointerEvent): void {
     if (e.button !== 0) return;
+    e.preventDefault();
+    document.documentElement.classList.add('library-resizing');
+    pressFocused = document.activeElement === e.currentTarget;
     startX = e.clientX;
     startWidth = (nav as HTMLElement).getBoundingClientRect().width;
     startValue = width;
@@ -65,7 +69,9 @@
     onresize(clampLibraryWidth(startWidth + e.clientX - startX));
   }
 
-  function onlostpointercapture(): void {
+  function onlostpointercapture(e: PointerEvent): void {
+    document.documentElement.classList.remove('library-resizing');
+    if (!pressFocused && document.activeElement === e.currentTarget) (e.currentTarget as HTMLElement).blur();
     dragging = false;
     if (width !== startValue) onresizeend();
   }
@@ -129,6 +135,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
     class="library-handle"
+    class:dragging
     role="separator"
     tabindex="0"
     aria-orientation="vertical"

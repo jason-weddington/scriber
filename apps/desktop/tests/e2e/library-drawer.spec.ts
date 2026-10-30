@@ -125,6 +125,22 @@ test.describe('resize', () => {
       await handle(page).focus();
       await expect(handle(page)).toHaveCSS('background-color', 'rgb(180, 68, 27)');
     });
+
+    test('a mouse drag leaves no focus and shows the accent only while dragging', async ({ page }) => {
+      await open(page, { library: '3' });
+      const { x, y } = await centre(page);
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(900, y);
+      await expect(handle(page)).toHaveClass(/\bdragging\b/);
+      await expect(handle(page)).toHaveCSS('background-color', 'rgb(180, 68, 27)');
+      await page.mouse.up();
+      await page.mouse.move(500, 300);
+      await expect(handle(page)).not.toHaveClass(/\bdragging\b/);
+      expect(await page.evaluate(() => document.activeElement?.classList.contains('library-handle'))).toBe(false);
+      await expect(handle(page)).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+      await expect(handle(page)).toHaveCSS('outline-style', 'none');
+    });
   });
 
   test('dragging resizes live and saves once on release', async ({ page }) => {
@@ -212,6 +228,107 @@ test.describe('resize', () => {
     await page.keyboard.press('Space');
     await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
     expect(await saved(page)).toEqual([]);
+  });
+
+  async function drag(page: Page): Promise<void> {
+    const { x, y } = await centre(page);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 60, y);
+    await page.mouse.up();
+  }
+
+  const resizing = (page: Page) => page.evaluate(() => document.documentElement.classList.contains('library-resizing'));
+  const userSelect = (page: Page, sel: string) => page.evaluate((q) => getComputedStyle(document.querySelector(q) as Element).userSelect, sel);
+
+  test('a drag selects no text anywhere', async ({ page }) => {
+    await open(page, { library: '3' });
+    await page.locator('#library li').nth(1).getByRole('button').click();
+    await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue('This is preloaded recording number 2.');
+    const { x, y } = await centre(page);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 200, y + 120);
+    expect(await width(page)).toBe(420);
+    await page.mouse.move(x - 150, y + 160);
+    expect(await width(page)).toBe(110);
+    for (const q of ['body', '#library li button', '#entry-transcript']) expect(await userSelect(page, q), q).toBe('none');
+    expect(await resizing(page)).toBe(true);
+    await page.mouse.up();
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
+    expect(await page.evaluate(() => {
+      const el = document.querySelector('#entry-transcript') as HTMLTextAreaElement;
+      return el.selectionStart === el.selectionEnd;
+    })).toBe(true);
+    expect(await resizing(page)).toBe(false);
+    await page.mouse.move(x, y);
+    await page.mouse.down({ button: 'right' });
+    expect(await resizing(page)).toBe(false);
+    await expect(handle(page)).not.toHaveClass(/\bdragging\b/);
+    await page.mouse.up({ button: 'right' });
+  });
+
+  test('selection and typing work after a drag', async ({ page }) => {
+    await open(page, { library: '3' });
+    const before = await userSelect(page, 'body');
+    await drag(page);
+    expect(await userSelect(page, 'body')).toBe(before);
+    await dictate(page);
+    await page.locator('#transcript').click();
+    await page.keyboard.press('ControlOrMeta+A');
+    const sel = await page.locator('#transcript').evaluate((el: HTMLTextAreaElement) => [el.selectionEnd - el.selectionStart, el.value.length]);
+    expect(sel[0]).toBe(sel[1]);
+    expect(sel[1]).toBeGreaterThan(0);
+    await page.locator('#transcript').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type('!');
+    await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue(/!$/);
+  });
+
+  test('losing capture ends the drag', async ({ page }) => {
+    await open(page, { library: '3' });
+    await page.evaluate(() => {
+      window.addEventListener(
+        'pointerdown',
+        (e) => {
+          (window as unknown as { __pid: number }).__pid = e.pointerId;
+        },
+        { capture: true },
+      );
+    });
+    const { x, y } = await centre(page);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 40, y);
+    expect(await resizing(page)).toBe(true);
+    await page.evaluate(() => {
+      const pid = (window as unknown as { __pid: number }).__pid;
+      (document.querySelector('.library-handle') as HTMLElement).releasePointerCapture(pid);
+    });
+    await page.mouse.move(x + 60, y);
+    await expect.poll(() => resizing(page)).toBe(false);
+    await expect(handle(page)).not.toHaveClass(/\bdragging\b/);
+    const w = await width(page);
+    await page.mouse.move(x + 100, y);
+    expect(await width(page)).toBe(w);
+    await page.mouse.up();
+  });
+
+  test('a keyboard-focused handle keeps focus through a drag', async ({ page }) => {
+    await open(page, { library: '3' });
+    await handle(page).focus();
+    await drag(page);
+    expect(await page.evaluate(() => document.activeElement?.classList.contains('library-handle'))).toBe(true);
+  });
+
+  test('the keys still resize after a mouse drag', async ({ page }) => {
+    await open(page, { library: '3' });
+    await drag(page);
+    await expect.poll(() => saved(page).then((s) => s.length)).toBe(1);
+    await handle(page).focus();
+    await page.keyboard.press('ArrowRight');
+    expect(await width(page)).toBe(290);
+    await expect.poll(() => saved(page).then((s) => s.map((e) => e.libraryWidth))).toEqual([280, 290]);
   });
 
   test('starts at the saved width and keeps it through hide and show', async ({ page }) => {

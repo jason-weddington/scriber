@@ -467,10 +467,18 @@ button.icon {
   width: 6px;
   cursor: col-resize;
   touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:root.library-resizing,
+:root.library-resizing * {
+  -webkit-user-select: none;
   user-select: none;
 }
 
 .library-handle:hover,
+.library-handle.dragging,
 .library-handle:focus-visible {
   background: var(--accent);
 }
