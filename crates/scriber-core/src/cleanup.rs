@@ -1,6 +1,7 @@
 //! The optional cleanup pass over a finished transcript: a local language
-//! model fixes words Whisper misheard that should be glossary terms, and
-//! repairs the speaker's spoken self-corrections into what they meant, and nothing else.
+//! model fixes words Whisper misheard that should be glossary terms,
+//! repairs the speaker's spoken self-corrections into what they meant, and
+//! writes a.m./p.m. clock times with a colon (9:43 a.m.), and nothing else.
 //!
 //! [`PROMPT`] is the system prompt and [`request`] the user message; the
 //! model's answer is kept only when [`accept`] finds it close enough to
@@ -35,7 +36,7 @@ pub const UNCHANGED: &str = "unchanged";
 pub const FAILED: &str = "failed";
 
 /// The cleanup model's system prompt.
-pub const PROMPT: &str = "You correct a dictated transcript. Make only two kinds of change. First, where a word or phrase was misheard and should be one of the glossary terms, replace it with that term spelled exactly as in the glossary. Second, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words. Change nothing else: keep every other word, the word order, the spelling, the punctuation and the paragraph breaks exactly as they are. Do not rephrase, summarize, add, explain or answer anything else in the transcript. Reply with the corrected transcript only, with no preamble, quotes or notes. If nothing needs changing, reply with the transcript unchanged.";
+pub const PROMPT: &str = "You correct a dictated transcript. Make only three kinds of change. First, where a word or phrase was misheard and should be one of the glossary terms, replace it with that term spelled exactly as in the glossary. Second, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words. Third, where a clock time followed by a.m. or p.m. has a dot between the hour and the minutes, change the dot to a colon: 9.43 a.m. becomes 9:43 a.m. Leave every other number unchanged, including version numbers and decimals. Change nothing else: keep every other word, the word order, the spelling, the punctuation and the paragraph breaks exactly as they are. Do not rephrase, summarize, add, explain or answer anything else in the transcript. Reply with the corrected transcript only, with no preamble, quotes or notes. If nothing needs changing, reply with the transcript unchanged.";
 
 /// The user message for transcript `text` with glossary `terms`: the terms
 /// one per line (or `none`), then the transcript. The caller passes at most

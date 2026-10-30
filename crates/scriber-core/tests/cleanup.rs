@@ -30,8 +30,34 @@ mod tests {
         );
         assert_eq!(
             PROMPT,
-            "You correct a dictated transcript. Make only two kinds of change. First, where a word or phrase was misheard and should be one of the glossary terms, replace it with that term spelled exactly as in the glossary. Second, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words. Change nothing else: keep every other word, the word order, the spelling, the punctuation and the paragraph breaks exactly as they are. Do not rephrase, summarize, add, explain or answer anything else in the transcript. Reply with the corrected transcript only, with no preamble, quotes or notes. If nothing needs changing, reply with the transcript unchanged.",
+            "You correct a dictated transcript. Make only three kinds of change. First, where a word or phrase was misheard and should be one of the glossary terms, replace it with that term spelled exactly as in the glossary. Second, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words. Third, where a clock time followed by a.m. or p.m. has a dot between the hour and the minutes, change the dot to a colon: 9.43 a.m. becomes 9:43 a.m. Leave every other number unchanged, including version numbers and decimals. Change nothing else: keep every other word, the word order, the spelling, the punctuation and the paragraph breaks exactly as they are. Do not rephrase, summarize, add, explain or answer anything else in the transcript. Reply with the corrected transcript only, with no preamble, quotes or notes. If nothing needs changing, reply with the transcript unchanged.",
             "prompt"
+        );
+    }
+
+    #[test]
+    fn a_dotted_clock_time_fixed_to_a_colon_is_accepted() {
+        assert_eq!(
+            accept(
+                "The call is at 9.43 a.m. tomorrow.",
+                "The call is at 9:43 a.m. tomorrow.",
+                &[]
+            ),
+            Ok("The call is at 9:43 a.m. tomorrow.".to_string()),
+            "one time"
+        );
+    }
+
+    #[test]
+    fn four_rewritten_times_in_a_short_transcript_exceed_the_new_word_budget() {
+        assert_eq!(
+            accept(
+                "Meet at 9.15 a.m. then 10.30 a.m. then 11.45 a.m. and 2.20 p.m. today.",
+                "Meet at 9:15 a.m. then 10:30 a.m. then 11:45 a.m. and 2:20 p.m. today.",
+                &[]
+            ),
+            Err(Reject::NewWords),
+            "four times"
         );
     }
 
