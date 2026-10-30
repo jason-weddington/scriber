@@ -14,24 +14,33 @@ use std::time::{Duration, Instant};
 use scriber_core::sync::LoadOnce;
 use scriber_engine::{
     Adapters, Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Engine, EngineConfig,
-    Event, LevelSink, LocalTime, PortError, Recorder, Snapshot, Summarizer, Transcriber, Warmer,
+    Event, InputDevices, LevelSink, LocalTime, PortError, Recorder, Snapshot, Summarizer,
+    Transcriber, Warmer,
 };
 
 /// How long a test waits for anything.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(5);
 
 /// A microphone that captures one second of loud sound per segment and
-/// reports a level of 0.25 when it starts.
+/// reports a level of 0.25 when it starts. It logs each device asked for in
+/// `opened` and opens it ("Fake Mic" for the default); it lists "Fake Mic"
+/// as the default and "Other Mic", or fails with `inputs_error`.
 #[derive(Clone, Default)]
 pub(crate) struct FakeRecorder {
     level: Arc<Mutex<Option<LevelSink>>>,
     pub(crate) starts: Arc<AtomicU32>,
     pub(crate) stops: Arc<AtomicU32>,
+    pub(crate) opened: Arc<Mutex<Vec<String>>>,
+    pub(crate) inputs_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Recorder for FakeRecorder {
-    fn start(&self) -> Result<(), PortError> {
+    fn start(&self, device: &str) -> Result<String, PortError> {
         let _before = self.starts.fetch_add(1, Ordering::SeqCst);
+        self.opened
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(device.to_string());
         if let Some(level) = self
             .level
             .lock()
@@ -40,7 +49,26 @@ impl Recorder for FakeRecorder {
         {
             level(0.25);
         }
-        Ok(())
+        Ok(if device.is_empty() {
+            "Fake Mic".to_string()
+        } else {
+            device.to_string()
+        })
+    }
+
+    fn inputs(&self) -> Result<InputDevices, PortError> {
+        match self
+            .inputs_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            Some(e) => Err(PortError(e)),
+            None => Ok(InputDevices::new(
+                Some("Fake Mic".to_string()),
+                ["Other Mic".to_string()],
+            )),
+        }
     }
 
     fn stop(&self) -> Result<Captured, PortError> {

@@ -10,7 +10,8 @@
     "notice": "Copied to the clipboard.",
     "modelError": null,
     "download": null,
-    "libraryRevision": 3
+    "libraryRevision": 3,
+    "microphone": "Jabra Evolve 65"
   },
   "snapshotFailed": {
     "revision": 7,
@@ -23,7 +24,8 @@
     "notice": null,
     "modelError": "Could not download the speech model: the connection was reset.",
     "download": null,
-    "libraryRevision": 0
+    "libraryRevision": 0,
+    "microphone": null
   },
   "snapshotDownloading": {
     "revision": 1,
@@ -39,7 +41,8 @@
       "receivedBytes": 812277637,
       "totalBytes": 1624555275
     },
-    "libraryRevision": 0
+    "libraryRevision": 0,
+    "microphone": null
   },
   "libraryEntry": {
     "id": "20261026-140309",
@@ -53,7 +56,16 @@
     "cleanup": true,
     "summaryModel": "gemma3:4b",
     "cleanupModel": "qwen3.8:27b-mlx",
-    "libraryWidth": 300
+    "libraryWidth": 300,
+    "inputDevice": "AirPods Pro"
+  },
+  "inputDevices": {
+    "defaultDevice": "Jabra Evolve 65",
+    "others": ["AirPods Pro", "MacBook Pro Microphone"]
+  },
+  "inputDevicesNone": {
+    "defaultDevice": null,
+    "others": []
   },
   "level": 0.5
 }

@@ -164,7 +164,9 @@ test('Tab to a button, and Return clicks it rather than finishing', async ({ pag
   await key(page, 'Meta+n');
   await key(page, 'Space');
   await expect(status(page)).toContainText('Recording.');
-  // Pause, Done, Discard are the buttons offered, in that order.
+  // The microphone, Pause, Done, Discard are the buttons offered, in that order.
+  await key(page, 'Tab');
+  await expect(page.getByRole('button', { name: /^Microphone/ })).toBeFocused();
   for (let i = 0; i < 3; i++) await key(page, 'Tab');
   await expect(button(page, 'Discard')).toBeFocused();
   await key(page, 'Enter');
@@ -488,4 +490,66 @@ test.describe('at the minimum window size', () => {
     await press(page, 'Pause');
     await check();
   });
+});
+
+// ---- the microphone menu ---------------------------------------------------------
+
+/** The microphone control. */
+function mic(page: Page) {
+  return page.getByRole('button', { name: /^Microphone/ });
+}
+
+/** Starts recording, then opens the menu from the keyboard (Tab, Return) with an item focused. */
+async function recordingWithMenu(page: Page): Promise<void> {
+  await open(page);
+  await key(page, 'Meta+n');
+  await key(page, 'Space');
+  await expect(status(page)).toContainText('Recording.');
+  await key(page, 'Tab');
+  await expect(mic(page)).toBeFocused();
+  await key(page, 'Enter');
+  await expect(page.getByRole('menuitemradio', { name: 'Mac default (Jabra Evolve 65)' })).toBeFocused();
+  await key(page, 'ArrowDown');
+  await expect(page.getByRole('menuitemradio', { name: 'AirPods Pro' })).toBeFocused();
+}
+
+async function savedInputs(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window.__mockBridge?.saved ?? []).map((s) => s.inputDevice));
+}
+
+for (const name of ['Space', 'Enter'] as const) {
+  test(`${name} in the microphone menu chooses the item rather than dictating`, async ({ page }) => {
+    await recordingWithMenu(page);
+    await key(page, name);
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect.poll(() => savedInputs(page)).toEqual(['AirPods Pro']);
+    expect(await acts(page), 'no pause, no done').toEqual(['new', 'record']);
+    await expect(status(page)).toHaveText(/^Recording\./);
+  });
+}
+
+test('after a right-click and Escape, Space still pauses', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record');
+  await expect(status(page)).toContainText('Recording.');
+  await mic(page).click({ button: 'right' });
+  await expect(page.getByRole('menu')).toBeVisible();
+  await key(page, 'Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await expect(mic(page)).not.toBeFocused();
+  await key(page, 'Space');
+  await expect(status(page)).toContainText('Paused');
+});
+
+test('Tab to the microphone, Return, Escape: the focus is back on the control', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await key(page, 'Tab');
+  await expect(mic(page)).toBeFocused();
+  await key(page, 'Enter');
+  await expect(page.getByRole('menu')).toBeVisible();
+  await key(page, 'Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await expect(mic(page)).toBeFocused();
 });

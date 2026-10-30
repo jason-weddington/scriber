@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use scriber_engine::{
-    Action, Clipboard, Engine, EngineConfig, Event, LibraryEntry, PortError, Settings, Snapshot,
-    fail,
+    Action, Clipboard, Engine, EngineConfig, Event, InputDevices, LibraryEntry, PortError,
+    Settings, Snapshot, fail,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -29,7 +29,7 @@ impl Clipboard for SystemClipboard {
 /// The bridge's commands, in a module: `#[tauri::command]` code trips a lint.
 #[expect(clippy::unreachable, reason = "macro expansion")]
 mod commands {
-    use super::{Action, Engine, LibraryEntry, Settings, Snapshot, State};
+    use super::{Action, Engine, InputDevices, LibraryEntry, Settings, Snapshot, State};
 
     /// `dictation_state`: the session as it stands (never an error).
     #[tauri::command]
@@ -96,6 +96,12 @@ mod commands {
     pub(crate) async fn ollama_models(engine: State<'_, Engine>) -> Result<Vec<String>, String> {
         engine.ollama_models().map_err(|e| e.to_string())
     }
+
+    /// `input_devices`: the Mac's default input device and every other one, by name.
+    #[tauri::command]
+    pub(crate) async fn input_devices(engine: State<'_, Engine>) -> Result<InputDevices, String> {
+        engine.input_devices().map_err(|e| e.to_string())
+    }
 }
 
 /// Builds and runs the app.
@@ -144,6 +150,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::settings_set,
             commands::vocabulary_open,
             commands::ollama_models,
+            commands::input_devices,
         ])
         .build(tauri::generate_context!())?;
     // The engine is shut down on Exit (Cmd-Q, the menu Quit, the last window

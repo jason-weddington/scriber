@@ -13,7 +13,7 @@ scriber-core = { path = "../scriber-core" }
 
 # The local time a library entry is named after.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# Audio capture from the default input device.
+# Audio capture from the chosen input device.
 cpal = "0.18.2"
 # The Ollama request and reply, for a library entry's summary.
 serde_json = "1"

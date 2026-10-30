@@ -13,11 +13,14 @@ import {
   downloadFailed,
   excerpt,
   heard,
+  inputFallback,
   join,
   LEVEL_MS,
   leftover,
   Mock,
+  MOCK_DEFAULT_INPUT,
   MOCK_DEFAULT_MODEL,
+  MOCK_INPUTS,
   MOCK_MODELS,
   MOCK_SUMMARY,
   MOCK_VOCABULARY,
@@ -25,6 +28,7 @@ import {
   MODEL_BYTES,
   modelMissing,
   NO_DOWNLOAD,
+  NO_INPUT,
   NOT_IN_LIBRARY,
   NOTHING_HEARD,
   partFailed,
@@ -147,6 +151,19 @@ test.describe('the mock speaks the Rust JSON shapes', () => {
       for (const [k, v] of Object.entries(value ?? {})) {
         expect(allowedTypes.get(k)?.has(typeof v), `${name} ${k}`).toBe(true);
       }
+    }
+  });
+
+  test('the input devices have the fixture keys and types', async () => {
+    const allowedTypes = types([shapes.inputDevices ?? {}, shapes.inputDevicesNone ?? {}]);
+    for (const params of ['', '?inputs=many', '?inputs=none']) {
+      const got = await new Mock(params).inputDevices();
+      expect(Object.keys(got).sort(), `${params} keys`).toEqual([...allowedTypes.keys()].sort());
+      for (const [k, v] of Object.entries(got)) {
+        expect(allowedTypes.get(k)?.has(v === null ? 'null' : typeof v), `${params} ${k}`).toBe(true);
+      }
+      expect(Array.isArray(got.others), `${params} others`).toBe(true);
+      for (const name of got.others) expect(typeof name).toBe('string');
     }
   });
 
@@ -413,8 +430,8 @@ test('summaries off, or Ollama down, keep the excerpt; nothing is archived from 
 
 test('settings round-trip, and the library calls fail on request', async () => {
   const mock = new Mock('?libraryOpen=0&summaries=off');
-  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220 });
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220 })).toEqual({
+  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '' });
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '' })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: '/x/terms.txt',
@@ -422,8 +439,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
     summaryModel: 'gemma3:4b',
     cleanupModel: MOCK_DEFAULT_MODEL,
     libraryWidth: 220,
+    inputDevice: '',
   });
-  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220 });
+  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '' });
   await expect(mock.libraryGet('../segments')).rejects.toThrow(NOT_IN_LIBRARY);
   for (const call of ['library_list', 'library_get', 'library_copy', 'settings_get', 'settings_set'] as const) {
     const failing = new Mock(`?fail=${call}&library=1`);
@@ -432,7 +450,7 @@ test('settings round-trip, and the library calls fail on request', async () => {
       library_get: () => failing.libraryGet('20261026-090000'),
       library_copy: () => failing.libraryCopy('20261026-090000'),
       settings_get: () => failing.settingsGet(),
-      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 }),
+      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' }),
     }[call];
     await expect(attempt(), call).rejects.toThrow(`Mock failure: ${call}`);
   }
@@ -447,9 +465,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
 test('the vocabulary file is kept like the engine keeps it', async () => {
   const mock = new Mock('');
   expect((await mock.settingsGet()).vocabulary, 'the default, as a path').toBe(MOCK_VOCABULARY);
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 });
-  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 })).toEqual({
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' });
+  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: MOCK_VOCABULARY,
@@ -457,9 +475,10 @@ test('the vocabulary file is kept like the engine keeps it', async () => {
     summaryModel: MOCK_DEFAULT_MODEL,
     cleanupModel: MOCK_DEFAULT_MODEL,
     libraryWidth: 220,
+    inputDevice: '',
   });
   // Stored as '': a later '' keeps the default rather than an old path.
-  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 })).vocabulary).toBe(MOCK_VOCABULARY);
+  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' })).vocabulary).toBe(MOCK_VOCABULARY);
   expect(mock.handle.saved.map((s) => s.vocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', MOCK_VOCABULARY, '']);
 });
 
@@ -500,7 +519,7 @@ test('the open panel picks ?pick=, a default, or nothing, and fails on request',
 test('opening the vocabulary file records the resolved path, or fails like the engine', async () => {
   const mock = new Mock('');
   await mock.vocabularyOpen();
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220 });
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' });
   await mock.vocabularyOpen();
   expect(mock.handle.opened).toEqual([MOCK_VOCABULARY, '/x/terms.txt']);
   const failing = new Mock('?fail=vocabulary_open');
@@ -514,13 +533,13 @@ test('the models are kept like the engine keeps them', async () => {
   expect([got.summaryModel, got.cleanupModel], 'the defaults, by name').toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   expect((await new Mock('?summaryModel=llama3:70b').settingsGet()).summaryModel).toBe('llama3:70b');
   expect((await new Mock('?cleanupModel=llama3:70b').settingsGet()).cleanupModel).toBe('llama3:70b');
-  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220 };
+  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '' };
   await mock.settingsSet({ ...base, summaryModel: 'gemma3:4b', cleanupModel: 'llama3:8b' });
   const kept = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '' });
   expect([kept.summaryModel, kept.cleanupModel], "'' keeps them").toEqual(['gemma3:4b', 'llama3:8b']);
   await mock.settingsSet({ ...base, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL });
   // Stored as '': a later '' keeps the default rather than an old model.
-  const after = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '', libraryWidth: 220 });
+  const after = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' });
   expect([after.summaryModel, after.cleanupModel]).toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   const read = await mock.settingsGet();
   expect([read.summaryModel, read.cleanupModel]).toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
@@ -593,4 +612,116 @@ test('the drawer width is read like the core reads it', async () => {
   const current = await mock.settingsGet();
   expect((await mock.settingsSet({ ...current, libraryWidth: 5000 })).libraryWidth, 'clamped on read').toBe(440);
   expect(mock.handle.saved.map((s) => s.libraryWidth), 'saved as sent').toEqual([5000]);
+});
+
+// ---- the microphone ---------------------------------------------------------------
+
+test('the input devices answer the constants, or the ?inputs= scenario, and count their calls', async () => {
+  const mock = new Mock('');
+  expect(await mock.inputDevices()).toEqual({ defaultDevice: MOCK_DEFAULT_INPUT, others: [...MOCK_INPUTS] });
+  expect(MOCK_DEFAULT_INPUT).toBe('Jabra Evolve 65');
+  expect(MOCK_INPUTS).toEqual(['AirPods Pro', 'MacBook Pro Microphone']);
+  expect(mock.handle.inputListings).toBe(1);
+  const many = await new Mock('?inputs=many').inputDevices();
+  expect(many.defaultDevice).toBe(MOCK_DEFAULT_INPUT);
+  expect(many.others).toHaveLength(30);
+  expect([many.others[0], many.others[29]]).toEqual(['Microphone 01', 'Microphone 30']);
+  expect(await new Mock('?inputs=long').inputDevices()).toEqual({ defaultDevice: MOCK_DEFAULT_INPUT, others: ['L'.repeat(80)] });
+  expect(await new Mock('?inputs=none').inputDevices()).toEqual({ defaultDevice: null, others: [] });
+  mock.handle.setInputs(['Other']);
+  expect((await mock.inputDevices()).others).toEqual(['Other']);
+  expect(mock.handle.inputListings).toBe(2);
+  const failing = new Mock('?fail=input_devices');
+  await expect(failing.inputDevices()).rejects.toThrow('Mock failure: input_devices');
+  expect(failing.handle.inputListings).toBe(1);
+});
+
+test('a held input_devices call waits for release', async () => {
+  const mock = new Mock('');
+  mock.handle.hold('input_devices');
+  let answered = false;
+  const pending = mock.inputDevices().then(() => {
+    answered = true;
+  });
+  await settled();
+  expect(answered).toBe(false);
+  mock.handle.release('input_devices');
+  await pending;
+  expect(answered).toBe(true);
+});
+
+test('the input device is saved verbatim, seeded by ?inputDevice=', async () => {
+  expect((await new Mock('').settingsGet()).inputDevice).toBe('');
+  expect((await new Mock('?inputDevice=AirPods%20Pro').settingsGet()).inputDevice).toBe('AirPods Pro');
+  const mock = new Mock('?inputDevice=AirPods%20Pro');
+  const sent = { ...(await mock.settingsGet()), inputDevice: '' };
+  expect((await mock.settingsSet(sent)).inputDevice, "'' is a value").toBe('');
+  expect((await mock.settingsGet()).inputDevice).toBe('');
+});
+
+/** A mock with `params`, recording. */
+async function recording(params: string): Promise<Mock> {
+  const mock = new Mock(params);
+  await mock.act('new', '');
+  await mock.act('record', '');
+  return mock;
+}
+
+test('record opens the saved input device like the core', async () => {
+  const fresh = new Mock('');
+  expect(fresh.snapshot().microphone, 'none before the first record').toBeNull();
+  const byDefault = await recording('');
+  expect([byDefault.snapshot().microphone, byDefault.snapshot().notice]).toEqual([MOCK_DEFAULT_INPUT, null]);
+  const chosen = await recording('?inputDevice=AirPods%20Pro');
+  expect([chosen.snapshot().microphone, chosen.snapshot().notice]).toEqual(['AirPods Pro', null]);
+  const theDefault = await recording(`?inputDevice=${encodeURIComponent(MOCK_DEFAULT_INPUT)}`);
+  expect([theDefault.snapshot().microphone, theDefault.snapshot().notice]).toEqual([MOCK_DEFAULT_INPUT, null]);
+  const gone = await recording('?inputDevice=Gone%20Mic');
+  expect([gone.snapshot().microphone, gone.snapshot().notice]).toEqual([MOCK_DEFAULT_INPUT, inputFallback('Gone Mic', MOCK_DEFAULT_INPUT)]);
+  expect(inputFallback('Jabra Evolve 65', 'MacBook Pro Microphone')).toBe(
+    'Jabra Evolve 65 is not available, so this part is recording from the Mac default, MacBook Pro Microphone.',
+  );
+  expect((await gone.settingsGet()).inputDevice, 'the choice is kept').toBe('Gone Mic');
+});
+
+test('with no input device, record and resume are refused and change nothing', async () => {
+  const mock = new Mock('?inputs=none');
+  await mock.act('new', '');
+  const before = mock.snapshot();
+  await expect(mock.act('record', '')).rejects.toThrow(NO_INPUT);
+  expect(NO_INPUT).toBe('Could not start recording: there is no input device');
+  expect(mock.snapshot()).toEqual(before);
+  const gone = new Mock('?inputs=none&inputDevice=Gone%20Mic');
+  await gone.act('new', '');
+  await expect(gone.act('record', '')).rejects.toThrow(NO_INPUT);
+  expect(gone.snapshot().notice, 'no fallback notice').toBeNull();
+});
+
+test('the microphone follows resume, and new and discard clear it', async () => {
+  const mock = await recording('');
+  await mock.act('pause', '');
+  expect(mock.snapshot().microphone, 'kept while paused').toBe(MOCK_DEFAULT_INPUT);
+  await mock.settingsSet({ ...(await mock.settingsGet()), inputDevice: 'AirPods Pro' });
+  await mock.act('resume', '');
+  expect(mock.snapshot().microphone).toBe('AirPods Pro');
+  await mock.act('discard', '');
+  expect(mock.snapshot().microphone, 'discard').toBeNull();
+  await mock.act('record', '');
+  await mock.act('done', '');
+  await settled();
+  expect(mock.snapshot().microphone, 'kept when finished').toBe('AirPods Pro');
+  await mock.act('new', '');
+  expect(mock.snapshot().microphone, 'new').toBeNull();
+});
+
+test('the fallback notice goes at pause and returns at a resume that falls back', async () => {
+  const mock = await recording('?inputDevice=Gone%20Mic');
+  await mock.act('pause', '');
+  expect(mock.snapshot().notice).toBeNull();
+  await mock.act('resume', '');
+  expect(mock.snapshot().notice).toBe(inputFallback('Gone Mic', MOCK_DEFAULT_INPUT));
+  mock.handle.setInputs(['Gone Mic']);
+  await mock.act('pause', '');
+  await mock.act('resume', '');
+  expect([mock.snapshot().microphone, mock.snapshot().notice], 'listed again').toEqual(['Gone Mic', null]);
 });

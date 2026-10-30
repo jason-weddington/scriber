@@ -6,7 +6,7 @@ mod common;
 mod tests {
     use scriber_core::audio::{decode_wav, encode_wav};
     use scriber_core::dictation::{
-        COPIED, Dictation, DictationError, Job, NOTHING_HEARD, model_missing,
+        COPIED, Dictation, DictationError, Job, NOTHING_HEARD, input_fallback, model_missing,
     };
     use scriber_core::model::{Action, Phase, Snapshot};
     use scriber_core::ports::{Captured, PortError};
@@ -14,7 +14,7 @@ mod tests {
 
     use scriber_core::library::{entry_path, list};
     use scriber_core::ports::Files as _;
-    use scriber_core::store::{STARTED, TRANSCRIPT};
+    use scriber_core::store::{MICROPHONE_LOG, STARTED, TRANSCRIPT};
 
     use scriber_core::cleanup::PROMPT;
     use scriber_core::ports::Ports;
@@ -195,6 +195,7 @@ mod tests {
                 model_error: None,
                 download: None,
                 library_revision: 0,
+                microphone: None,
             },
             "idle"
         );
@@ -1832,5 +1833,487 @@ mod tests {
             .unwrap();
         let _outcome = w.run_with(&job, &w.library_cleaner_ports());
         assert_eq!(*w.cleaner.models.borrow(), ["late:1b"], "asked");
+    }
+
+    // The microphone: which device each Record and Resume opens, the
+    // fallback to the Mac default, and the decision log.
+
+    fn save_input(w: &World, name: &str) {
+        let bytes = serde_json::to_vec(&json!({ "input_device": name })).unwrap();
+        w.files.write(SETTINGS, &bytes).unwrap();
+    }
+
+    fn opened(w: &World) -> Vec<String> {
+        w.recorder.opened.borrow().clone()
+    }
+
+    fn log_lines(w: &World) -> Vec<String> {
+        w.files
+            .read(MICROPHONE_LOG)
+            .map(|b| String::from_utf8(b).unwrap())
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn start_lines(w: &World) -> usize {
+        log_lines(w)
+            .iter()
+            .filter(|l| l.starts_with(r#"{"event":"start""#))
+            .count()
+    }
+
+    #[test]
+    fn the_fallback_sentence_is_pinned() {
+        assert_eq!(
+            input_fallback("Jabra Evolve 65", "MacBook Pro Microphone"),
+            "Jabra Evolve 65 is not available, so this part is recording from the Mac default, MacBook Pro Microphone.",
+            "sentence"
+        );
+    }
+
+    #[test]
+    fn the_log_path_is_pinned() {
+        assert_eq!(MICROPHONE_LOG, "microphone-log.jsonl", "path");
+    }
+
+    #[test]
+    fn with_no_choice_record_opens_the_mac_default() {
+        let w = World::default();
+        let (d, _) = at(&w, Phase::Recording);
+        assert_eq!(opened(&w), [""], "asked for the default");
+        let s = snap(&d, &w);
+        assert_eq!(s.notice, None, "no notice");
+        assert_eq!(s.microphone.as_deref(), Some("Fake Mic"), "opened");
+        assert_eq!(start_lines(&w), 1, "one start line");
+    }
+
+    #[test]
+    fn a_chosen_device_is_opened() {
+        let w = World::default();
+        save_input(&w, "AirPods Pro");
+        let (d, _) = at(&w, Phase::Recording);
+        assert_eq!(opened(&w), ["AirPods Pro"], "asked for the choice");
+        let s = snap(&d, &w);
+        assert_eq!(s.notice, None, "no notice");
+        assert_eq!(s.microphone.as_deref(), Some("AirPods Pro"), "opened");
+        assert_eq!(start_lines(&w), 1, "one start line");
+    }
+
+    #[test]
+    fn a_missing_device_falls_back_to_the_mac_default_and_says_so() {
+        let w = World::default();
+        save_input(&w, "Jabra");
+        w.recorder
+            .unavailable
+            .borrow_mut()
+            .push("Jabra".to_string());
+        let (d, _) = at(&w, Phase::Recording);
+        assert_eq!(opened(&w), ["Jabra", ""], "then the default");
+        let s = snap(&d, &w);
+        assert_eq!(s.phase, Phase::Recording, "recording");
+        assert_eq!(s.microphone.as_deref(), Some("Fake Mic"), "the default");
+        assert_eq!(
+            s.notice,
+            Some(input_fallback("Jabra", "Fake Mic")),
+            "says so"
+        );
+        assert_eq!(
+            w.files.read(SETTINGS).unwrap(),
+            br#"{"input_device":"Jabra"}"#,
+            "the choice is kept"
+        );
+        assert_eq!(start_lines(&w), 1, "one start line");
+    }
+
+    #[test]
+    fn record_is_refused_only_when_the_mac_default_fails_too() {
+        let w = World::default();
+        save_input(&w, "Jabra");
+        w.recorder
+            .unavailable
+            .borrow_mut()
+            .push("Jabra".to_string());
+        *w.recorder.start_error.borrow_mut() = Some("no mic".to_string());
+        let (mut d, _) = at(&w, Phase::Ready);
+        let before = snap(&d, &w);
+        assert_eq!(
+            d.record(&w.ports()),
+            Err(DictationError::Recorder(PortError("no mic".to_string()))),
+            "the second error"
+        );
+        assert_eq!(*w.recorder.calls.borrow(), ["start", "start"], "two tries");
+        assert_eq!(snap(&d, &w), before, "unchanged");
+        assert_eq!(start_lines(&w), 1, "one start line");
+    }
+
+    #[test]
+    fn resume_is_refused_only_when_the_mac_default_fails_too() {
+        let w = World::default();
+        save_input(&w, "AirPods Pro");
+        let (mut d, _) = at(&w, Phase::Paused);
+        save_input(&w, "Jabra");
+        w.recorder
+            .unavailable
+            .borrow_mut()
+            .push("Jabra".to_string());
+        *w.recorder.start_error.borrow_mut() = Some("no mic".to_string());
+        let before = snap(&d, &w);
+        assert_eq!(
+            d.resume(&w.ports()),
+            Err(DictationError::Recorder(PortError("no mic".to_string()))),
+            "the second error"
+        );
+        assert_eq!(
+            *w.recorder.calls.borrow(),
+            ["start", "stop", "start", "start"],
+            "two tries"
+        );
+        let s = snap(&d, &w);
+        assert_eq!(s, before, "unchanged");
+        assert_eq!(s.phase, Phase::Paused, "paused");
+        assert_eq!(s.microphone.as_deref(), Some("AirPods Pro"), "the earlier");
+        assert_eq!(start_lines(&w), 2, "one start line per attempt");
+    }
+
+    #[test]
+    fn with_no_choice_a_failing_default_is_tried_once() {
+        let w = World::default();
+        *w.recorder.start_error.borrow_mut() = Some("no mic".to_string());
+        let (mut d, _) = at(&w, Phase::Ready);
+        assert_eq!(
+            d.record(&w.ports()),
+            Err(DictationError::Recorder(PortError("no mic".to_string()))),
+            "refused"
+        );
+        assert_eq!(*w.recorder.calls.borrow(), ["start"], "one try");
+        assert_eq!(snap(&d, &w).microphone, None, "nothing opened");
+        assert_eq!(start_lines(&w), 1, "one start line");
+    }
+
+    #[test]
+    fn a_choice_made_while_paused_applies_at_resume() {
+        let w = World::default();
+        save_input(&w, "AirPods Pro");
+        let (mut d, jobs) = at(&w, Phase::Paused);
+        save_input(&w, "MacBook Pro Microphone");
+        assert_eq!(*w.recorder.calls.borrow(), ["start", "stop"], "not yet");
+        for job in &jobs {
+            finish(&mut d, &w, job);
+        }
+        assert_eq!(
+            *w.recorder.calls.borrow(),
+            ["start", "stop"],
+            "the job leaves it"
+        );
+        d.resume(&w.ports()).unwrap();
+        assert_eq!(
+            opened(&w),
+            ["AirPods Pro", "MacBook Pro Microphone"],
+            "the new choice"
+        );
+        assert_eq!(
+            snap(&d, &w).microphone.as_deref(),
+            Some("MacBook Pro Microphone"),
+            "opened"
+        );
+        assert_eq!(start_lines(&w), 2, "one start line per attempt");
+    }
+
+    #[test]
+    fn the_fallback_notice_goes_at_pause_and_returns_at_a_resume_that_falls_back() {
+        let w = World::default();
+        save_input(&w, "Jabra");
+        w.recorder
+            .unavailable
+            .borrow_mut()
+            .push("Jabra".to_string());
+        let (mut d, _) = at(&w, Phase::Paused);
+        assert_eq!(snap(&d, &w).notice, None, "gone at pause");
+        d.resume(&w.ports()).unwrap();
+        assert_eq!(
+            snap(&d, &w).notice,
+            Some(input_fallback("Jabra", "Fake Mic")),
+            "set again"
+        );
+    }
+
+    #[test]
+    fn the_microphone_follows_the_session() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        assert_eq!(snap(&d, &w).microphone, None, "before the first record");
+        save_input(&w, "AirPods Pro");
+        d.record(&p).unwrap();
+        assert_eq!(
+            snap(&d, &w).microphone.as_deref(),
+            Some("AirPods Pro"),
+            "record"
+        );
+        let _job = d.pause(&p).unwrap();
+        assert_eq!(
+            snap(&d, &w).microphone.as_deref(),
+            Some("AirPods Pro"),
+            "paused"
+        );
+        save_input(&w, "");
+        d.resume(&p).unwrap();
+        assert_eq!(
+            snap(&d, &w).microphone.as_deref(),
+            Some("Fake Mic"),
+            "resume"
+        );
+        d.discard(&p).unwrap();
+        assert_eq!(snap(&d, &w).microphone, None, "discard");
+        let (mut finished, _) = at(&w, Phase::Finished);
+        assert!(
+            snap(&finished, &w).microphone.is_some(),
+            "kept when finished"
+        );
+        finished.new_session(&p).unwrap();
+        assert_eq!(snap(&finished, &w).microphone, None, "new");
+    }
+
+    #[test]
+    fn each_segment_is_resampled_on_its_own_whatever_its_device_format() {
+        let w = World::default();
+        {
+            let mut captures = w.recorder.captures.borrow_mut();
+            captures.push_back(Ok(Captured::new(vec![0.5; 96_000], 2, 48_000)));
+            captures.push_back(Ok(Captured::new(vec![0.5; 16_000], 1, 16_000)));
+        }
+        let p = w.ports();
+        let (mut d, mut jobs) = at(&w, Phase::Paused);
+        save_input(&w, "AirPods Pro");
+        d.resume(&p).unwrap();
+        jobs.extend(d.pause(&p).unwrap());
+        assert_eq!(snap(&d, &w).recorded_ms, 2_000, "two seconds");
+        for index in [0, 1] {
+            let samples = decode_wav(&w.files.segment(index).unwrap()).unwrap();
+            assert_eq!(samples.len(), 16_000, "segment {index}");
+        }
+        for job in &jobs {
+            finish(&mut d, &w, job);
+        }
+        let counts: Vec<usize> = w.transcriber.calls.borrow().iter().map(|c| c.0).collect();
+        assert_eq!(counts, [16_000, 16_000], "each at 16 kHz mono");
+    }
+
+    #[test]
+    fn a_device_that_answers_another_name_is_logged_as_a_mismatch() {
+        let w = World::default();
+        save_input(&w, "AirPods Pro");
+        *w.recorder.answers_as.borrow_mut() = Some("Other Mic".to_string());
+        let (d, _) = at(&w, Phase::Recording);
+        assert_eq!(snap(&d, &w).phase, Phase::Recording, "carries on");
+        assert_eq!(
+            log_lines(&w),
+            [
+                r#"{"event":"start","started":null,"action":"record","wanted":"AirPods Pro","opened":"Other Mic","outcome":"opened","first_error":null,"second_error":null,"mismatch":true}"#
+            ],
+            "mismatch"
+        );
+    }
+
+    #[test]
+    fn each_start_outcome_is_logged_exactly() {
+        let w = World::default();
+        let _session = at(&w, Phase::Recording);
+        assert_eq!(
+            w.files.read(MICROPHONE_LOG).unwrap(),
+            br#"{"event":"start","started":null,"action":"record","wanted":"","opened":"Fake Mic","outcome":"opened","first_error":null,"second_error":null,"mismatch":false}
+"#,
+            "opened"
+        );
+
+        let w2 = World::default();
+        save_input(&w2, "Jabra");
+        w2.recorder
+            .unavailable
+            .borrow_mut()
+            .push("Jabra".to_string());
+        let _session2 = at(&w2, Phase::Recording);
+        assert_eq!(
+            log_lines(&w2),
+            [
+                r#"{"event":"start","started":null,"action":"record","wanted":"Jabra","opened":"Fake Mic","outcome":"fallback","first_error":"gone","second_error":null,"mismatch":false}"#
+            ],
+            "fallback"
+        );
+
+        let w3 = World::default();
+        save_input(&w3, "Jabra");
+        w3.recorder
+            .unavailable
+            .borrow_mut()
+            .push("Jabra".to_string());
+        *w3.recorder.start_error.borrow_mut() = Some("no mic".to_string());
+        let (mut d3, _) = at(&w3, Phase::Ready);
+        assert!(d3.record(&w3.ports()).is_err(), "refused");
+        assert_eq!(
+            log_lines(&w3),
+            [
+                r#"{"event":"start","started":null,"action":"record","wanted":"Jabra","opened":null,"outcome":"failed","first_error":"gone","second_error":"no mic","mismatch":false}"#
+            ],
+            "failed after a fallback"
+        );
+
+        let w4 = World::default();
+        *w4.recorder.start_error.borrow_mut() = Some("no mic".to_string());
+        let (mut d4, _) = at(&w4, Phase::Ready);
+        assert!(d4.record(&w4.ports()).is_err(), "refused");
+        assert_eq!(
+            log_lines(&w4),
+            [
+                r#"{"event":"start","started":null,"action":"record","wanted":"","opened":null,"outcome":"failed","first_error":"no mic","second_error":null,"mismatch":false}"#
+            ],
+            "failed"
+        );
+    }
+
+    #[test]
+    fn each_segment_is_logged_with_its_device_and_format() {
+        let w = World::default();
+        w.recorder
+            .captures
+            .borrow_mut()
+            .push_back(Ok(Captured::new(vec![0.5, -0.75], 1, 16_000)));
+        let _session = at(&w, Phase::Paused);
+        assert_eq!(
+            log_lines(&w).get(1).map(String::as_str),
+            Some(
+                r#"{"event":"segment","started":null,"device":"Fake Mic","channels":1,"sample_rate":16000,"samples":2,"peak":0.75}"#
+            ),
+            "segment line"
+        );
+
+        let w2 = World::default();
+        w2.recorder
+            .captures
+            .borrow_mut()
+            .push_back(Ok(Captured::new(vec![0.0; 4], 2, 48_000)));
+        let _session2 = at(&w2, Phase::Paused);
+        assert_eq!(
+            log_lines(&w2).get(1).map(String::as_str),
+            Some(
+                r#"{"event":"segment","started":null,"device":"Fake Mic","channels":2,"sample_rate":48000,"samples":4,"peak":0.0}"#
+            ),
+            "silence"
+        );
+    }
+
+    #[test]
+    fn with_the_library_on_the_log_carries_the_entry_title() {
+        let w = World::default();
+        let p = w.library_ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let _job = d.pause(&p).unwrap();
+        d.resume(&p).unwrap();
+        let lines = log_lines(&w);
+        assert!(
+            lines
+                .first()
+                .is_some_and(|l| l.contains(r#""started":null,"action":"record""#)),
+            "the first record has no start yet: {lines:?}"
+        );
+        assert!(
+            lines.get(1).is_some_and(
+                |l| l.starts_with(r#"{"event":"segment","started":"2026-10-26 14:03:09","#)
+            ),
+            "the segment carries the title: {lines:?}"
+        );
+        assert!(
+            lines
+                .get(2)
+                .is_some_and(|l| l.contains(r#""started":"2026-10-26 14:03:09","action":"resume""#)),
+            "resume: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_stop_logs_no_segment() {
+        let w = World::default();
+        w.recorder
+            .captures
+            .borrow_mut()
+            .push_back(Err("unplugged".to_string()));
+        let (mut d, _) = at(&w, Phase::Recording);
+        assert!(d.pause(&w.ports()).unwrap().is_none(), "lost");
+        assert_eq!(
+            log_lines(&w).len(),
+            1,
+            "only the start: {:?}",
+            log_lines(&w)
+        );
+    }
+
+    #[test]
+    fn the_log_keeps_the_newest_two_hundred_lines() {
+        let w = World::default();
+        *w.recorder.start_error.borrow_mut() = Some("no mic".to_string());
+        let (mut d, _) = at(&w, Phase::Ready);
+        save_input(&w, "first");
+        assert!(d.record(&w.ports()).is_err(), "refused");
+        save_input(&w, "");
+        for _ in 0..200 {
+            assert!(d.record(&w.ports()).is_err(), "refused");
+        }
+        let lines = log_lines(&w);
+        assert_eq!(lines.len(), 200, "bounded");
+        assert!(
+            lines.iter().all(|l| !l.contains(r#""wanted":"first""#)),
+            "the oldest is gone"
+        );
+        assert!(
+            w.files.read(MICROPHONE_LOG).unwrap().ends_with(b"}\n"),
+            "ends with a newline"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_or_damaged_log_is_started_afresh() {
+        let w = World::default();
+        w.files.write(MICROPHONE_LOG, &[0xff, b'\n']).unwrap();
+        let _session = at(&w, Phase::Recording);
+        let lines = log_lines_lossy(&w);
+        assert_eq!(lines.len(), 2, "kept lossily: {lines:?}");
+        assert_eq!(lines.first().map(String::as_str), Some("\u{fffd}"), "lossy");
+    }
+
+    fn log_lines_lossy(w: &World) -> Vec<String> {
+        String::from_utf8_lossy(&w.files.read(MICROPHONE_LOG).unwrap())
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn a_log_that_cannot_be_written_or_read_never_stops_a_recording() {
+        let w = World::default();
+        let (mut d, _) = at(&w, Phase::Ready);
+        w.files.fail_write.set(true);
+        d.record(&w.ports()).unwrap();
+        assert_eq!(snap(&d, &w).phase, Phase::Recording, "write failed");
+
+        let w2 = World::default();
+        let (mut d2, _) = at(&w2, Phase::Ready);
+        w2.files.fail_read.set(true);
+        d2.record(&w2.ports()).unwrap();
+        assert_eq!(snap(&d2, &w2).phase, Phase::Recording, "read failed");
+    }
+
+    #[test]
+    fn new_leaves_the_log_in_place() {
+        let w = World::default();
+        let (mut d, _) = at(&w, Phase::Finished);
+        let before = log_lines(&w);
+        assert_eq!(before.len(), 2, "a start and a segment");
+        d.new_session(&w.ports()).unwrap();
+        assert_eq!(log_lines(&w), before, "untouched");
     }
 }

@@ -12,7 +12,9 @@ mod tests {
     use serde::de::DeserializeOwned;
     use serde_json::{Value, json};
 
-    use scriber_core::model::{Action, Download, LibraryEntry, Phase, Settings, Snapshot};
+    use scriber_core::model::{
+        Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot,
+    };
 
     const FIXTURE: &str = include_str!("fixtures/bridge-shapes.json");
 
@@ -53,6 +55,7 @@ mod tests {
                 model_error: None,
                 download: None,
                 library_revision: 3,
+                microphone: Some("Jabra Evolve 65".to_string()),
             },
         );
         round_trip(
@@ -74,6 +77,7 @@ mod tests {
                 ),
                 download: None,
                 library_revision: 0,
+                microphone: None,
             },
         );
         round_trip(
@@ -93,6 +97,7 @@ mod tests {
                     total_bytes: 1_624_555_275,
                 }),
                 library_revision: 0,
+                microphone: None,
             },
         );
     }
@@ -117,7 +122,93 @@ mod tests {
                 summary_model: "gemma3:4b".to_string(),
                 cleanup_model: "qwen3.8:27b-mlx".to_string(),
                 library_width: 300,
+                input_device: "AirPods Pro".to_string(),
             },
+        );
+    }
+
+    #[test]
+    fn input_devices() {
+        round_trip(
+            "inputDevices",
+            &InputDevices {
+                default_device: Some("Jabra Evolve 65".to_string()),
+                others: vec![
+                    "AirPods Pro".to_string(),
+                    "MacBook Pro Microphone".to_string(),
+                ],
+            },
+        );
+        round_trip(
+            "inputDevicesNone",
+            &InputDevices {
+                default_device: None,
+                others: vec![],
+            },
+        );
+        let (extra, missing) = altered("inputDevices", "others");
+        assert!(
+            serde_json::from_value::<InputDevices>(extra).is_err(),
+            "input devices: unknown field"
+        );
+        assert!(
+            serde_json::from_value::<InputDevices>(missing).is_err(),
+            "input devices: missing others"
+        );
+        let (_, no_default) = altered("inputDevices", "defaultDevice");
+        assert_eq!(
+            serde_json::from_value::<InputDevices>(no_default)
+                .unwrap()
+                .default_device,
+            None,
+            "a missing defaultDevice reads as none"
+        );
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn input_devices_are_listed_once_sorted_without_the_default() {
+        let jabra = InputDevices::new(
+            Some("Jabra Evolve 65".to_string()),
+            [
+                "MacBook Pro Microphone",
+                "Jabra Evolve 65",
+                "AirPods Pro",
+                "AirPods Pro",
+                "",
+            ]
+            .map(String::from),
+        );
+        assert_eq!(
+            jabra.default_device.as_deref(),
+            Some("Jabra Evolve 65"),
+            "default kept"
+        );
+        assert_eq!(
+            jabra.others,
+            names(&["AirPods Pro", "MacBook Pro Microphone"]),
+            "no default, no empty, no duplicate"
+        );
+        assert_eq!(
+            InputDevices::new(None, ["zed", "Apple", "banana"].map(String::from)).others,
+            names(&["Apple", "banana", "zed"]),
+            "case-insensitive order"
+        );
+        assert_eq!(
+            InputDevices::new(None, ["mic", "Mic", "mic"].map(String::from)).others,
+            names(&["Mic", "mic"]),
+            "ties by byte order, then once each"
+        );
+        assert_eq!(
+            InputDevices::new(Some(String::new()), ["Mic".to_string()]),
+            InputDevices {
+                default_device: None,
+                others: names(&["Mic"]),
+            },
+            "an empty default is none"
         );
     }
 
@@ -177,6 +268,11 @@ mod tests {
         assert!(
             serde_json::from_value::<Settings>(no_library_width).is_err(),
             "settings: missing libraryWidth"
+        );
+        let (_, no_input_device) = altered("settings", "inputDevice");
+        assert!(
+            serde_json::from_value::<Settings>(no_input_device).is_err(),
+            "settings: missing inputDevice"
         );
         for bad in [json!(300.5), json!(-1)] {
             let mut settings = fixture("settings");

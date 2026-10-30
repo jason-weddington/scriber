@@ -12,6 +12,7 @@
     appVersion,
     dictationState,
     errorText,
+    inputDevices,
     libraryCopy,
     libraryGet,
     libraryList,
@@ -26,6 +27,7 @@
     windowFullscreen,
   } from './lib/bridge';
   import {
+    activeMicrophone,
     allowed,
     bars,
     barCount,
@@ -40,8 +42,9 @@
     statusText,
   } from './lib/format';
   import LibraryDrawer from './lib/LibraryDrawer.svelte';
+  import MicrophoneMenu from './lib/MicrophoneMenu.svelte';
   import SettingsPanel from './lib/SettingsPanel.svelte';
-  import type { Action, LibraryEntry, Settings, Snapshot } from './lib/types';
+  import type { Action, InputDevices, LibraryEntry, Settings, Snapshot } from './lib/types';
 
   let snapshot = $state<Snapshot | null>(null);
   let loadError = $state<string | null>(null);
@@ -71,7 +74,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '' });
   let settingsOpen = $state(false);
   let settingsButton = $state<HTMLButtonElement>();
   let settingsFromPointer = false;
@@ -84,6 +87,11 @@
   let ollamaReason = $state('');
   // Which listing is the latest, so a slow earlier answer cannot overwrite it.
   let modelListing = 0;
+  // The input devices as last listed (null before the first answer), why the
+  // latest listing failed, and which listing is the latest.
+  let inputs = $state<InputDevices | null>(null);
+  let inputsError = $state<string | null>(null);
+  let inputListing = 0;
   // A failure to save the drawer's open state or width, shown in the band.
   let toggleError = $state<string | null>(null);
   let fullscreen = $state(false);
@@ -111,7 +119,9 @@
     else recordingSince = null;
     if (next.phase !== 'recording' && next.phase !== 'paused') levels = [];
     if (next.phase === 'finished' && (snapshot?.phase !== 'finished' || snapshot.text !== next.text)) draft = next.text;
+    const becameReady = next.phase === 'ready' && snapshot?.phase !== 'ready';
     snapshot = next;
+    if (becameReady) listInputs();
     if (next.libraryRevision > listedRevision) void list(next.libraryRevision);
   }
 
@@ -186,6 +196,38 @@
         ollamaDown = true;
         models = [];
         ollamaReason = errorText(e);
+      },
+    );
+  }
+
+  /** Lists the input devices in the background; only the latest listing is kept, and a failure keeps the last list. */
+  function listInputs(): void {
+    inputListing += 1;
+    const n = inputListing;
+    inputDevices().then(
+      (got) => {
+        if (n !== inputListing) return;
+        inputs = got;
+        inputsError = null;
+      },
+      (e: unknown) => {
+        if (n === inputListing) inputsError = errorText(e);
+      },
+    );
+  }
+
+  /** The microphone menu's choice: an input device's name, or '' for the Mac default. */
+  function chooseInput(value: string): void {
+    if (value === settings.inputDevice) return;
+    const previous = settings.inputDevice;
+    settings = { ...settings, inputDevice: value };
+    settingsSet(settings).then(
+      () => {
+        toggleError = null;
+      },
+      (e: unknown) => {
+        settings = { ...settings, inputDevice: previous };
+        toggleError = errorText(e);
       },
     );
   }
@@ -335,6 +377,7 @@
       () => undefined,
     );
     void list(0);
+    listInputs();
     // Unreadable settings leave the defaults, silently.
     settingsGet().then(
       (s) => {
@@ -397,6 +440,7 @@
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === 'Tab') pointerDown = false;
     if (settingsOpen) return;
+    if (e.target instanceof Element && e.target.closest('[role="menu"]') !== null) return;
     if (entry !== null) {
       // An entry is shown: only ⌘N (back to the recorder) acts.
       if (shortcut(e, 'idle', true) === 'new') {
@@ -494,6 +538,17 @@
                 : 'Listening for sound from the microphone.'}
           </span>
         </div>
+      {/if}
+
+      {#if snapshot.phase === 'ready' || snapshot.phase === 'recording' || snapshot.phase === 'paused'}
+        <MicrophoneMenu
+          name={activeMicrophone(snapshot, inputs, settings.inputDevice)}
+          {inputs}
+          saved={settings.inputDevice}
+          error={inputsError}
+          onopen={listInputs}
+          onchoose={chooseInput}
+        />
       {/if}
 
       <div class="controls">

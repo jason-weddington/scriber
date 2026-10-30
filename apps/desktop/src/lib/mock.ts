@@ -29,9 +29,19 @@
 //   ?summaryModel=<name>  the summary model starts as that name in the settings (else '', the default)
 //   ?cleanupModel=<name>  the post-processing model starts as that name in the settings (else '')
 //   ?cleanup=on           post-processing with the local model starts on in the settings
+//   ?inputs=many          input_devices answers MOCK_DEFAULT_INPUT and 30 others, Microphone 01 to Microphone 30
+//   ?inputs=long          input_devices answers MOCK_DEFAULT_INPUT and one other with an 80-character name
+//   ?inputs=none          input_devices answers no default and no others (Record then fails)
+//   ?inputDevice=<name>   the saved input device starts as that name (else '', the Mac default)
 // A test can hold a call so the UI is seen mid-call, and release it:
-//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup' | 'ollama_models' | 'window_fullscreen') ... release(...)
+//   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup' | 'ollama_models' | 'input_devices' | 'window_fullscreen') ... release(...)
 // window.__mockBridge.setFullscreen(on) changes the full-screen state and tells the listeners.
+// window.__mockBridge.setInputs(others) replaces the other input devices for later listings and Records.
+// input_devices counts its calls in window.__mockBridge.inputListings. Record and Resume open the
+// saved input device like the core: '' opens the default; a saved name that is the default or
+// listed opens it; any other falls back to the default with the core's input_fallback notice; with
+// no default they reject with "Could not start recording: there is no input device". The snapshot's
+// microphone names what opened, and New and Discard clear it.
 // ('download' holds each step of the model's download; 'summarize' holds
 // each new library entry's summary; 'cleanup' holds the cleanup pass over a
 // finished transcript, with cleanup on, which keeps the session
@@ -51,7 +61,7 @@
 // Date.now() and setTimeout, so Playwright's clock controls them.
 
 import { clampLibraryWidth, LIBRARY_WIDTH_DEFAULT } from './format';
-import type { Action, Download, LibraryEntry, Phase, Settings, Snapshot } from './types';
+import type { Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot } from './types';
 
 /** The version the mock reports, so a mock can never pass for the real app. */
 export const MOCK_VERSION = '0.0.0-mock';
@@ -123,6 +133,20 @@ export const MOCK_MODELS: readonly string[] = ['gemma3:4b', 'qwen3.8:27b-mlx'];
 
 /** Why ollama_models rejects under ?ollama=down. */
 export const OLLAMA_DOWN = 'Local AI needs Ollama: connection refused.';
+
+/** The mock Mac's default input device. */
+export const MOCK_DEFAULT_INPUT = 'Jabra Evolve 65';
+
+/** The mock Mac's other input devices, sorted. */
+export const MOCK_INPUTS: readonly string[] = ['AirPods Pro', 'MacBook Pro Microphone'];
+
+/** The core's notice when the chosen input device will not open (dictation.rs input_fallback). */
+export function inputFallback(wanted: string, opened: string): string {
+  return `${wanted} is not available, so this part is recording from the Mac default, ${opened}.`;
+}
+
+/** The core's refusal when no input device opens (the cpal adapter's sentence). */
+export const NO_INPUT = 'Could not start recording: there is no input device';
 
 /** What the mock summarizer answers for every entry. */
 export const MOCK_SUMMARY = 'A dictated note.';
@@ -239,7 +263,7 @@ type Slot = { state: 'pending' } | { state: 'heard'; text: string | null } | { s
 
 /** What a test reaches through `window.__mockBridge`. */
 export interface MockHandle {
-  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download', 'summarize', 'cleanup', 'ollama_models' or 'window_fullscreen') wait until `release(name)`. */
+  /** Makes `name` ('dictation_act', 'dictation_state', 'transcribe', 'download', 'summarize', 'cleanup', 'ollama_models', 'input_devices' or 'window_fullscreen') wait until `release(name)`. */
   hold(name: string): void;
   release(name: string): void;
   /** Every text the mock clipboard was given, in order. */
@@ -254,6 +278,10 @@ export interface MockHandle {
   readonly browsed: string[];
   /** How many times ollama_models was called. */
   readonly modelListings: number;
+  /** How many times input_devices was called. */
+  readonly inputListings: number;
+  /** Replaces the other input devices for later listings and Records. */
+  setInputs(others: string[]): void;
   /** Puts the window in or out of full screen and tells the listeners. */
   setFullscreen(on: boolean): void;
 }
@@ -285,6 +313,9 @@ export class Mock {
   private entries: (LibraryEntry & { transcript: string })[] = [];
   private libraryRevision = 0;
   private modelListings = 0;
+  private inputListings = 0;
+  private inputs: InputDevices;
+  private microphone: string | null = null;
   private settings: Settings;
   /** Date.now() at the session's first Record, else null. */
   private started: number | null = null;
@@ -331,7 +362,21 @@ export class Mock {
       summaryModel: params.get('summaryModel') ?? '',
       cleanupModel: params.get('cleanupModel') ?? '',
       libraryWidth: Number(params.get('libraryWidth') ?? LIBRARY_WIDTH_DEFAULT),
+      inputDevice: params.get('inputDevice') ?? '',
     };
+    const inputs = params.get('inputs');
+    this.inputs =
+      inputs === 'none'
+        ? { defaultDevice: null, others: [] }
+        : {
+            defaultDevice: MOCK_DEFAULT_INPUT,
+            others:
+              inputs === 'many'
+                ? Array.from({ length: 30 }, (_, k) => `Microphone ${String(k + 1).padStart(2, '0')}`)
+                : inputs === 'long'
+                  ? ['L'.repeat(80)]
+                  : [...MOCK_INPUTS],
+          };
     const pick = params.get('pick') ?? MOCK_PICK;
     this.pick = pick === 'cancel' ? null : pick;
     this.entries = Array.from({ length: Number(params.get('library') ?? '0') }, (_, k) => preloaded(k));
@@ -347,6 +392,7 @@ export class Mock {
 
   get handle(): MockHandle {
     const listings = (): number => this.modelListings;
+    const inputListings = (): number => this.inputListings;
     return {
       hold: (name) => {
         let open = (): void => undefined;
@@ -371,6 +417,12 @@ export class Mock {
       get modelListings() {
         return listings();
       },
+      get inputListings() {
+        return inputListings();
+      },
+      setInputs: (others) => {
+        this.inputs = { ...this.inputs, others: [...others] };
+      },
     };
   }
 
@@ -393,6 +445,7 @@ export class Mock {
       modelError: this.modelError(),
       download: this.received === null ? null : ({ receivedBytes: this.received, totalBytes: MODEL_BYTES } satisfies Download),
       libraryRevision: this.libraryRevision,
+      microphone: this.microphone,
     };
   }
 
@@ -479,6 +532,23 @@ export class Mock {
     return [...MOCK_MODELS];
   }
 
+  /** The input devices: the default and the others (see ?inputs= and setInputs). */
+  async inputDevices(): Promise<InputDevices> {
+    this.inputListings += 1;
+    await this.gate('input_devices');
+    this.check('input_devices');
+    return { defaultDevice: this.inputs.defaultDevice, others: [...this.inputs.others] };
+  }
+
+  /** The core's device choice at Record and Resume: what opens, and the notice. */
+  private openInput(): { name: string; notice: string | null } {
+    const wanted = this.settings.inputDevice;
+    const { defaultDevice, others } = this.inputs;
+    if (wanted !== '' && (wanted === defaultDevice || others.includes(wanted))) return { name: wanted, notice: null };
+    if (defaultDevice === null) throw new Error(NO_INPUT);
+    return { name: defaultDevice, notice: wanted === '' ? null : inputFallback(wanted, defaultDevice) };
+  }
+
   /** The open panel: the ?pick= file, or null when cancelled. */
   async pickVocabularyFile(current: string): Promise<string | null> {
     await this.gate('pick_vocabulary_file');
@@ -543,9 +613,13 @@ export class Mock {
       case 'record':
       case 'resume':
         if (!this.modelPresent) throw new Error(this.modelError() ?? DOWNLOADING);
+        {
+          const opened = this.openInput();
+          this.microphone = opened.name;
+          this.notice = opened.notice;
+        }
         if (action === 'record') this.started ??= Date.now();
         this.since = Date.now();
-        this.notice = null;
         this.phase = 'recording';
         this.startLevels();
         break;
@@ -595,6 +669,7 @@ export class Mock {
     this.error = null;
     this.notice = null;
     this.started = null;
+    this.microphone = null;
     this.phase = 'ready';
   }
 

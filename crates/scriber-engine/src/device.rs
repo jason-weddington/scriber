@@ -1,13 +1,15 @@
-//! The microphone: cpal's default input device at its default config.
+//! The microphone: the chosen cpal input device (or the default one) at
+//! its default config, and the list of input devices.
 
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use scriber_core::level::{Tap, feeder};
+use scriber_core::model::InputDevices;
 use scriber_core::ports::{Captured, PortError, Recorder, fail};
 use scriber_core::sync::lock;
 
-/// The default input device. Every block it delivers is metered
+/// The chosen input device, or the default one. Every block it delivers is metered
 /// ([`scriber_core::level`]) and the level handed to the sink given to
 /// [`CpalRecorder::new`], on the audio thread.
 pub struct CpalRecorder {
@@ -29,9 +31,22 @@ impl CpalRecorder {
 }
 
 impl Recorder for CpalRecorder {
-    fn start(&self) -> Result<(), PortError> {
-        let (host, none) = (cpal::default_host(), fail("there is no input device"));
-        let device = host.default_input_device().ok_or(none)?;
+    fn start(&self, device: &str) -> Result<String, PortError> {
+        let host = cpal::default_host();
+        let device = if device.is_empty() {
+            host.default_input_device()
+                .ok_or(fail("there is no input device"))?
+        } else {
+            host.input_devices()
+                .map_err(fail)?
+                .find(|d| d.description().is_ok_and(|n| n.name() == device))
+                .ok_or_else(|| fail(format!("there is no input device named {device}")))?
+        };
+        // A name that cannot be read never stops a recording.
+        let name = device.description().map_or_else(
+            |_| "Unknown microphone".to_string(),
+            |d| d.name().to_string(),
+        );
         let config = device.default_input_config().map_err(fail)?;
         let (channels, rate) = (config.channels(), config.sample_rate());
         let tap = Arc::new(Mutex::new(Tap::new(channels, rate)));
@@ -42,7 +57,19 @@ impl Recorder for CpalRecorder {
         let stream = stream.map_err(fail)?;
         stream.play().map_err(fail)?;
         *lock(&self.capture) = Some((stream, tap));
-        Ok(())
+        Ok(name)
+    }
+
+    fn inputs(&self) -> Result<InputDevices, PortError> {
+        let host = cpal::default_host();
+        let name = |d: &cpal::Device| d.description().ok().map(|d| d.name().to_string());
+        let default_device = host.default_input_device().as_ref().and_then(name);
+        let names: Vec<String> = host
+            .input_devices()
+            .map_err(fail)?
+            .filter_map(|d| name(&d))
+            .collect();
+        Ok(InputDevices::new(default_device, names))
     }
 
     fn stop(&self) -> Result<Captured, PortError> {

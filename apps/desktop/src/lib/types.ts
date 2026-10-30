@@ -34,6 +34,8 @@ export interface Snapshot {
   download: Download | null;
   /** Grows whenever the recording library gains an entry or a summary; the window lists it again. */
   libraryRevision: number;
+  /** The input device opened for this session's latest segment, by name; null before the first Record. */
+  microphone: string | null;
 }
 
 /** One recording in the library, as the drawer lists it. */
@@ -62,4 +64,14 @@ export interface Settings {
   cleanupModel: string;
   /** The library drawer's width in px, a whole number from 110 to 440 (a fraction is refused by the bridge). */
   libraryWidth: number;
+  /** The input device to record from, by name; '' means the Mac default. Saved and answered verbatim. */
+  inputDevice: string;
+}
+
+/** The input devices the microphone menu offers. */
+export interface InputDevices {
+  /** The Mac's default input device, by name; null when there is none. */
+  defaultDevice: string | null;
+  /** Every other input device's name, sorted case-insensitively. */
+  others: string[];
 }

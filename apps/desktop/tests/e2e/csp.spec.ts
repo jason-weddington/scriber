@@ -58,7 +58,12 @@ test('the built app runs under the production CSP with no violations', async ({ 
   await expect(page.locator('html')).toHaveAttribute('data-bridge', 'mock');
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   // Through to the transcript, so every state's markup renders under the CSP.
-  await press(page, 'New', 'Record', 'Pause', 'Resume', 'Done');
+  await press(page, 'New');
+  // The microphone menu's popover is placed with style directives, which the CSP must allow.
+  await page.getByRole('button', { name: /^Microphone/ }).click();
+  await expect(page.getByRole('menuitemradio').first()).toBeVisible();
+  await page.keyboard.press('Escape');
+  await press(page, 'Record', 'Pause', 'Resume', 'Done');
   await expect(page.getByRole('textbox', { name: 'Transcript' })).toBeVisible();
   expect(violations).toEqual([]);
 });

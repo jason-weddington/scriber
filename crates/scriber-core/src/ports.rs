@@ -6,6 +6,7 @@
 //! these.
 
 use crate::dictation::Job;
+use crate::model::InputDevices;
 
 /// A failed effect, as one readable sentence.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -47,14 +48,24 @@ impl Captured {
     }
 }
 
-/// The microphone.
+/// The microphone: the system's input devices, and capture from one of them.
 pub trait Recorder {
-    /// Starts capturing a segment from the default input device.
+    /// Starts capturing a segment from the input device named `device`, or
+    /// from the system's default input device when `device` is `""`.
+    /// Answers the name of the device actually opened.
     ///
     /// # Errors
     ///
-    /// There is no input device, or it cannot be opened.
-    fn start(&self) -> Result<(), PortError>;
+    /// There is no such input device, or it cannot be opened.
+    fn start(&self, device: &str) -> Result<String, PortError>;
+
+    /// The input devices there are now: the system default's name and every
+    /// other one's (see [`InputDevices::new`]).
+    ///
+    /// # Errors
+    ///
+    /// The devices cannot be listed.
+    fn inputs(&self) -> Result<InputDevices, PortError>;
 
     /// Stops capturing and hands over everything captured since `start`.
     ///

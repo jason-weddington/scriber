@@ -22,6 +22,7 @@ mod tests {
         summary_model: String::new(),
         cleanup_model: String::new(),
         library_width: 220,
+        input_device: String::new(),
     };
 
     fn with(bytes: &[u8]) -> FakeFiles {
@@ -63,6 +64,7 @@ mod tests {
                     summary_model: String::new(),
                     cleanup_model: String::new(),
                     library_width: 220,
+                    input_device: String::new(),
                 },
             ),
             (
@@ -75,6 +77,7 @@ mod tests {
                     summary_model: String::new(),
                     cleanup_model: String::new(),
                     library_width: 220,
+                    input_device: String::new(),
                 },
             ),
             (
@@ -87,6 +90,7 @@ mod tests {
                     summary_model: String::new(),
                     cleanup_model: String::new(),
                     library_width: 220,
+                    input_device: String::new(),
                 },
             ),
             (
@@ -99,6 +103,7 @@ mod tests {
                     summary_model: String::new(),
                     cleanup_model: String::new(),
                     library_width: 220,
+                    input_device: String::new(),
                 },
             ),
             (br#"{"libraryOpen":false}"#, DEFAULTS),
@@ -123,6 +128,7 @@ mod tests {
             summary_model: String::new(),
             cleanup_model: String::new(),
             library_width: 220,
+            input_device: String::new(),
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
@@ -136,13 +142,14 @@ mod tests {
                 "cleanup": false,
                 "summary_model": "",
                 "cleanup_model": "",
-                "library_width": 220
+                "library_width": 220,
+                "input_device": ""
             }),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":""}"#,
             "compact"
         );
         assert!(
@@ -185,7 +192,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":""}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -223,7 +230,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":""}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -261,7 +268,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":""}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -312,9 +319,48 @@ mod tests {
         save(&files, &s).unwrap();
         let bytes = files.read(SETTINGS).unwrap();
         assert!(
-            bytes.ends_with(br#","library_width":300}"#),
+            bytes.ends_with(br#","library_width":300,"input_device":""}"#),
             "{}",
             String::from_utf8_lossy(&bytes)
+        );
+        assert_eq!(load(&files), s, "read back");
+    }
+
+    #[test]
+    fn the_input_device_is_kept_only_when_it_is_a_string() {
+        assert_eq!(
+            load(&with(br#"{"input_device":"AirPods Pro"}"#)).input_device,
+            "AirPods Pro",
+            "a name"
+        );
+        assert_eq!(
+            load(&with(br#"{"input_device":" Mic "}"#)).input_device,
+            " Mic ",
+            "kept exactly"
+        );
+        assert_eq!(load(&with(b"{}")).input_device, "", "missing");
+        for bytes in [&br#"{"input_device":42}"#[..], br#"{"input_device":null}"#] {
+            assert_eq!(
+                load(&with(bytes)).input_device,
+                "",
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn the_input_device_is_saved_last() {
+        let files = FakeFiles::default();
+        let s = Settings {
+            input_device: "AirPods Pro".to_string(),
+            ..DEFAULTS
+        };
+        save(&files, &s).unwrap();
+        assert_eq!(
+            files.read(SETTINGS).unwrap(),
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro"}"#,
+            "bytes"
         );
         assert_eq!(load(&files), s, "read back");
     }

@@ -14,8 +14,8 @@ mod tests {
 
     use scriber_engine::{
         Action, Clipboard, DEFAULT_OLLAMA_URL, DEFAULT_SUMMARY_MODEL, DictationError, Download,
-        Engine, EngineConfig, EngineError, Event, LibraryEntry, ModelSource, Phase, PortError,
-        Settings, ShutdownReport, Source, level_sink,
+        Engine, EngineConfig, EngineError, Event, InputDevices, LibraryEntry, ModelSource, Phase,
+        PortError, Settings, ShutdownReport, Source, level_sink,
     };
     use tempfile::TempDir;
 
@@ -940,6 +940,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             library_width: 220,
+            input_device: String::new(),
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -950,7 +951,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":""}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -989,6 +990,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             library_width: 220,
+            input_device: String::new(),
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1018,6 +1020,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             library_width: 220,
+            input_device: String::new(),
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1037,6 +1040,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             library_width: 220,
+            input_device: String::new(),
         };
         let kept = Settings {
             summaries: false,
@@ -1060,6 +1064,7 @@ mod tests {
                 summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 library_width: 220,
+                input_device: String::new(),
             })
             .unwrap();
         let back = engine
@@ -1071,6 +1076,7 @@ mod tests {
                 summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 library_width: 220,
+                input_device: String::new(),
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1102,6 +1108,7 @@ mod tests {
                 summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 library_width: 220,
+                input_device: String::new(),
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1170,6 +1177,7 @@ mod tests {
                 summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 library_width: 220,
+                input_device: String::new(),
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1220,6 +1228,7 @@ mod tests {
             summary_model: summary_model.to_string(),
             cleanup_model: cleanup_model.to_string(),
             library_width: 220,
+            input_device: String::new(),
         }
     }
 
@@ -1431,6 +1440,7 @@ mod tests {
             cleanup: on,
             cleanup_model: model.to_string(),
             library_width: 220,
+            input_device: String::new(),
             ..engine.settings()
         }
     }
@@ -1737,5 +1747,85 @@ mod tests {
         );
         thread::sleep(QUIET);
         assert!(fakes.warmer.seen().is_empty(), "no call");
+    }
+
+    #[test]
+    fn the_input_devices_are_listed_from_the_recorder() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        assert_eq!(
+            engine.input_devices(),
+            Ok(InputDevices {
+                default_device: Some("Fake Mic".to_string()),
+                others: vec!["Other Mic".to_string()],
+            }),
+            "listed"
+        );
+        *fakes.recorder.inputs_error.lock().unwrap() = Some("Core Audio is busy".to_string());
+        let listed = engine.input_devices();
+        assert_eq!(
+            listed,
+            Err(EngineError::Microphones("Core Audio is busy".to_string())),
+            "an error"
+        );
+        assert_eq!(
+            listed.unwrap_err().to_string(),
+            "Could not list the microphones: Core Audio is busy.",
+            "sentence"
+        );
+    }
+
+    #[test]
+    fn the_chosen_input_device_is_opened_by_record() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        let _saved = engine
+            .set_settings(Settings {
+                input_device: "AirPods Pro".to_string(),
+                ..engine.settings()
+            })
+            .unwrap();
+        let recording = engine.record().unwrap();
+        assert_eq!(
+            *fakes.recorder.opened.lock().unwrap(),
+            ["AirPods Pro"],
+            "asked for the choice"
+        );
+        assert_eq!(
+            recording.microphone.as_deref(),
+            Some("AirPods Pro"),
+            "the snapshot names it"
+        );
+    }
+
+    #[test]
+    fn an_empty_input_device_is_saved_and_answered_as_empty() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let choose = |name: &str| Settings {
+            input_device: name.to_string(),
+            ..engine.settings()
+        };
+        assert_eq!(
+            engine
+                .set_settings(choose("AirPods Pro"))
+                .unwrap()
+                .input_device,
+            "AirPods Pro",
+            "chosen"
+        );
+        assert_eq!(
+            engine.set_settings(choose("")).unwrap().input_device,
+            "",
+            "the Mac default"
+        );
+        assert_eq!(engine.settings().input_device, "", "read back");
+        assert!(
+            saved(&dir).contains(r#""input_device":"""#),
+            "{}",
+            saved(&dir)
+        );
     }
 }

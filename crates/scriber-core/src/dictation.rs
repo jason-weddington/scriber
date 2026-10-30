@@ -34,6 +34,7 @@ use crate::store;
 use crate::sync::lock;
 use crate::transcript::{is_silent, join, keep, trim_trailing_silence};
 use crate::vocabulary::{self, prompt};
+use serde::Serialize;
 
 /// Why an action was refused. The session is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -83,6 +84,13 @@ pub fn download_failed(reason: &str) -> String {
 
 /// Why Record is refused while the model downloads.
 pub const DOWNLOADING: &str = "The speech model is still downloading.";
+
+/// The notice shown when the chosen input device `wanted` would not open, so
+/// the segment records from the Mac's default device, `opened`, instead.
+#[must_use]
+pub fn input_fallback(wanted: &str, opened: &str) -> String {
+    format!("{wanted} is not available, so this part is recording from the Mac default, {opened}.")
+}
 
 /// Shown when the transcript was copied.
 pub const COPIED: &str = "Copied to the clipboard.";
@@ -308,6 +316,39 @@ fn started(ports: &Ports<'_>) -> Option<String> {
     fits.then(|| text.to_string())
 }
 
+/// A [`store::MICROPHONE_LOG`] line for one Record or Resume.
+#[derive(Serialize)]
+struct StartLine<'a> {
+    event: &'static str,
+    started: Option<&'a str>,
+    action: &'static str,
+    wanted: &'a str,
+    opened: Option<&'a str>,
+    outcome: &'static str,
+    first_error: Option<String>,
+    second_error: Option<String>,
+    mismatch: bool,
+}
+
+/// A [`store::MICROPHONE_LOG`] line for one closed segment.
+#[derive(Serialize)]
+struct SegmentLine<'a> {
+    event: &'static str,
+    started: Option<&'a str>,
+    device: Option<&'a str>,
+    channels: u16,
+    sample_rate: u32,
+    samples: usize,
+    peak: f32,
+}
+
+/// Writes `line` to [`store::MICROPHONE_LOG`], best effort.
+fn log(ports: &Ports<'_>, line: &impl Serialize) {
+    if let Ok(text) = serde_json::to_string(line) {
+        store::log_microphone(ports.files, &text);
+    }
+}
+
 /// A segment's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Slot {
@@ -352,6 +393,8 @@ pub struct Dictation {
     /// While the cleanup model works on the transcript: Whisper's
     /// transcript and the glossary terms sent with it.
     cleaning: Option<(String, Vec<String>)>,
+    /// The input device opened for the session's latest segment.
+    microphone: Option<String>,
 }
 
 impl Dictation {
@@ -496,6 +539,7 @@ impl Dictation {
                 Fetch::Idle | Fetch::Failed(_) => None,
             },
             library_revision: self.library_revision,
+            microphone: self.microphone.clone(),
         }
     }
 
@@ -558,6 +602,7 @@ impl Dictation {
         self.error = None;
         self.notice = None;
         self.started = None;
+        self.microphone = None;
         self.phase = Phase::Ready;
     }
 
@@ -602,7 +647,12 @@ impl Dictation {
         Ok(())
     }
 
-    /// Starts the microphone; shared by Record and Resume.
+    /// Starts the microphone; shared by Record and Resume. It opens the input
+    /// device the settings name, or the Mac's default when they name none;
+    /// when the named device will not open it falls back once to the Mac's
+    /// default and says so in the notice, leaving the setting as it is.
+    /// Every attempt that reaches the microphone is written to
+    /// [`store::MICROPHONE_LOG`].
     fn start(
         &mut self,
         action: Action,
@@ -614,8 +664,48 @@ impl Dictation {
             let why = self.model_error(ports).unwrap_or(DOWNLOADING.to_string());
             return Err(DictationError::ModelMissing(why));
         }
-        ports.recorder.start().map_err(DictationError::Recorder)?;
-        self.notice = None;
+        let wanted = settings::load(ports.files).input_device;
+        let first = ports.recorder.start(&wanted);
+        let second = match &first {
+            Err(_) if !wanted.is_empty() => Some(ports.recorder.start("")),
+            Ok(_) | Err(_) => None,
+        };
+        let error_text = |r: Option<&Result<String, PortError>>| match r {
+            Some(Err(e)) => Some(e.to_string()),
+            Some(Ok(_)) | None => None,
+        };
+        let mismatch = matches!(&first, Ok(name) if !wanted.is_empty() && *name != wanted);
+        let result = match (&first, &second) {
+            (Ok(name), _) => Ok((name.clone(), None)),
+            (Err(_), Some(Ok(name))) => Ok((name.clone(), Some(input_fallback(&wanted, name)))),
+            (Err(_), Some(Err(e))) | (Err(e), None) => Err(e.clone()),
+        };
+        let (opened, outcome) = match &result {
+            Ok((name, None)) => (Some(name.as_str()), "opened"),
+            Ok((name, Some(_))) => (Some(name.as_str()), "fallback"),
+            Err(_) => (None, "failed"),
+        };
+        log(
+            ports,
+            &StartLine {
+                event: "start",
+                started: self.started.as_deref(),
+                action: if action == Action::Record {
+                    "record"
+                } else {
+                    "resume"
+                },
+                wanted: &wanted,
+                opened,
+                outcome,
+                first_error: error_text(Some(&first)),
+                second_error: error_text(second.as_ref()),
+                mismatch,
+            },
+        );
+        let (name, notice) = result.map_err(DictationError::Recorder)?;
+        self.microphone = Some(name);
+        self.notice = notice;
         self.phase = Phase::Recording;
         Ok(())
     }
@@ -660,6 +750,19 @@ impl Dictation {
                 return None;
             }
         };
+        let peak = captured.samples.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+        log(
+            ports,
+            &SegmentLine {
+                event: "segment",
+                started: self.started.as_deref(),
+                device: self.microphone.as_deref(),
+                channels: captured.channels,
+                sample_rate: captured.sample_rate,
+                samples: captured.samples.len(),
+                peak,
+            },
+        );
         let samples = to_mono_16k(&captured);
         self.recorded_ms = self.recorded_ms.saturating_add(duration_ms(samples.len()));
         let index = self.next_index;

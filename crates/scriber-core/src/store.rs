@@ -10,6 +10,7 @@
 //! library/<id>/transcript.txt    its transcript
 //! library/<id>/audio.m4a         its audio (audio.wav until encoded, or when encoding fails)
 //! models/ggml-large-v3-turbo.bin the speech model (read by the transcriber, not here)
+//! microphone-log.jsonl           which microphone each Record or Resume opened, and each segment's format (newest 200 lines)
 //! ```
 
 use crate::ports::{Files, PortError};
@@ -27,6 +28,15 @@ pub const STARTED: &str = "segments/started.txt";
 
 /// Where the transcript is written before it is renamed into place.
 const TRANSCRIPT_PARTIAL: &str = "segments/transcript.txt.partial";
+
+/// The microphone decision log: one JSON line per Record or Resume that
+/// reached the microphone (what was wanted, what opened, why) and one per
+/// closed segment (its device, format, length and peak). Device names and
+/// error texts only, never transcript text.
+pub const MICROPHONE_LOG: &str = "microphone-log.jsonl";
+
+/// How many lines [`MICROPHONE_LOG`] keeps, the newest.
+const MICROPHONE_LOG_LINES: usize = 200;
 
 /// The default glossary file.
 pub const VOCABULARY: &str = "vocabulary.txt";
@@ -151,4 +161,25 @@ pub fn vocabulary_path(files: &dyn Files) -> String {
 #[must_use]
 pub fn vocabulary(files: &dyn Files) -> Option<String> {
     String::from_utf8(files.read(&vocabulary_path(files)).ok()?).ok()
+}
+
+/// Adds `line` (one JSON object, no newline) to [`MICROPHONE_LOG`], keeping
+/// the newest [`MICROPHONE_LOG_LINES`] lines. Best effort: an unreadable log
+/// counts as empty, and a failure to write it is ignored, because the log
+/// must never stop a recording.
+pub fn log_microphone(files: &dyn Files, line: &str) {
+    let old = files.read(MICROPHONE_LOG).unwrap_or_default();
+    let old = String::from_utf8_lossy(&old);
+    let lines: Vec<&str> = old.lines().collect();
+    let drop = lines
+        .len()
+        .saturating_sub(MICROPHONE_LOG_LINES.saturating_sub(1));
+    let mut text = String::new();
+    for kept in lines.iter().skip(drop) {
+        text.push_str(kept);
+        text.push('\n');
+    }
+    text.push_str(line);
+    text.push('\n');
+    let _kept = files.write(MICROPHONE_LOG, text.as_bytes());
 }

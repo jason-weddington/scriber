@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 import {
+  activeMicrophone,
   allowed,
+  defaultMicrophoneLabel,
   BAR_PX,
   barCount,
   GAP_PX,
@@ -25,7 +27,7 @@ import {
   SHORTCUTS,
   statusText,
 } from '../../src/lib/format';
-import type { Phase, Snapshot } from '../../src/lib/types';
+import type { InputDevices, Phase, Snapshot } from '../../src/lib/types';
 
 const base: Snapshot = {
   revision: 1,
@@ -39,6 +41,7 @@ const base: Snapshot = {
   modelError: null,
   download: null,
   libraryRevision: 0,
+  microphone: null,
 };
 
 test('recorded time reads m:ss, then h:mm:ss, rounded down', () => {
@@ -101,6 +104,7 @@ test('the status line says what to do next in every phase', () => {
     [{ phase: 'idle' }, 'Click New to start a dictation.'],
     [{ phase: 'ready' }, 'Click Record and start talking.'],
     [{ phase: 'recording' }, 'Recording. Pause to think, Done when you have said it all.'],
+    [{ phase: 'recording', notice: 'Gone Mic is not available.' }, 'Gone Mic is not available.'],
     [{ phase: 'paused', segments: 2, pending: 1 }, 'Paused. Transcribing 1 part while you think.'],
     [{ phase: 'paused', segments: 2, pending: 0 }, 'Paused after 2 parts. Resume when you are ready.'],
     [{ phase: 'transcribing', pending: 2 }, 'Transcribing the last 2 parts…'],
@@ -300,4 +304,22 @@ test('groupByDay groups by label in order of first appearance', () => {
     { label: 'Yesterday', entries: [b] },
     { label: 'Earlier', entries: [d, f] },
   ]);
+});
+
+test('the microphone named is the one open while recording, else the one the next start opens', () => {
+  const inputs: InputDevices = { defaultDevice: 'Jabra Evolve 65', others: ['AirPods Pro', 'MacBook Pro Microphone'] };
+  const live: Snapshot = { ...base, phase: 'recording', microphone: 'Jabra Evolve 65' };
+  expect(activeMicrophone(live, inputs, 'AirPods Pro'), 'recording: what is open').toBe('Jabra Evolve 65');
+  expect(activeMicrophone({ ...live, microphone: null }, inputs, 'AirPods Pro'), 'recording, none known').toBe('AirPods Pro');
+  const paused: Snapshot = { ...live, phase: 'paused' };
+  expect(activeMicrophone(paused, inputs, 'AirPods Pro'), 'paused: the next choice').toBe('AirPods Pro');
+  expect(activeMicrophone(paused, inputs, ''), 'paused: the default').toBe('Jabra Evolve 65');
+  expect(activeMicrophone({ ...base, phase: 'ready' }, inputs, 'Gone Mic'), 'a saved name not listed').toBe('Jabra Evolve 65');
+  expect(activeMicrophone({ ...base, phase: 'ready' }, null, 'AirPods Pro'), 'no list yet').toBeNull();
+  expect(activeMicrophone({ ...base, phase: 'ready' }, { defaultDevice: null, others: [] }, ''), 'no device').toBeNull();
+});
+
+test('the menu names the Mac default with its device', () => {
+  expect(defaultMicrophoneLabel('Jabra Evolve 65')).toBe('Mac default (Jabra Evolve 65)');
+  expect(defaultMicrophoneLabel(null)).toBe('Mac default');
 });

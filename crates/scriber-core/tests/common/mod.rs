@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read};
 
 use scriber_core::dictation::{Job, Outcome};
+use scriber_core::model::InputDevices;
 use scriber_core::ports::{
     Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, JobQueue, Library, LocalTime,
     PortError, Ports, Recorder, Summarizer, Transcriber,
@@ -26,21 +27,41 @@ pub(crate) fn captured_speech(seconds: usize) -> Captured {
 }
 
 /// A microphone. Each `stop` hands over the next queued capture (one second
-/// of speech when the queue is empty).
+/// of speech when the queue is empty). `start` logs the device asked for in
+/// `opened`, fails with "gone" for a device in `unavailable`, then with
+/// `start_error` when set, and otherwise answers `answers_as` when set, else
+/// the device asked for ("Fake Mic" for the default).
 #[derive(Default)]
 pub(crate) struct FakeRecorder {
     pub(crate) captures: RefCell<VecDeque<Result<Captured, String>>>,
     pub(crate) start_error: RefCell<Option<String>>,
     pub(crate) calls: RefCell<Vec<&'static str>>,
+    pub(crate) opened: RefCell<Vec<String>>,
+    pub(crate) unavailable: RefCell<Vec<String>>,
+    pub(crate) answers_as: RefCell<Option<String>>,
 }
 
 impl Recorder for FakeRecorder {
-    fn start(&self) -> Result<(), PortError> {
+    fn start(&self, device: &str) -> Result<String, PortError> {
         self.calls.borrow_mut().push("start");
-        match self.start_error.borrow().clone() {
-            Some(e) => Err(PortError(e)),
-            None => Ok(()),
+        self.opened.borrow_mut().push(device.to_string());
+        if self.unavailable.borrow().iter().any(|d| d == device) {
+            return Err(PortError("gone".to_string()));
         }
+        if let Some(e) = self.start_error.borrow().clone() {
+            return Err(PortError(e));
+        }
+        Ok(self.answers_as.borrow().clone().unwrap_or_else(|| {
+            if device.is_empty() {
+                "Fake Mic".to_string()
+            } else {
+                device.to_string()
+            }
+        }))
+    }
+
+    fn inputs(&self) -> Result<InputDevices, PortError> {
+        Ok(InputDevices::new(Some("Fake Mic".to_string()), []))
     }
 
     fn stop(&self) -> Result<Captured, PortError> {

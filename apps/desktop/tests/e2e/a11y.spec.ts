@@ -193,6 +193,36 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
+    test('the microphone control in ready', async ({ page }) => {
+      await open(page);
+      await press(page, 'New');
+      await expect(page.getByRole('button', { name: 'Microphone: Jabra Evolve 65' })).toBeVisible();
+      await expectNoViolations(page);
+    });
+
+    test('the microphone menu open', async ({ page }) => {
+      await open(page);
+      await press(page, 'New');
+      await page.getByRole('button', { name: /^Microphone/ }).click();
+      await expect(page.getByRole('menuitemradio', { name: 'AirPods Pro' })).toBeVisible();
+      await expectNoViolations(page);
+    });
+
+    test('the microphone menu open with the listing failed', async ({ page }) => {
+      await open(page, { fail: 'input_devices' });
+      await press(page, 'New');
+      await page.getByRole('button', { name: /^Microphone/ }).click();
+      await expect(page.getByRole('alert')).toHaveText('Mock failure: input_devices');
+      await expectNoViolations(page);
+    });
+
+    test('recording with the fallback notice', async ({ page }) => {
+      await open(page, { inputDevice: 'Gone Mic' });
+      await press(page, 'New', 'Record');
+      await expect(status(page)).toContainText('Gone Mic is not available');
+      await expectNoViolations(page);
+    });
+
     test('session unreadable', async ({ page }) => {
       await open(page, { fail: 'dictation_state' });
       await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();

@@ -1,18 +1,20 @@
 //! The user's settings, kept in `settings.json` in the data folder.
 //!
 //! On disk the file is a JSON object with the `snake_case` keys `summaries`,
-//! `library_open`, `vocabulary`, `cleanup`, `summary_model` and
-//! `cleanup_model` and `library_width`. Reading is lenient: a missing, unreadable or invalid file
+//! `library_open`, `vocabulary`, `cleanup`, `summary_model`,
+//! `cleanup_model`, `library_width` and `input_device`. Reading is lenient: a missing, unreadable or invalid file
 //! means the defaults (`summaries` and `library_open` true, `vocabulary`
 //! empty, `cleanup` false, both models `""`, meaning the engine's default
-//! model),
+//! model, `library_width` 220, `input_device` `""`, meaning the Mac's default
+//! input device),
 //! and each key is taken on its own, so a missing key or one of another type
 //! takes its default and unknown keys are ignored. `vocabulary` is kept only
 //! when it is an absolute path (it starts with `/`); anything else means `""`,
 //! the default glossary. `summary_model` and `cleanup_model` are kept exactly
 //! as stored when they are strings, else `""`. `library_width` is a
 //! non-negative integer clamped to 110..=440 on read; anything else (a
-//! negative number, a fraction, another type) means 220. Saving writes the file beside itself and renames it
+//! negative number, a fraction, another type) means 220. `input_device` is
+//! kept exactly as stored when it is a string, else `""`. Saving writes the file beside itself and renames it
 //! into place.
 
 use serde::Serialize;
@@ -46,6 +48,7 @@ struct Disk {
     summary_model: String,
     cleanup_model: String,
     library_width: u64,
+    input_device: String,
 }
 
 /// The saved settings, or the defaults where there are none.
@@ -83,6 +86,7 @@ pub fn load(files: &dyn Files) -> Settings {
             .map_or(LIBRARY_WIDTH_DEFAULT, |w| {
                 w.clamp(LIBRARY_WIDTH_MIN, LIBRARY_WIDTH_MAX)
             }),
+        input_device: text("input_device"),
     }
 }
 
@@ -100,6 +104,7 @@ pub fn save(files: &dyn Files, s: &Settings) -> Result<(), PortError> {
         summary_model: s.summary_model.clone(),
         cleanup_model: s.cleanup_model.clone(),
         library_width: s.library_width,
+        input_device: s.input_device.clone(),
     };
     let bytes = serde_json::to_vec(&disk).map_err(fail)?;
     files.write(SETTINGS_PARTIAL, &bytes)?;

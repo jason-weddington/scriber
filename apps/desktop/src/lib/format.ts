@@ -1,7 +1,7 @@
 // Display rules for the dictation screen. Pure functions, unit-tested in
 // tests/unit/format.spec.ts.
 
-import type { Action, Download, LibraryEntry, Phase, Snapshot } from './types';
+import type { Action, Download, InputDevices, LibraryEntry, Phase, Snapshot } from './types';
 
 /**
  * The actions the core accepts in each phase (crates/scriber-core/src/dictation.rs).
@@ -71,7 +71,7 @@ export function statusText(s: Snapshot): string {
     case 'ready':
       return 'Click Record and start talking.';
     case 'recording':
-      return 'Recording. Pause to think, Done when you have said it all.';
+      return s.notice ?? 'Recording. Pause to think, Done when you have said it all.';
     case 'paused':
       return s.pending > 0
         ? `Paused. Transcribing ${parts(s.pending)} while you think.`
@@ -83,6 +83,24 @@ export function statusText(s: Snapshot): string {
     case 'failed':
       return 'The transcript is not ready.';
   }
+}
+
+// ---- the microphone ------------------------------------------------------------------
+
+/**
+ * The microphone the control names: while recording, the one the core opened;
+ * otherwise (paused included) the one the next Record or Resume will open: the
+ * saved choice when the list has it, else the Mac default.
+ */
+export function activeMicrophone(snapshot: Snapshot, inputs: InputDevices | null, saved: string): string | null {
+  if (snapshot.phase === 'recording' && snapshot.microphone !== null) return snapshot.microphone;
+  if (inputs?.others.includes(saved)) return saved;
+  return inputs?.defaultDevice ?? null;
+}
+
+/** The menu's first item: `Mac default (Jabra Evolve 65)`, or `Mac default` when there is none. */
+export function defaultMicrophoneLabel(name: string | null): string {
+  return name === null ? 'Mac default' : `Mac default (${name})`;
 }
 
 // ---- the input level waveform ------------------------------------------------

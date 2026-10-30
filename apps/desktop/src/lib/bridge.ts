@@ -16,7 +16,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { Mock } from './mock';
-import type { Action, LibraryEntry, Settings, Snapshot } from './types';
+import type { Action, InputDevices, LibraryEntry, Settings, Snapshot } from './types';
 
 /** The event src-tauri emits when a job changes the snapshot (DICTATION_EVENT in lib.rs). */
 export const DICTATION_EVENT = 'dictation-changed';
@@ -98,6 +98,12 @@ export async function settingsGet(): Promise<Settings> {
 export async function ollamaModels(): Promise<string[]> {
   if (!underTauri()) return mock().ollamaModels();
   return invoke<string[]>('ollama_models');
+}
+
+/** The Mac's default input device and every other one, by name; rejects when they cannot be listed. */
+export async function inputDevices(): Promise<InputDevices> {
+  if (!underTauri()) return mock().inputDevices();
+  return invoke<InputDevices>('input_devices');
 }
 
 /** Saves the user's settings; resolves to what was saved. */

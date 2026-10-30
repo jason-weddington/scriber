@@ -81,7 +81,9 @@ pub use ollama::{
 };
 pub use scriber_core::dictation::DictationError;
 pub use scriber_core::download::Source;
-pub use scriber_core::model::{Action, Download, LibraryEntry, Phase, Settings, Snapshot};
+pub use scriber_core::model::{
+    Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot,
+};
 pub use scriber_core::ports::{
     Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, LocalTime, PortError,
     Recorder, Summarizer, Transcriber, fail,
@@ -209,6 +211,9 @@ pub enum EngineError {
     /// The installed Ollama models could not be listed, for this reason.
     #[error("Local AI needs Ollama: {0}.")]
     Ollama(String),
+    /// The input devices could not be listed, for this reason.
+    #[error("Could not list the microphones: {0}.")]
+    Microphones(String),
 }
 
 /// What one [`Engine::shutdown`] call did.
@@ -342,7 +347,8 @@ pub struct Engine(Arc<Inner>);
 
 impl Engine {
     /// Opens the session in `config.data_dir` with the real adapters: the
-    /// default input device, whisper.cpp and HTTPS. A previous session there
+    /// input device the settings choose (the default one when they choose
+    /// none), whisper.cpp and HTTPS. A previous session there
     /// is recovered: a finished one with its transcript, an unfinished one
     /// failed and waiting for [`Self::retry`]. The model warms up, or for
     /// [`ModelSource::Download`] downloads first when missing, on a job
@@ -741,6 +747,8 @@ impl Engine {
     /// path is saved as `""` (the default, wherever the data folder is).
     /// Likewise for each of `summary_model` and `cleanup_model`: empty keeps
     /// the saved one, and [`EngineConfig::summary_model`] is saved as `""`.
+    /// `input_device` is saved verbatim: `""` means the Mac's default input
+    /// device.
     ///
     /// # Errors
     ///
@@ -781,6 +789,21 @@ impl Engine {
     /// with no model list.
     pub fn ollama_models(&self) -> Result<Vec<String>, EngineError> {
         installed_models(&self.0.ollama_url).map_err(|e| EngineError::Ollama(e.0))
+    }
+
+    /// The input devices there are now: the system default's name and every
+    /// other one's, for choosing [`Settings::input_device`]. It takes no
+    /// session lock and still works after [`Self::shutdown`].
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::Microphones`]: the devices cannot be listed.
+    pub fn input_devices(&self) -> Result<InputDevices, EngineError> {
+        self.0
+            .adapters
+            .recorder
+            .inputs()
+            .map_err(|e| EngineError::Microphones(e.0))
     }
 
     /// Opens the glossary ([`Self::settings`]' `vocabulary`) in the text

@@ -579,3 +579,76 @@ button.icon {
 .switch input {
   accent-color: var(--accent);
 }
+
+/* The microphone control above the record controls, and its in-page menu.
+   The popover is fixed (main clips its overflow) and above the band, which
+   is positioned and later in the document. */
+.mic-row {
+  flex-shrink: 0;
+  display: flex;
+  min-width: 0;
+}
+
+button.mic {
+  max-width: 100%;
+  min-width: 0;
+  gap: 6px;
+  padding: 4px 8px;
+  margin-left: -8px;
+  justify-content: flex-start;
+}
+
+.mic-name,
+.mic-item {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mic-popover {
+  position: fixed;
+  z-index: 2;
+  overflow-y: auto;
+  min-width: 240px;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+}
+
+.mic-popover .error {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.mic-popover [role='menu'] {
+  display: flex;
+  flex-direction: column;
+}
+
+.mic-popover [role='menu']:focus {
+  outline: none;
+}
+
+.mic-popover [role='menuitemradio'] {
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-color: transparent;
+  background: none;
+  text-align: left;
+}
+
+.mic-popover [role='menuitemradio']:hover,
+.mic-popover [role='menuitemradio']:focus {
+  background: var(--bg);
+}
+
+.mic-popover .check {
+  flex: 0 0 1em;
+  width: 1em;
+  color: var(--accent);
+}

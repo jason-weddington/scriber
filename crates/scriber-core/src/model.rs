@@ -112,6 +112,9 @@ pub struct Snapshot {
     /// Grows whenever the recording library gains an entry or an entry's
     /// summary is replaced, so the window knows to list it again.
     pub library_revision: u64,
+    /// The input device actually opened for this session's latest segment,
+    /// by name; `None` before the session's first Record.
+    pub microphone: Option<String>,
 }
 
 /// How far the speech model's download has got.
@@ -162,4 +165,42 @@ pub struct Settings {
     /// The library drawer's width in pixels, 110 to 440 (default 220). Read
     /// leniently from disk; see [`crate::settings`].
     pub library_width: u64,
+    /// The input device to record from, by name, or `""` for the Mac's
+    /// default input device. Stored and answered verbatim.
+    pub input_device: String,
+}
+
+/// The input devices the microphone menu offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputDevices {
+    /// The system's default input device, by name; `None` when there is
+    /// none.
+    pub default_device: Option<String>,
+    /// Every other input device's name, sorted case-insensitively.
+    pub others: Vec<String>,
+}
+
+impl InputDevices {
+    /// The default device and every device's `names`: an empty default is
+    /// none; `others` leaves out empty names and the default's, is sorted
+    /// case-insensitively (ties by byte order) and holds each name once.
+    #[must_use]
+    pub fn new(default_device: Option<String>, names: impl IntoIterator<Item = String>) -> Self {
+        let default_device = default_device.filter(|name| !name.is_empty());
+        let mut others: Vec<String> = names
+            .into_iter()
+            .filter(|name| !name.is_empty() && Some(name) != default_device.as_ref())
+            .collect();
+        others.sort_by(|a, b| {
+            a.to_lowercase()
+                .cmp(&b.to_lowercase())
+                .then_with(|| a.cmp(b))
+        });
+        others.dedup();
+        Self {
+            default_device,
+            others,
+        }
+    }
 }
