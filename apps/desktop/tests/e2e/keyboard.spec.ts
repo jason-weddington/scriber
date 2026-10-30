@@ -553,3 +553,156 @@ test('Tab to the microphone, Return, Escape: the focus is back on the control', 
   await expect(page.getByRole('menu')).toHaveCount(0);
   await expect(mic(page)).toBeFocused();
 });
+
+// ---- ⌘, opens Settings -----------------------------------------------------------
+
+async function listings(page: Page): Promise<number | undefined> {
+  return page.evaluate(() => window.__mockBridge?.modelListings);
+}
+
+const settings = (page: Page) => page.getByRole('dialog', { name: 'Settings' });
+const vocabulary = (page: Page) => page.getByRole('textbox', { name: 'Vocabulary file' });
+
+test('⌘, opens Settings when ready, without acting', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  await expect(vocabulary(page)).toBeFocused();
+  expect(await acts(page)).toEqual(['new']);
+});
+
+test('⌘, opens Settings while recording, and Space dictates again after Escape', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record');
+  await expect(status(page)).toContainText('Recording.');
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  expect(await acts(page)).toEqual(['new', 'record']);
+  await key(page, 'Escape');
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+  await key(page, 'Space');
+  await expect.poll(() => acts(page)).toEqual(['new', 'record', 'pause']);
+});
+
+test('⌘, opens Settings while paused', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record', 'Pause');
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  expect(await acts(page)).toEqual(['new', 'record', 'pause']);
+});
+
+test('⌘, opens Settings when idle', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  expect(await acts(page)).toEqual([]);
+});
+
+test('⌘, opens Settings while an action is in flight', async ({ page }) => {
+  await open(page);
+  await press(page, 'New');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await hold(page, 'dictation_act');
+  await key(page, 'Space');
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  await key(page, 'Escape');
+  await release(page, 'dictation_act');
+  await expect(status(page)).toContainText('Recording.');
+  expect(await acts(page)).toEqual(['new', 'record']);
+});
+
+test('⌘, opens Settings before the session has loaded', async ({ page }) => {
+  await open(page, { hold: 'dictation_state' });
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  expect(await acts(page)).toEqual([]);
+  await key(page, 'Escape');
+  await release(page, 'dictation_state');
+  await expect(status(page)).toHaveText('Click New to start a dictation.');
+});
+
+test('⌘, opens Settings while a library entry is shown', async ({ page }) => {
+  await open(page, { library: '1' });
+  await key(page, 'Meta+n');
+  await expect(status(page)).toHaveText('Click Record and start talking.');
+  await page.locator('#library li').first().getByRole('button').click();
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue('This is preloaded recording number 1.');
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  expect(await acts(page)).toEqual(['new']);
+});
+
+test('⌘, in the transcript opens Settings, leaves the text, and the gear gets the focus', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record', 'Done');
+  const transcript = page.getByRole('textbox', { name: 'Transcript' });
+  await expect(transcript).toBeEditable();
+  await expect(transcript).not.toHaveValue('');
+  const before = await transcript.inputValue();
+  await transcript.focus();
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  await expect(transcript).toHaveValue(before);
+  await key(page, 'Escape');
+  await nextFrame(page);
+  await expect(button(page, 'Settings')).toBeFocused();
+});
+
+test('⌘, lists the models once and does nothing while Settings is open', async ({ page }) => {
+  await open(page);
+  expect(await listings(page)).toBe(0);
+  await key(page, 'Meta+Comma');
+  await expect(settings(page)).toBeVisible();
+  const model = page.getByRole('combobox', { name: 'Summary model' });
+  await expect(model).toBeEnabled();
+  await expect.poll(() => model.locator('option').allTextContents()).toEqual(['gemma3:4b', 'qwen3.8:27b-mlx']);
+  expect(await listings(page)).toBe(1);
+  await key(page, 'Meta+Comma');
+  await nextFrame(page);
+  expect(await listings(page)).toBe(1);
+  await expect(settings(page)).toHaveCount(1);
+  await expect(vocabulary(page)).toBeFocused();
+});
+
+test('⌘, in the microphone menu does nothing', async ({ page }) => {
+  await recordingWithMenu(page);
+  await key(page, 'Meta+Comma');
+  await nextFrame(page);
+  await expect(settings(page)).toHaveCount(0);
+  await expect(page.getByRole('menuitemradio', { name: 'AirPods Pro' })).toBeFocused();
+});
+
+test('a repeated ⌘, does not open Settings', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, repeat: true, bubbles: true, cancelable: true }));
+  });
+  await nextFrame(page);
+  await expect(settings(page)).not.toBeVisible();
+  expect(await listings(page)).toBe(0);
+});
+
+test('⌘, has its default cancelled', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => {
+    const seen: boolean[] = [];
+    (window as unknown as { __commaPrevented: boolean[] }).__commaPrevented = seen;
+    window.addEventListener('keydown', (e) => {
+      if (e.key === ',') seen.push(e.defaultPrevented);
+    });
+  });
+  await key(page, 'Meta+Comma');
+  expect(await page.evaluate(() => (window as unknown as { __commaPrevented: boolean[] }).__commaPrevented)).toEqual([true]);
+});
+
+test('the gear names ⌘, for assistive tech and in its tooltip', async ({ page }) => {
+  await open(page);
+  await expect(button(page, 'Settings')).toHaveAttribute('aria-keyshortcuts', 'Meta+Comma');
+  await expect(button(page, 'Settings')).toHaveAttribute('title', 'Settings (⌘,)');
+  await expect(button(page, 'Settings').locator('kbd')).toHaveCount(0);
+});

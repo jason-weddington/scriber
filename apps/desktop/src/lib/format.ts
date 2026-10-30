@@ -146,6 +146,14 @@ export const SHORTCUTS: Readonly<Partial<Record<Action, { aria: string; hint: st
   done: { aria: 'Enter', hint: '⏎' },
 };
 
+/** The Settings shortcut, as `aria-keyshortcuts` names it and as the gear's tooltip shows it. */
+export const SETTINGS_SHORTCUT = { aria: 'Meta+Comma', hint: '⌘,' };
+
+/** Whether a key press is ⌘, (and nothing else held): it opens Settings in every phase. */
+export function opensSettings(press: KeyPress): boolean {
+  return press.metaKey && !press.ctrlKey && !press.altKey && !press.shiftKey && press.key === ',';
+}
+
 /**
  * The action a key press asks for in `phase`, or null when it asks for none
  * or for one the phase does not allow. ⌘N is New everywhere; Space (Record,

@@ -21,10 +21,12 @@ import {
   formatElapsed,
   type KeyPress,
   LEGAL,
+  opensSettings,
   parts,
   percent,
   pushLevel,
   shortcut,
+  SETTINGS_SHORTCUT,
   SHORTCUTS,
   statusText,
 } from '../../src/lib/format';
@@ -335,4 +337,28 @@ test('fileName shows the last path component, never blank', () => {
   expect(fileName('/x/dir/')).toBe('/x/dir/');
   expect(fileName('/a b/my terms.txt')).toBe('my terms.txt');
   expect(fileName('/x/a\\b.txt')).toBe('a\\b.txt');
+});
+
+test('⌘, opens Settings, and only ⌘, alone', () => {
+  expect(opensSettings(press(',', { metaKey: true }))).toBe(true);
+  expect(opensSettings(press(','))).toBe(false);
+  expect(opensSettings(press(',', { ctrlKey: true }))).toBe(false);
+  expect(opensSettings(press('.', { metaKey: true }))).toBe(false);
+  expect(opensSettings(press('n', { metaKey: true }))).toBe(false);
+  for (const mod of ['ctrlKey', 'altKey', 'shiftKey'] as const) {
+    expect(opensSettings(press(',', { metaKey: true, [mod]: true })), mod).toBe(false);
+  }
+});
+
+test('⌘, is no dictation shortcut in any phase', () => {
+  const phases: Phase[] = ['idle', 'ready', 'recording', 'paused', 'transcribing', 'finished', 'failed'];
+  for (const phase of phases) {
+    for (const inText of [true, false]) {
+      expect(shortcut(press(',', { metaKey: true }), phase, inText), `${phase} ${String(inText)}`).toBeNull();
+    }
+  }
+});
+
+test('the Settings shortcut is named and shown as ⌘,', () => {
+  expect(SETTINGS_SHORTCUT).toEqual({ aria: 'Meta+Comma', hint: '⌘,' });
 });
