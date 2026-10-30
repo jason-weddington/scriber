@@ -15,6 +15,7 @@ import {
   rowSummary,
   timeLabel,
   downloadText,
+  fileName,
   controlsFor,
   formatBytes,
   formatElapsed,
@@ -324,4 +325,14 @@ test('the microphone named is the one open while recording, else the one the nex
 test('the menu names the Mac default with its device', () => {
   expect(defaultMicrophoneLabel('Jabra Evolve 65')).toBe('Mac default (Jabra Evolve 65)');
   expect(defaultMicrophoneLabel(null)).toBe('Mac default');
+});
+
+test('fileName shows the last path component, never blank', () => {
+  expect(fileName('/mock/data/vocabulary.txt')).toBe('vocabulary.txt');
+  expect(fileName('terms.txt')).toBe('terms.txt');
+  expect(fileName('')).toBe('');
+  expect(fileName('/')).toBe('/');
+  expect(fileName('/x/dir/')).toBe('/x/dir/');
+  expect(fileName('/a b/my terms.txt')).toBe('my terms.txt');
+  expect(fileName('/x/a\\b.txt')).toBe('a\\b.txt');
 });

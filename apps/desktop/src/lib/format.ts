@@ -251,3 +251,9 @@ export function groupByDay(entries: LibraryEntry[], now: Date): { label: string;
   }
   return groups;
 }
+
+/** The last component of `path` (split on `/` only), or the whole path when it has none. */
+export function fileName(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  return name === '' ? path : name;
+}

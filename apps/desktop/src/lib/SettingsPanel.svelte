@@ -1,6 +1,6 @@
 <script lang="ts">
   // The settings: the vocabulary file (the glossary that steers
-  // transcription), shown as its path with Browse… (the native open panel)
+  // transcription), shown as its file name, the full path on hover, with Browse… (the native open panel)
   // and Open in Text Editor (which creates it empty when missing); then two
   // switches, each followed by its model: post-processing of each transcript
   // by the local model (glossary fixes and spoken self-corrections), and
@@ -13,7 +13,9 @@
   // on hover. The switches stay enabled in every state, so local AI can
   // always be turned off. Nothing else shows status about Ollama: a cleanup
   // that fails leaves Whisper's text, and a summary simply replaces the
-  // excerpt when it lands.
+  // excerpt when it lands. The modal ends with the app's version when it can
+  // be read.
+  import { fileName } from './format';
   import type { Settings } from './types';
 
   interface Props {
@@ -23,6 +25,7 @@
     models: string[] | null;
     ollamaDown: boolean;
     ollamaReason: string;
+    version: string;
     onsummaries: (on: boolean) => void;
     oncleanup: (on: boolean) => void;
     onsummarymodel: (name: string) => void;
@@ -39,6 +42,7 @@
     models,
     ollamaDown,
     ollamaReason,
+    version,
     onsummaries,
     oncleanup,
     onsummarymodel,
@@ -108,7 +112,7 @@
   <div class="vocabulary" role="group" aria-label="Vocabulary file">
     <span class="caption" aria-hidden="true">Vocabulary file</span>
     <div class="row">
-      <input readonly bind:this={path} aria-label="Vocabulary file" value={settings.vocabulary} title={settings.vocabulary} />
+      <input readonly bind:this={path} aria-label="Vocabulary file" value={fileName(settings.vocabulary)} title={settings.vocabulary} />
       <button type="button" onclick={onbrowse}>Browse…</button>
       <button type="button" onclick={onopenvocabulary}>Open in Text Editor</button>
     </div>
@@ -164,6 +168,9 @@
   {/if}
   {#if error !== null}
     <p class="error" role="alert">{error}</p>
+  {/if}
+  {#if version !== ''}
+    <p class="version">Version {version}</p>
   {/if}
   </div>
 </dialog>

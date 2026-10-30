@@ -54,18 +54,14 @@ body {
   overflow: hidden;
 }
 
-/* The band on top, the library drawer on the left, the recorder (or an
-   entry) beside it, the footer below. The document order differs (main
-   first, so Tab reaches the recorder's controls first); the grid places
-   each part. */
+/* The band on top, the library drawer on the left, the recorder (or an entry) beside it. The document order differs (main first, so Tab reaches the recorder's controls first); the grid places each part. */
 .window {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  grid-template-rows: var(--band-height) minmax(0, 1fr) auto;
+  grid-template-rows: var(--band-height) minmax(0, 1fr);
   grid-template-areas:
     'band band'
-    'library main'
-    'footer footer';
+    'library main';
   height: 100%;
 }
 
@@ -362,14 +358,6 @@ textarea:focus-visible {
   outline-offset: 1px;
 }
 
-footer {
-  grid-area: footer;
-  padding: 6px 16px;
-  color: var(--muted);
-  font-size: 12px;
-  border-top: 1px solid var(--line);
-}
-
 /* A button that is only an icon (its name is its aria-label). */
 button.icon {
   display: inline-flex;
@@ -564,7 +552,13 @@ button.icon {
   color: var(--muted);
 }
 
-/* The vocabulary file: its path, then Browse… and Open in Text Editor. */
+.version {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The vocabulary file: its name, then Browse… and Open in Text Editor. */
 .vocabulary {
   display: flex;
   flex-direction: column;

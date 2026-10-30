@@ -15,11 +15,10 @@ async function enabled(page: import('@playwright/test').Page): Promise<string[]>
   return names;
 }
 
-test('a fresh window offers only New, and shows the mock version', async ({ page }) => {
+test('a fresh window offers only New', async ({ page }) => {
   await open(page);
   await expect(status(page)).toHaveText('Click New to start a dictation.');
   expect(await enabled(page)).toEqual(['New']);
-  await expect(page.getByText('Version 0.0.0-mock')).toBeVisible();
   await expect(page.getByTitle('Recorded time')).toHaveCount(0);
 });
 
@@ -178,6 +177,8 @@ test('the window still works when the version cannot be read', async ({ page }) 
   await open(page, { fail: 'app_version' });
   await press(page, 'New');
   await expect(status(page)).toHaveText('Click Record and start talking.');
+  await button(page, 'Settings').click();
+  await expect(page.getByRole('textbox', { name: 'Vocabulary file' })).toBeVisible();
   await expect(page.getByText(/^Version/)).toHaveCount(0);
 });
 

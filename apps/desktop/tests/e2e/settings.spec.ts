@@ -4,7 +4,7 @@ import { expect, test } from './fixtures';
 
 import { button, copied, nextFrame, open, press, release, status } from './helpers';
 
-// The settings panel's vocabulary file: its path (the default one in the
+// The settings panel's vocabulary file: its file name (the default one in the
 // data folder until another is picked), Browse… (the native open panel,
 // answered by the mock's ?pick=) and Open in Text Editor; then the
 // post-processing switch, which cleans up each transcript with the local model;
@@ -13,6 +13,8 @@ import { button, copied, nextFrame, open, press, release, status } from './helpe
 
 const DEFAULT = '/mock/data/vocabulary.txt';
 const PICKED = '/mock/Documents/terms.txt';
+const DEFAULT_NAME = 'vocabulary.txt';
+const PICKED_NAME = 'terms.txt';
 
 function path(page: Page) {
   return page.getByRole('textbox', { name: 'Vocabulary file' });
@@ -45,18 +47,20 @@ async function openSettings(page: Page, params: Record<string, string> = {}): Pr
   await expect(path(page)).toBeVisible();
 }
 
-test('the vocabulary file shows the default path at launch', async ({ page }) => {
+test("the vocabulary file shows the default file's name at launch", async ({ page }) => {
   await openSettings(page);
-  await expect(path(page)).toHaveValue(DEFAULT);
+  await expect(path(page)).toHaveValue(DEFAULT_NAME);
   await expect(path(page)).toHaveAttribute('readonly', '');
   await expect(path(page)).toHaveAttribute('title', DEFAULT);
+  await expect(path(page)).toHaveAccessibleDescription(DEFAULT);
   await expect(page.getByRole('group', { name: 'Vocabulary file' })).toBeVisible();
 });
 
 test('Browse picks another file and saves it', async ({ page }) => {
   await openSettings(page, { pick: PICKED });
   await browse(page).click();
-  await expect(path(page)).toHaveValue(PICKED);
+  await expect(path(page)).toHaveValue(PICKED_NAME);
+  await expect(path(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current file').toEqual([DEFAULT]);
   await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '' });
   await expect(alert(page)).toHaveCount(0);
@@ -67,7 +71,7 @@ test('a cancelled Browse changes nothing', async ({ page }) => {
   await browse(page).click();
   await editor(page).click();
   await expect.poll(() => opened(page)).toEqual([DEFAULT]);
-  await expect(path(page)).toHaveValue(DEFAULT);
+  await expect(path(page)).toHaveValue(DEFAULT_NAME);
   expect(await saved(page)).toEqual([]);
 });
 
@@ -75,7 +79,7 @@ test('an open panel that fails says why and saves nothing', async ({ page }) => 
   await openSettings(page, { fail: 'pick_vocabulary_file' });
   await browse(page).click();
   await expect(alert(page)).toHaveText('Mock failure: pick_vocabulary_file');
-  await expect(path(page)).toHaveValue(DEFAULT);
+  await expect(path(page)).toHaveValue(DEFAULT_NAME);
   expect(await saved(page)).toEqual([]);
 });
 
@@ -83,7 +87,7 @@ test('a picked file that cannot be saved stays on screen and says why', async ({
   await openSettings(page, { fail: 'settings_set', pick: PICKED });
   await browse(page).click();
   await expect(alert(page)).toHaveText('Mock failure: settings_set');
-  await expect(path(page)).toHaveValue(PICKED);
+  await expect(path(page)).toHaveValue(PICKED_NAME);
 });
 
 test('Open in Text Editor opens the vocabulary file', async ({ page }) => {
@@ -105,7 +109,7 @@ test('a long path never scrolls the window sideways at the minimum size', async 
   const long = `/${'a'.repeat(195)}.txt`;
   await openSettings(page, { pick: long });
   await browse(page).click();
-  await expect(path(page)).toHaveValue(long);
+  await expect(path(page)).toHaveValue(long.slice(1));
   await expect(editor(page)).toBeInViewport();
   const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
   expect(fits, 'no horizontal scroll').toBe(true);
@@ -273,7 +277,7 @@ test('without Ollama the panel fits the minimum size', async ({ page }) => {
   await expect(note).toBeVisible();
   const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
   expect(fits, 'no horizontal scroll').toBe(true);
-  for (const target of [note, summaryModel(page)]) {
+  for (const target of [note, summaryModel(page), page.getByText('Version 0.0.0-mock')]) {
     await target.scrollIntoViewIfNeeded();
     await expect(target).toBeInViewport();
   }
@@ -424,4 +428,20 @@ test('a drag from inside the modal released on the overlay leaves it open', asyn
   await nextFrame(page);
   await expect(modal(page)).toBeVisible();
   expect(await saved(page)).toEqual([]);
+});
+
+test('the version moved from the window into Settings', async ({ page }) => {
+  await openSettings(page);
+  await expect(page.getByRole('dialog', { name: 'Settings' }).getByText('Version 0.0.0-mock')).toBeVisible();
+  await expect(page.getByRole('contentinfo')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('Version 0.0.0-mock')).toBeHidden();
+});
+
+test('the version is the last thing in Settings, below the note and the alert', async ({ page }) => {
+  await openSettings(page, { ollama: 'down', fail: 'vocabulary_open' });
+  await editor(page).click();
+  await expect(alert(page)).toBeVisible();
+  await expect(page.getByText(DOWN_NOTE)).toBeVisible();
+  await expect(page.locator('.settings-body > .version:last-child')).toHaveText('Version 0.0.0-mock');
 });

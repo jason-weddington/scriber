@@ -183,6 +183,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await expect(page.getByRole('switch')).toHaveCount(2);
       await expect(page.getByRole('switch', { name: 'Enable post-processing with local LLM' })).toBeVisible();
+      await expect(page.getByText('Version 0.0.0-mock')).toBeVisible();
       await expectNoViolations(page);
     });
 

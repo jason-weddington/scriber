@@ -391,7 +391,7 @@
       () => undefined,
     );
     void load();
-    // The footer stays empty when the version cannot be read.
+    // Settings shows no version line when the version cannot be read.
     appVersion().then(
       (v) => {
         version = v;
@@ -646,10 +646,6 @@
     </button>
   </header>
 
-  {#if version !== ''}
-    <footer>Version {version}</footer>
-  {/if}
-
   <SettingsPanel
     {settings}
     open={settingsOpen}
@@ -657,6 +653,7 @@
     {models}
     {ollamaDown}
     {ollamaReason}
+    {version}
     onsummaries={setSummaries}
     onsummarymodel={setSummaryModel}
     oncleanupmodel={setCleanupModel}
