@@ -10,6 +10,9 @@
   --accent-text: #ffffff;
   --error: #a3261b;
   --recording: #d0103a;
+  --success: #1a7f37;
+  --hover-veil: rgb(0 0 0 / 5%);
+  --press-veil: rgb(0 0 0 / 10%);
   --band-height: 52px;
   --traffic-lights: 96px;
   --band-inset: 16px;
@@ -28,6 +31,9 @@
     --accent-text: #1c1a19;
     --error: #ff8a7a;
     --recording: #ff4d6d;
+    --success: #3fb950;
+    --hover-veil: rgb(255 255 255 / 7%);
+    --press-veil: rgb(255 255 255 / 12%);
   }
 }
 
@@ -301,15 +307,40 @@ progress {
   gap: 8px;
 }
 
-.transcript-head {
+.transcript > label {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  font-weight: 600;
 }
 
-.transcript-head label {
-  font-weight: 600;
+.transcript-box {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+}
+
+.transcript-box textarea {
+  padding-right: 52px;
+}
+
+button.copy {
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+}
+
+button.copy.copied {
+  color: var(--success);
 }
 
 textarea {
@@ -657,4 +688,13 @@ button.mic {
   flex: 0 0 1em;
   width: 1em;
   color: var(--accent);
+}
+
+/* Keep these after button styles; a later background shorthand at (0,2,1) or above removes the veil. Use background-color. */
+button:hover:not(:disabled, [aria-current='true']) {
+  background-image: linear-gradient(var(--hover-veil), var(--hover-veil));
+}
+
+button:active:not(:disabled, [aria-current='true']) {
+  background-image: linear-gradient(var(--press-veil), var(--press-veil));
 }

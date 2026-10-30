@@ -14,9 +14,41 @@ async function expectNoViolations(page: Page): Promise<void> {
   expect(results.violations.map((v) => `${v.id}: ${v.help} (${String(v.nodes.length)})`)).toEqual([]);
 }
 
+/**
+ * Keeps Copy's green check up. It clears after 2 s and a scan can take longer
+ * on a busy host, which would scan the wrong state. A clock cannot hold it:
+ * axe waits on timers of its own, so only that one timer is dropped.
+ */
+async function keepCheck(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const real = window.setTimeout.bind(window);
+    window.setTimeout = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) =>
+      ms === 2000 ? 0 : real(fn, ms, ...rest)) as typeof window.setTimeout;
+  });
+}
+
 for (const colorScheme of ['light', 'dark'] as const) {
   test.describe(`${colorScheme} mode`, () => {
     test.use({ colorScheme });
+
+    test('finished, just copied', async ({ page }) => {
+      await keepCheck(page);
+      await open(page);
+      await press(page, 'New', 'Record', 'Done', 'Copy');
+      await expect(page.locator('button.copy.copied')).toBeVisible();
+      await expectNoViolations(page);
+      await expect(page.locator('button.copy.copied')).toHaveCount(1);
+    });
+
+    test('a library entry just copied', async ({ page }) => {
+      await keepCheck(page);
+      await open(page, { library: '3' });
+      await page.locator('#library li').nth(1).getByRole('button').click();
+      await press(page, 'Copy');
+      await expect(page.locator('button.copy.copied')).toBeVisible();
+      await expectNoViolations(page);
+      await expect(page.locator('button.copy.copied')).toHaveCount(1);
+    });
 
     test('idle', async ({ page }) => {
       await open(page);

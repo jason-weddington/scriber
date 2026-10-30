@@ -41,6 +41,7 @@
     SHORTCUTS,
     statusText,
   } from './lib/format';
+  import CopyButton from './lib/CopyButton.svelte';
   import LibraryDrawer from './lib/LibraryDrawer.svelte';
   import MicrophoneMenu from './lib/MicrophoneMenu.svelte';
   import SettingsPanel from './lib/SettingsPanel.svelte';
@@ -318,14 +319,16 @@
     void select(chosen);
   }
 
-  async function copyEntry(id: string): Promise<void> {
+  async function copyEntry(id: string): Promise<boolean> {
     entryCopied = false;
     try {
       await libraryCopy(id);
       entryError = null;
       entryCopied = true;
+      return true;
     } catch (e) {
       entryError = errorText(e);
+      return false;
     }
   }
 
@@ -349,13 +352,15 @@
     }
   }
 
-  async function run(action: Action): Promise<void> {
+  async function run(action: Action): Promise<boolean> {
     busy = true;
     try {
       accept(await act(action, action === 'copy' ? draft : ''));
       actionError = null;
+      return true;
     } catch (e) {
       actionError = errorText(e);
+      return false;
     } finally {
       busy = false;
     }
@@ -487,11 +492,11 @@
       {/if}
       {#if entry.transcript !== null}
         <div class="transcript">
-          <div class="transcript-head">
-            <label for="entry-transcript">Transcript</label>
-            <button type="button" class="primary" onclick={() => copyEntry(entry?.id ?? '')}>Copy</button>
+          <label for="entry-transcript">Transcript</label>
+          <div class="transcript-box">
+            <textarea id="entry-transcript" readonly value={entry.transcript}></textarea>
+            {#key entry.id}<CopyButton copy={() => copyEntry(entry?.id ?? '')} />{/key}
           </div>
-          <textarea id="entry-transcript" readonly value={entry.transcript}></textarea>
         </div>
         <p class="entry-status" aria-live="polite">{entryCopied ? 'Copied to the clipboard.' : ''}</p>
       {/if}
@@ -571,13 +576,11 @@
 
       {#if snapshot.phase === 'finished'}
         <div class="transcript">
-          <div class="transcript-head">
-            <label for="transcript">Transcript</label>
-            <button type="button" class="primary" onclick={() => run('copy')} disabled={!can('copy') || draft === ''}>
-              Copy
-            </button>
+          <label for="transcript">Transcript</label>
+          <div class="transcript-box">
+            <textarea id="transcript" bind:value={draft} spellcheck="true"></textarea>
+            <CopyButton disabled={!can('copy') || draft === ''} copy={() => run('copy')} />
           </div>
-          <textarea id="transcript" bind:value={draft} spellcheck="true"></textarea>
         </div>
       {/if}
     {/if}

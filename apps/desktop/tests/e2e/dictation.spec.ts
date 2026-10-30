@@ -235,3 +235,70 @@ test('New is the primary button only in a fresh window', async ({ page }) => {
   await press(page, 'New');
   await expect(button(page, 'New')).not.toHaveClass(/primary/);
 });
+
+async function copiedAt60s(page: import('@playwright/test').Page): Promise<void> {
+  await page.clock.install({ time: 0 });
+  await open(page, { libraryOpen: '0' });
+  await page.clock.pauseAt(60_000);
+  await press(page, 'New', 'Record', 'Done');
+  await press(page, 'Copy');
+  await expect(page.locator('button.copy.copied')).toBeVisible();
+}
+
+test('the check shows for 2 seconds, then Copy returns', async ({ page }) => {
+  await copiedAt60s(page);
+  await page.clock.runFor(1999);
+  await expect(page.locator('button.copy.copied')).toBeVisible();
+  await page.clock.runFor(1);
+  await expect(page.locator('button.copy.copied')).toHaveCount(0);
+  await expect(button(page, 'Copy')).toBeVisible();
+});
+
+test('a second click restarts the 2 seconds', async ({ page }) => {
+  await copiedAt60s(page);
+  await page.clock.runFor(1000);
+  await press(page, 'Copy');
+  await expect(page.locator('button.copy.copied')).toBeVisible();
+  await page.clock.runFor(1999);
+  await expect(page.locator('button.copy.copied')).toBeVisible();
+  await page.clock.runFor(1);
+  await expect(page.locator('button.copy.copied')).toHaveCount(0);
+});
+
+test('an edit does not end the check', async ({ page }) => {
+  await copiedAt60s(page);
+  await page.getByRole('textbox', { name: 'Transcript' }).fill('');
+  await expect(page.locator('button.copy.copied')).toBeVisible();
+  await expect(button(page, 'Copy')).toBeDisabled();
+  await page.clock.runFor(2000);
+  await expect(page.locator('button.copy.copied')).toHaveCount(0);
+});
+
+test('the automatic copy shows no check', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record', 'Done');
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue(/part 1 of the dictation\.$/);
+  await expect(status(page)).toHaveText('Copied to the clipboard.');
+  await expect(button(page, 'Copy')).toBeEnabled();
+  expect(await copied(page)).toHaveLength(1);
+  await expect(page.locator('button.copy.copied')).toHaveCount(0);
+});
+
+test('a failed copy shows no check', async ({ page }) => {
+  await open(page, { clipboard: 'fail' });
+  await press(page, 'New', 'Record', 'Done', 'Copy');
+  await expect(page.getByRole('alert')).toContainText('Could not copy to the clipboard: pasteboard unavailable');
+  await expect(page.locator('button.copy.copied')).toHaveCount(0);
+});
+
+test('Copy has a title and works from the keyboard', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record', 'Done');
+  await expect(button(page, 'Copy')).toBeEnabled();
+  await expect(button(page, 'Copy')).toHaveAttribute('title', 'Copy');
+  await page.getByRole('textbox', { name: 'Transcript' }).focus();
+  await page.keyboard.press('Tab');
+  await expect(button(page, 'Copy')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('button.copy.copied')).toBeVisible();
+});

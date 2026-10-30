@@ -39,3 +39,29 @@ test('at the minimum size with the drawer open the controls stay in view and not
   );
   expect(fits, 'no vertical or horizontal window scroll').toBe(true);
 });
+
+test('Copy sits inside the box, clear of the text, and stays put while the text scrolls', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 380 });
+  await open(page, { long: '1' });
+  await press(page, 'New', 'Record', 'Pause', 'Resume', 'Pause', 'Resume', 'Done');
+  const transcript = page.getByRole('textbox', { name: 'Transcript' });
+  await expect(transcript).toHaveValue(/part 3 of the dictation\.$/);
+  expect(await transcript.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(100);
+  const box = await transcript.boundingBox();
+  const copy = await button(page, 'Copy').boundingBox();
+  if (box === null || copy === null) throw new Error('no boxes');
+  expect(copy.x).toBeGreaterThanOrEqual(box.x);
+  expect(copy.y).toBeGreaterThanOrEqual(box.y);
+  expect(copy.x + copy.width).toBeLessThanOrEqual(box.x + box.width);
+  expect(copy.y + copy.height).toBeLessThanOrEqual(box.y + box.height);
+  const textRight = await transcript.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return rect.left + el.clientLeft + el.clientWidth - parseFloat(getComputedStyle(el).paddingRight);
+  });
+  expect(copy.x).toBeGreaterThanOrEqual(textRight);
+  await transcript.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  expect(await transcript.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  expect(await button(page, 'Copy').boundingBox()).toEqual(copy);
+});

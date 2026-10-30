@@ -223,3 +223,22 @@ test('settings that cannot be read leave the defaults, silently', async ({ page 
   await button(page, 'Library').click();
   await expect.poll(() => saved(page)).toEqual([{ summaries: true, libraryOpen: false, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' }]);
 });
+
+test('the check resets when another entry is shown', async ({ page }) => {
+  await open(page, { library: '2' });
+  const rows = page.locator('#library li');
+  await rows.nth(0).getByRole('button').click();
+  await press(page, 'Copy');
+  await expect(page.locator('button.copy.copied')).toBeVisible();
+  await rows.nth(1).getByRole('button').click();
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue('This is preloaded recording number 2.');
+  await expect(page.locator('button.copy.copied')).toHaveCount(0);
+});
+
+test('a failed entry copy shows no check', async ({ page }) => {
+  await open(page, { fail: 'library_copy', library: '1' });
+  await page.locator('#library li').nth(0).getByRole('button').click();
+  await press(page, 'Copy');
+  await expect(page.getByRole('main').getByRole('alert')).toHaveText('Mock failure: library_copy');
+  await expect(page.locator('button.copy.copied')).toHaveCount(0);
+});
