@@ -101,6 +101,7 @@ test('a text editor that fails says why', async ({ page }) => {
   await openSettings(page, { fail: 'vocabulary_open' });
   await editor(page).click();
   await expect(alert(page)).toHaveText('Could not open the vocabulary file: no text editor.');
+  await expect(alert(page)).toHaveCSS('font-size', '12px');
   expect(await opened(page)).toEqual([]);
 });
 

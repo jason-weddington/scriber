@@ -18,13 +18,28 @@ async function expectNoViolations(page: Page): Promise<void> {
  * Keeps Copy's green check up. It clears after 2 s and a scan can take longer
  * on a busy host, which would scan the wrong state. A clock cannot hold it:
  * axe waits on timers of its own, so only that one timer is dropped.
+ * Each dropped timer is counted in window.__droppedCopyTimers; the copied tests
+ * assert exactly one drop per Copy press, so they fail if CopyButton stops using
+ * a 2000 ms setTimeout. That the check clears after 2 s is covered by the
+ * fake-clock tests in dictation.spec.ts (copiedAt60s).
  */
 async function keepCheck(page: Page): Promise<void> {
   await page.addInitScript(() => {
+    const w = window as unknown as { __droppedCopyTimers: number };
+    w.__droppedCopyTimers = 0;
     const real = window.setTimeout.bind(window);
-    window.setTimeout = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) =>
-      ms === 2000 ? 0 : real(fn, ms, ...rest)) as typeof window.setTimeout;
+    window.setTimeout = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) => {
+      if (ms === 2000) {
+        w.__droppedCopyTimers++;
+        return 0;
+      }
+      return real(fn, ms, ...rest);
+    }) as typeof window.setTimeout;
   });
+}
+
+function droppedTimers(page: Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as { __droppedCopyTimers: number }).__droppedCopyTimers);
 }
 
 for (const colorScheme of ['light', 'dark'] as const) {
@@ -34,20 +49,23 @@ for (const colorScheme of ['light', 'dark'] as const) {
     test('finished, just copied', async ({ page }) => {
       await keepCheck(page);
       await open(page);
-      await press(page, 'New', 'Record', 'Done', 'Copy');
+      await press(page, 'New', 'Record', 'Done');
+      const before = await droppedTimers(page);
+      await press(page, 'Copy');
       await expect(page.locator('button.copy.copied')).toBeVisible();
+      expect((await droppedTimers(page)) - before).toBe(1);
       await expectNoViolations(page);
-      await expect(page.locator('button.copy.copied')).toHaveCount(1);
     });
 
     test('a library entry just copied', async ({ page }) => {
       await keepCheck(page);
       await open(page, { library: '3' });
       await page.locator('#library li').nth(1).getByRole('button').click();
+      const before = await droppedTimers(page);
       await press(page, 'Copy');
       await expect(page.locator('button.copy.copied')).toBeVisible();
+      expect((await droppedTimers(page)) - before).toBe(1);
       await expectNoViolations(page);
-      await expect(page.locator('button.copy.copied')).toHaveCount(1);
     });
 
     test('idle', async ({ page }) => {

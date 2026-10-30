@@ -38,6 +38,12 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await walk('button:enabled:visible');
       await press(page, 'New');
       await walk('button:enabled:visible');
+      await page.getByRole('button', { name: /^Microphone/ }).click();
+      await expect(page.getByRole('menu', { name: 'Microphone' })).toBeVisible();
+      await walk('.mic-popover [role="menuitemradio"]');
+      await expect(page.getByRole('menu', { name: 'Microphone' })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu', { name: 'Microphone' })).toHaveCount(0);
       await press(page, 'Record');
       await walk('button:enabled:visible');
       await press(page, 'Done');

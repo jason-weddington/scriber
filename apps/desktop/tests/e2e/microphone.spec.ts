@@ -359,6 +359,21 @@ test('every device in a long list can be reached', async ({ page }) => {
   await expectEveryItemReachable(items(page));
 });
 
+test('with more room below the control the popover opens below it', async ({ page }) => {
+  await open(page);
+  await press(page, 'New');
+  const control = await mic(page).boundingBox();
+  const size = page.viewportSize();
+  if (control === null || size === null) throw new Error('no box');
+  const H = size.height;
+  expect(H - (control.y + control.height) > control.y, 'precondition: more room below the control than above').toBe(true);
+  await openMenu(page);
+  const box = await page.locator('.mic-popover').boundingBox();
+  if (box === null) throw new Error('no box');
+  expect(box.y).toBeGreaterThanOrEqual(control.y + control.height);
+  expect(box.y + box.height).toBeLessThanOrEqual(H);
+});
+
 test.describe('at the minimum window size', () => {
   test.use({ viewport: { width: 520, height: 380 } });
 
@@ -412,18 +427,25 @@ test.describe('at the minimum window size', () => {
     await expect.poll(() => savedInputs(page)).toEqual(['', 'Microphone 30']);
   });
 
-  test('in the smallest window the popover opens on the side with room, clear of the control', async ({ page }) => {
-    await open(page, { library: '30', inputDevice: 'Gone Mic' });
+  // Layout (a): library 30 at 440 wide, a long missing device name.
+  test('with more room above the control the popover opens above it', async ({ page }) => {
+    const LONG_GONE =
+      'Gone Mic from the old desk setup in the spare room upstairs by the window that faces the garden and the shed';
+    await open(page, { library: '30', libraryWidth: '440', inputDevice: LONG_GONE });
     await press(page, 'New', 'Record');
-    await expect(status(page)).toContainText('Gone Mic is not available');
-    await openMenu(page);
+    await expect(status(page)).toContainText('is not available');
     const control = await mic(page).boundingBox();
+    const size = page.viewportSize();
+    if (control === null || size === null) throw new Error('no box');
+    const H = size.height;
+    expect(control.y > H - (control.y + control.height), 'precondition: more room above the control than below').toBe(
+      true,
+    );
+    await openMenu(page);
     const box = await page.locator('.mic-popover').boundingBox();
-    if (control === null || box === null) throw new Error('no box');
-    // The waveform now fills the space below the control, so the popover may open downward.
-    expect(box.y + box.height <= control.y || box.y >= control.y + control.height).toBe(true);
+    if (box === null) throw new Error('no box');
+    expect(box.y + box.height).toBeLessThanOrEqual(control.y);
     expect(box.y).toBeGreaterThanOrEqual(0);
-    expect(box.y + box.height).toBeLessThanOrEqual(380);
   });
 
   test('the record controls stay in the window under the fallback notice', async ({ page }) => {

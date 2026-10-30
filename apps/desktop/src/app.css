@@ -675,7 +675,7 @@ button.mic {
 
 .mic-popover [role='menuitemradio']:hover,
 .mic-popover [role='menuitemradio']:focus {
-  background: var(--bg);
+  background-color: var(--bg);
 }
 
 .mic-popover .check {
