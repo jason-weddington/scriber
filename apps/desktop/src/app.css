@@ -421,14 +421,9 @@ button.icon {
   margin-top: 2px;
 }
 
-.library-scroll > .day:not(:first-child) {
-  border-top: 1px solid var(--line);
-  margin-top: 10px;
-  padding-top: 8px;
-}
-
 .library li {
   flex-shrink: 0;
+  border-bottom: 1px solid var(--line);
 }
 
 .library li button {

@@ -72,25 +72,37 @@ test.describe('rows', () => {
     await expect(rows(later).first().locator('.entry-time')).not.toHaveText('9:00 AM');
   });
 
-  test('day labels are 13 px and every group after the first has a rule above it', async ({ page }) => {
+  test('day labels are 13 px and every recording has a rule below it', async ({ page }) => {
     await page.clock.setFixedTime(NOON + 2 * DAY);
     await open(page, { library: '3' });
     await dictate(page);
     await expect(days(page)).toHaveText(['Today', 'Oct 26']);
-    for (const d of await days(page).all()) await expect(d).toHaveCSS('font-size', '13px');
-    const first = days(page).first();
-    await expect(first).toHaveCSS('margin-top', '2px');
-    await expect(first).toHaveCSS('border-top-style', 'none');
-    await expect(first).toHaveCSS('border-top-width', '0px');
+    for (const d of await days(page).all()) {
+      await expect(d).toHaveCSS('font-size', '13px');
+      await expect(d).toHaveCSS('border-top-width', '0px');
+      await expect(d).toHaveCSS('border-top-style', 'none');
+      await expect(d).toHaveCSS('border-bottom-width', '0px');
+      await expect(d).toHaveCSS('border-bottom-style', 'none');
+    }
+    await expect(days(page).first()).toHaveCSS('margin-top', '2px');
     const second = days(page).nth(1);
-    await expect(second).toHaveCSS('margin-top', '10px');
-    await expect(second).toHaveCSS('padding-top', '8px');
-    await expect(second).toHaveCSS('border-top-width', '1px');
-    await expect(second).toHaveCSS('border-top-style', 'solid');
+    await expect(second).toHaveCSS('margin-top', '8px');
+    await expect(second).toHaveCSS('padding-top', '0px');
+    await expect(second).toHaveCSS('border-top-width', '0px');
+    await expect(rows(page)).toHaveCount(4);
+    for (const r of await rows(page).all()) {
+      await expect(r).toHaveCSS('border-bottom-width', '1px');
+      await expect(r).toHaveCSS('border-bottom-style', 'solid');
+      await expect(r).toHaveCSS('border-top-width', '0px');
+    }
     await page.emulateMedia({ colorScheme: 'light' });
-    await expect(second).toHaveCSS('border-top-color', 'rgb(222, 218, 213)');
+    await expect(rows(page).last()).toHaveCSS('border-bottom-color', 'rgb(222, 218, 213)');
     await page.emulateMedia({ colorScheme: 'dark' });
-    await expect(second).toHaveCSS('border-top-color', 'rgb(58, 54, 51)');
+    await expect(rows(page).last()).toHaveCSS('border-bottom-color', 'rgb(58, 54, 51)');
+    const r = await page.locator('#library ul').nth(0).locator('li').last().boundingBox();
+    const l = await second.boundingBox();
+    if (!r || !l) throw new Error('no box');
+    expect(l.y - (r.y + r.height)).toBeCloseTo(8, 0);
   });
 
   test('relabel when the clock passes midnight', async ({ page }) => {
