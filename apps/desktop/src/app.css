@@ -9,6 +9,7 @@
   --accent: #b4441b;
   --accent-text: #ffffff;
   --error: #a3261b;
+  --recording: #d0103a;
   --band-height: 52px;
   --traffic-lights: 96px;
   --band-inset: 16px;
@@ -26,6 +27,7 @@
     --accent: #e0703f;
     --accent-text: #1c1a19;
     --error: #ff8a7a;
+    --recording: #ff4d6d;
   }
 }
 
@@ -152,14 +154,14 @@ main {
   color: var(--error);
 }
 
-/* The recorded time in the band; red while the microphone is live. */
+/* The recorded time in the band; in the recording colour while the microphone is live. */
 .time {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
 
 .time.live {
-  color: var(--error);
+  color: var(--recording);
   font-weight: 600;
 }
 
@@ -172,13 +174,17 @@ main {
   white-space: nowrap;
 }
 
-/* Live input level: 2 px bars on a 4 px pitch, as many as fit, newest on the
-   right, mirrored about the centre line; red while recording, grey (frozen)
-   while paused. Each bar's height is its level (0 to 1) via --level. */
+/* Live input level: 4 px bars on a 6 px pitch in the recording colour, as many
+   as fit, newest on the right, mirrored about the centre line; grey (frozen)
+   while paused. It fills the free height below the controls. Each bar's
+   height is its level (0 to 1) via --level. */
 .meter {
-  flex-shrink: 0;
-  height: 48px;
+  flex: 1 1 auto;
+  min-height: 64px;
   padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .wave {
@@ -190,11 +196,11 @@ main {
 }
 
 .bar {
-  flex: 0 0 2px;
-  width: 2px;
-  height: max(2px, calc(var(--level) * 100%));
-  border-radius: 1px;
-  background: var(--error);
+  flex: 0 0 4px;
+  width: 4px;
+  height: max(4px, calc(var(--level) * 100%));
+  border-radius: 2px;
+  background: var(--recording);
 }
 
 .meter.frozen .bar,
@@ -205,9 +211,9 @@ main {
 /* With reduced motion: one level bar instead of the scrolling waveform. */
 .level {
   display: none;
-  height: 8px;
-  margin-top: 16px;
-  border-radius: 4px;
+  height: 48px;
+  margin-top: 0;
+  border-radius: 8px;
   background: var(--line);
   overflow: hidden;
 }
@@ -216,7 +222,7 @@ main {
   display: block;
   height: 100%;
   width: calc(var(--level) * 100%);
-  background: var(--error);
+  background: var(--recording);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -106,7 +106,7 @@ export function defaultMicrophoneLabel(name: string | null): string {
 // ---- the input level waveform ------------------------------------------------
 
 /** A bar's width in px. */
-export const BAR_PX = 2;
+export const BAR_PX = 4;
 
 /** The gap between bars in px. */
 export const GAP_PX = 2;

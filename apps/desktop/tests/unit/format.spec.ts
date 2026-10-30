@@ -116,19 +116,21 @@ test('the status line says what to do next in every phase', () => {
   for (const [patch, want] of cases) expect(statusText({ ...base, ...patch }), JSON.stringify(patch)).toBe(want);
 });
 
-test('the bar geometry is 2 px bars 2 px apart, at most 512 levels', () => {
-  expect([BAR_PX, GAP_PX, MAX_BARS]).toEqual([2, 2, 512]);
+test('the bar geometry is 4 px bars 2 px apart, at most 512 levels', () => {
+  expect([BAR_PX, GAP_PX, MAX_BARS]).toEqual([4, 2, 512]);
 });
 
-test('barCount is how many 4 px slots fit the width', () => {
+test('barCount is how many 6 px slots fit the width', () => {
   const cases: [number, number][] = [
     [0, 0],
     [1, 0],
-    [2, 1],
-    [6, 2],
-    [488, 122],
-    [568, 142],
-    [928, 232],
+    [3, 0],
+    [4, 1],
+    [9, 1],
+    [10, 2],
+    [488, 81],
+    [568, 95],
+    [928, 155],
     [100000, 512],
     [-10, 0],
     [NaN, 0],

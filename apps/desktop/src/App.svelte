@@ -520,26 +520,6 @@
         <p class="error" role="alert">{actionError}</p>
       {/if}
 
-      {#if metering}
-        <div class="meter" class:frozen={snapshot.phase === 'paused'}>
-          <div class="wave" aria-hidden="true" data-count={levels.length} data-slots={barCount(waveWidth)} bind:clientWidth={waveWidth}>
-            {#each bars(levels, barCount(waveWidth)) as level, i (i)}
-              <span class="bar" style:--level={level}></span>
-            {/each}
-          </div>
-          <div class="level" aria-hidden="true">
-            <span class="level-fill" style:--level={latest}></span>
-          </div>
-          <span class="visually-hidden">
-            {snapshot.phase === 'paused'
-              ? 'The microphone is off while paused.'
-              : latest > 0
-                ? 'The microphone is picking up sound.'
-                : 'Listening for sound from the microphone.'}
-          </span>
-        </div>
-      {/if}
-
       {#if snapshot.phase === 'ready' || snapshot.phase === 'recording' || snapshot.phase === 'paused'}
         <MicrophoneMenu
           name={activeMicrophone(snapshot, inputs, settings.inputDevice)}
@@ -568,6 +548,26 @@
           </button>
         {/each}
       </div>
+
+      {#if metering}
+        <div class="meter" class:frozen={snapshot.phase === 'paused'}>
+          <div class="wave" aria-hidden="true" data-count={levels.length} data-slots={barCount(waveWidth)} bind:clientWidth={waveWidth}>
+            {#each bars(levels, barCount(waveWidth)) as level, i (i)}
+              <span class="bar" style:--level={level}></span>
+            {/each}
+          </div>
+          <div class="level" aria-hidden="true">
+            <span class="level-fill" style:--level={latest}></span>
+          </div>
+          <span class="visually-hidden">
+            {snapshot.phase === 'paused'
+              ? 'The microphone is off while paused.'
+              : latest > 0
+                ? 'The microphone is picking up sound.'
+                : 'Listening for sound from the microphone.'}
+          </span>
+        </div>
+      {/if}
 
       {#if snapshot.phase === 'finished'}
         <div class="transcript">

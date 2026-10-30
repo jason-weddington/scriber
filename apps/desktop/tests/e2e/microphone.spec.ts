@@ -412,7 +412,7 @@ test.describe('at the minimum window size', () => {
     await expect.poll(() => savedInputs(page)).toEqual(['', 'Microphone 30']);
   });
 
-  test('low in the window the popover opens upward, above the control', async ({ page }) => {
+  test('in the smallest window the popover opens on the side with room, clear of the control', async ({ page }) => {
     await open(page, { library: '30', inputDevice: 'Gone Mic' });
     await press(page, 'New', 'Record');
     await expect(status(page)).toContainText('Gone Mic is not available');
@@ -420,8 +420,10 @@ test.describe('at the minimum window size', () => {
     const control = await mic(page).boundingBox();
     const box = await page.locator('.mic-popover').boundingBox();
     if (control === null || box === null) throw new Error('no box');
-    expect(box.y + box.height).toBeLessThanOrEqual(control.y);
+    // The waveform now fills the space below the control, so the popover may open downward.
+    expect(box.y + box.height <= control.y || box.y >= control.y + control.height).toBe(true);
     expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(380);
   });
 
   test('the record controls stay in the window under the fallback notice', async ({ page }) => {
