@@ -208,6 +208,14 @@ mod tests {
         assert!(is_silent_window(0.002_f64.powi(2) * 0.99, 1), "below");
         assert!(!is_silent_window(0.0021_f64.powi(2), 1), "above");
         assert!(is_silent_window(0.0, 0), "an empty window of nothing");
+        assert!(
+            is_silent_window(0.002_f64.powi(2) * 800.0 * 0.99, 800),
+            "a 50 ms window just below"
+        );
+        assert!(
+            !is_silent_window(0.002_f64.powi(2) * 800.0 * 1.01, 800),
+            "a 50 ms window just above"
+        );
     }
 
     #[test]

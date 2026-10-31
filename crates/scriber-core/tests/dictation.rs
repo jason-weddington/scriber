@@ -2863,6 +2863,29 @@ mod tests {
     }
 
     #[test]
+    fn five_fixes_are_not_a_rewrite() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(
+            &w,
+            &p,
+            "Use TightBeam and Scribe and Github and Svelt and Ollama now.",
+        );
+        let s = d
+            .apply(
+                Action::Copy,
+                "Use tightbeam and Scriber and GitHub and Svelte and ollama now.",
+                &p,
+            )
+            .unwrap();
+        assert_eq!(
+            s.learned,
+            ["tightbeam", "Scriber", "GitHub", "Svelte", "ollama"],
+            "all five learned"
+        );
+    }
+
+    #[test]
     fn a_term_already_in_the_vocabulary_is_not_added() {
         let w = World::default();
         w.files.set_vocabulary(Some("tightbeam\n"));

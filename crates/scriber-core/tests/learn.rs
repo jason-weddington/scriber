@@ -71,6 +71,14 @@ mod tests {
         ("Ask Zoë now.", "Ask Zoe now.", &[]),
         ("Open Münchenn now.", "Open München now.", &["München"]),
         ("Same text.", "Same text.", &[]),
+        ("Open ATLAS now.", "Open Atlas now.", &["Atlas"]),
+        ("The beem broke.", "The beam broke.", &["beam"]),
+        (
+            "Ask Kuburnates now.",
+            "Ask Kubernetes now.",
+            &["Kubernetes"],
+        ),
+        ("Say abcd now.", "Say a b c d now.", &[]),
     ];
 
     #[test]
@@ -243,6 +251,8 @@ mod tests {
             (&["tight beam", "TightBeam"], "TIGHTBEAM", "tight beam"),
             (&["Scrib", "Scriber"], "scriber scrib", "Scriber Scrib"),
             (&["ab", "abc"], "a b c", "abc"),
+            (&["TightBeam"], "retightbeam now", "retightbeam now"),
+            (&["Tight Beam"], "tightbeam now", "Tight Beam now"),
         ];
         for (terms, text, expected) in cases {
             assert_eq!(

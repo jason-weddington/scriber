@@ -38,19 +38,11 @@ fn words(text: &str) -> Vec<Word> {
     let mut after_end = true;
     for raw in text.split(char::is_whitespace) {
         let stripped = raw.trim_matches(|c: char| !c.is_alphanumeric());
-        let chars: Vec<char> = stripped.chars().collect();
-        let possessive = chars.len() > 2
-            && matches!(chars.get(chars.len().saturating_sub(2)), Some('\'' | '’'))
-            && matches!(chars.last(), Some('s' | 'S'));
-        let word: String = if possessive {
-            chars
-                .get(..chars.len().saturating_sub(2))
-                .unwrap_or(&[])
-                .iter()
-                .collect()
-        } else {
-            stripped.to_string()
-        };
+        let word: String = ["'s", "'S", "’s", "’S"]
+            .iter()
+            .find_map(|suffix| stripped.strip_suffix(suffix))
+            .unwrap_or(stripped)
+            .to_string();
         if word.is_empty() {
             continue;
         }
@@ -276,15 +268,14 @@ pub fn remember(
     (new, added)
 }
 
-/// A term's key: lowercase, ASCII spaces and hyphens removed; `None` when
-/// it is empty or holds anything but letters and digits.
-fn key(term: &str) -> Option<String> {
-    let key: String = term
-        .to_lowercase()
+/// A term's key: lowercase, ASCII spaces and hyphens removed. A key that is
+/// empty or holds anything but letters and digits never matches, because a
+/// match only ever joins runs of letters and digits.
+fn key(term: &str) -> String {
+    term.to_lowercase()
         .chars()
         .filter(|c| *c != ' ' && *c != '-')
-        .collect();
-    (!key.is_empty() && key.chars().all(char::is_alphanumeric)).then_some(key)
+        .collect()
 }
 
 /// Whether `c` joins a word, so it cannot border a match.
@@ -297,28 +288,26 @@ fn joins(c: char) -> bool {
 /// or hyphen between up to three words counts (`tight beam`, `Tight-Beam`).
 #[must_use]
 pub fn enforce(text: &str, terms: &[String]) -> String {
-    let keys: Vec<(&String, String)> = terms
-        .iter()
-        .filter_map(|t| key(t).map(|k| (t, k)))
-        .collect();
+    let keys: Vec<(&String, String)> = terms.iter().map(|t| (t, key(t))).collect();
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
-    let mut i = 0;
-    let mut before: Option<char> = None;
-    while let Some(&c) = chars.get(i) {
-        let found = if before.is_some_and(joins) {
+    // A `for` over the characters always ends, whatever a match reports.
+    let mut skip_to = 0;
+    for (i, &c) in chars.iter().enumerate() {
+        if i < skip_to {
+            continue;
+        }
+        let before = i.checked_sub(1).and_then(|p| chars.get(p));
+        let found = if before.is_some_and(|b| joins(*b)) {
             None
         } else {
             best_match(&chars, i, &keys)
         };
         if let Some((end, term)) = found {
             out.push_str(term);
-            before = chars.get(end.saturating_sub(1)).copied();
-            i = end;
+            skip_to = end;
         } else {
             out.push(c);
-            before = Some(c);
-            i = i.saturating_add(1);
         }
     }
     out
