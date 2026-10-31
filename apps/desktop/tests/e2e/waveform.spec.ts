@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 
-import { open, press } from './helpers';
+import { hold, open, press } from './helpers';
 
 // The live input-level waveform below the buttons: bars scroll in from the
 // right while recording, freeze while paused, clear on New and Discard, and
@@ -254,6 +254,8 @@ test('pausing keeps the strip the same size', async ({ page }) => {
   await page.setViewportSize({ width: 960, height: 640 });
   await record(page);
   const before = (await page.locator('.meter').boundingBox())?.height ?? 0;
+  // The transcript so far shares the space once a segment is heard; hold that back.
+  await hold(page, 'transcribe');
   await press(page, 'Pause');
   const after = (await page.locator('.meter').boundingBox())?.height ?? 1;
   expect(Math.abs(before - after)).toBeLessThanOrEqual(1);

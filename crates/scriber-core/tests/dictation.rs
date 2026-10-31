@@ -82,7 +82,7 @@ mod tests {
         Phase::Failed,
     ];
 
-    const ACTIONS: [Action; 9] = [
+    const ACTIONS: [Action; 10] = [
         Action::New,
         Action::Record,
         Action::Pause,
@@ -91,6 +91,7 @@ mod tests {
         Action::Discard,
         Action::Retry,
         Action::Copy,
+        Action::Accept,
         Action::UndoLearn,
     ];
 
@@ -107,7 +108,10 @@ mod tests {
             Phase::Recording => matches!(action, A::Pause | A::Done | A::Discard),
             Phase::Paused => matches!(action, A::Resume | A::Done | A::Discard),
             Phase::Transcribing => false,
-            Phase::Finished => matches!(action, A::New | A::Discard | A::Copy | A::UndoLearn),
+            Phase::Finished => matches!(
+                action,
+                A::New | A::Discard | A::Copy | A::Accept | A::UndoLearn
+            ),
             Phase::Failed => matches!(action, A::New | A::Discard | A::Retry),
         }
     }
@@ -155,6 +159,7 @@ mod tests {
                 "discard",
                 "retry",
                 "copy",
+                "accept",
                 "undo learning"
             ],
             "action names"
@@ -199,6 +204,8 @@ mod tests {
                 library_revision: 0,
                 microphone: None,
                 learned: vec![],
+                partial: String::new(),
+                raw_text: None,
             },
             "idle"
         );
@@ -2977,5 +2984,329 @@ mod tests {
         );
         assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "file unchanged");
         assert!(learning_log(&w).is_empty(), "no log");
+    }
+
+    /// A recording of two segments: job 0 and job 1, both pending, session paused.
+    fn two_parts(w: &World) -> (Dictation, Job, Job) {
+        let p = w.ports();
+        let mut d = idle(w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let first = d.pause(&p).unwrap().unwrap();
+        d.resume(&p).unwrap();
+        let second = d.pause(&p).unwrap().unwrap();
+        (d, first, second)
+    }
+
+    fn answer(w: &World, d: &mut Dictation, job: &Job, reply: Result<&str, &str>) -> Snapshot {
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(reply.map(str::to_string).map_err(str::to_string));
+        d.complete(w.run(job), &w.ports())
+    }
+
+    /// The fields the transcript-so-far feature publishes.
+    fn views(snapshot: &Snapshot) -> (&str, &str, Option<&str>) {
+        (
+            snapshot.partial.as_str(),
+            snapshot.text.as_str(),
+            snapshot.raw_text.as_deref(),
+        )
+    }
+
+    #[test]
+    fn partial_grows_as_segments_land() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let first = d.pause(&p).unwrap().unwrap();
+        assert_eq!(snap(&d, &w).partial, "", "before the outcome");
+        d.resume(&p).unwrap();
+        let one = answer(&w, &mut d, &first, Ok("One."));
+        assert_eq!(one.phase, Phase::Recording, "phase");
+        assert_eq!(views(&one), ("One.", "", None), "first");
+        let second = d.pause(&p).unwrap().unwrap();
+        let two = answer(&w, &mut d, &second, Ok("Two."));
+        assert_eq!(two.phase, Phase::Paused, "phase");
+        assert_eq!(views(&two), ("One.\n\nTwo.", "", None), "second");
+    }
+
+    #[test]
+    fn partial_is_in_recording_order_not_arrival_order() {
+        let w = World::default();
+        let (mut d, first, second) = two_parts(&w);
+        let late = answer(&w, &mut d, &second, Ok("Two."));
+        assert_eq!(late.partial, "Two.", "second alone");
+        let both = answer(&w, &mut d, &first, Ok("One."));
+        assert_eq!(both.partial, "One.\n\nTwo.", "ordered");
+    }
+
+    #[test]
+    fn partial_skips_failed_segments() {
+        let w = World::default();
+        let (mut d, first, second) = two_parts(&w);
+        let _: Snapshot = answer(&w, &mut d, &first, Ok("One."));
+        let failed = answer(&w, &mut d, &second, Err("boom"));
+        assert_eq!(
+            (failed.phase, failed.partial.as_str()),
+            (Phase::Paused, "One.")
+        );
+        assert!(d.done(&w.ports()).unwrap().is_none(), "paused");
+        let after = snap(&d, &w);
+        assert_eq!(
+            (after.phase, after.partial.as_str(), after.raw_text),
+            (Phase::Failed, "One.", None),
+            "failed"
+        );
+    }
+
+    #[test]
+    fn partial_is_published_while_transcribing() {
+        let w = World::default();
+        let (mut d, first, _second) = two_parts(&w);
+        assert!(d.done(&w.ports()).unwrap().is_none(), "paused");
+        let got = answer(&w, &mut d, &first, Ok("One."));
+        assert_eq!(
+            (got.phase, got.partial.as_str()),
+            (Phase::Transcribing, "One.")
+        );
+    }
+
+    #[test]
+    fn raw_text_is_whispers_text_without_the_library() {
+        let w = World::default();
+        assert!(w.ports().library.is_none(), "library off");
+        let (_, got) = heard_with(&w, &w.ports(), SHORTCUT);
+        assert_eq!(got.text, SHORTCUT_GLYPHS, "text");
+        assert_eq!(got.raw_text.as_deref(), Some(SHORTCUT), "raw");
+        assert_eq!(got.partial, SHORTCUT, "partial");
+    }
+
+    #[test]
+    fn raw_text_is_what_the_library_archives() {
+        let w = World::default();
+        let (_, got) = heard_with(&w, &w.library_ports(), SHORTCUT);
+        assert_eq!(got.raw_text.as_deref(), Some(SHORTCUT), "raw");
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(SHORTCUT),
+            "archive"
+        );
+    }
+
+    #[test]
+    fn raw_text_is_published_even_when_equal_to_text() {
+        let w = World::default();
+        let (_, got) = heard_with(&w, &w.ports(), "Hello.");
+        assert_eq!(got.text, "Hello.", "text");
+        assert_eq!(got.raw_text.as_deref(), Some("Hello."), "raw");
+    }
+
+    #[test]
+    fn raw_text_is_whispers_text_before_cleanup() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let got = cleaned(&w, &mut d, &job, Ok(CLAUDE));
+        assert_eq!(got.text, CLAUDE, "text");
+        assert_eq!(got.raw_text.as_deref(), Some(CLAWED), "raw");
+    }
+
+    #[test]
+    fn raw_text_is_whispers_text_when_cleanup_fails() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, "Hello.");
+        let got = cleaned(&w, &mut d, &job, Err("down"));
+        assert_eq!(got.raw_text.as_deref(), Some("Hello."), "cleanup failed");
+    }
+
+    #[test]
+    fn raw_text_is_before_learned_spellings() {
+        let w = World::default();
+        w.files.write(LEARNED, b"tightbeam\n").unwrap();
+        let (_, got) = heard_with(&w, &w.ports(), TIGHTBEAM_HEARD);
+        assert_eq!(got.text, TIGHTBEAM_FIXED, "text");
+        assert_eq!(got.raw_text.as_deref(), Some(TIGHTBEAM_HEARD), "raw");
+    }
+
+    #[test]
+    fn raw_text_survives_copy() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, SHORTCUT);
+        let edited = d.apply(Action::Copy, "Edited.", &p).unwrap();
+        assert_eq!(edited.raw_text.as_deref(), Some(SHORTCUT), "edited");
+        let same = d.apply(Action::Copy, SHORTCUT, &p).unwrap();
+        assert_eq!(same.raw_text.as_deref(), Some(SHORTCUT), "same");
+    }
+
+    #[test]
+    fn new_and_discard_clear_partial_and_raw_text() {
+        for action in [Action::New, Action::Discard] {
+            let w = World::default();
+            let p = w.ports();
+            let (mut d, before) = heard_with(&w, &p, SHORTCUT);
+            assert!(before.raw_text.is_some(), "finished");
+            let after = d.apply(action, "", &p).unwrap();
+            assert_eq!(
+                (after.partial.as_str(), after.raw_text),
+                ("", None),
+                "{action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recovered_session_with_segments_has_no_partial_or_raw_text() {
+        let w = World::default();
+        w.files.put_segment(0, encode_wav(&speech(16_000)));
+        let got = snap(&Dictation::recover(&w.ports()), &w);
+        assert_eq!(
+            (got.phase, got.partial.as_str(), got.raw_text),
+            (Phase::Failed, "", None)
+        );
+    }
+
+    #[test]
+    fn a_recovered_kept_transcript_has_no_partial_or_raw_text() {
+        let w = World::default();
+        let _: (Dictation, Snapshot) = heard_with(&w, &w.ports(), "Kept.");
+        let got = snap(&Dictation::recover(&w.ports()), &w);
+        assert_eq!(
+            (got.phase, got.partial.as_str(), got.raw_text),
+            (Phase::Finished, "", None)
+        );
+    }
+
+    #[test]
+    fn the_last_partial_is_the_raw_text() {
+        let w = World::default();
+        let (mut d, first, second) = two_parts(&w);
+        let _: Snapshot = answer(&w, &mut d, &first, Ok("One."));
+        let last = answer(&w, &mut d, &second, Ok("Two."));
+        assert!(d.done(&w.ports()).unwrap().is_none(), "paused");
+        let done = snap(&d, &w);
+        assert_eq!(done.phase, Phase::Finished, "settled");
+        assert_eq!(done.raw_text.as_deref(), Some(last.partial.as_str()));
+    }
+
+    #[test]
+    fn accept_learns_from_a_correction_without_touching_the_clipboard() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, before) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let writes = w.clipboard.writes.borrow().len();
+        let got = d.apply(Action::Accept, TIGHTBEAM_FIXED, &p).unwrap();
+        assert_eq!(got.learned, ["tightbeam"], "learned");
+        assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "file");
+        assert_eq!(got.text, TIGHTBEAM_FIXED, "text");
+        assert_eq!(w.clipboard.writes.borrow().len(), writes, "no write");
+        assert_eq!(got.notice, before.notice, "no notice change");
+        let line = learning_log(&w).pop().unwrap();
+        assert_eq!(line["event"], "learn");
+        assert_eq!(line["outcome"], "saved");
+        assert_eq!(line["added"], json!(["tightbeam"]));
+    }
+
+    #[test]
+    fn accept_logs_what_copy_logs() {
+        let by_accept = World::default();
+        let (mut d, _) = heard_with(&by_accept, &by_accept.ports(), TIGHTBEAM_HEARD);
+        let _: Snapshot = d
+            .apply(Action::Accept, TIGHTBEAM_FIXED, &by_accept.ports())
+            .unwrap();
+        let by_copy = World::default();
+        let (mut c, _) = heard_with(&by_copy, &by_copy.ports(), TIGHTBEAM_HEARD);
+        let _: Snapshot = c
+            .apply(Action::Copy, TIGHTBEAM_FIXED, &by_copy.ports())
+            .unwrap();
+        assert_eq!(learning_log(&by_accept), learning_log(&by_copy));
+    }
+
+    #[test]
+    fn accept_with_no_correction_learns_nothing() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, before) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let writes = w.clipboard.writes.borrow().len();
+        let file = learned_file(&w);
+        let got = d.apply(Action::Accept, TIGHTBEAM_HEARD, &p).unwrap();
+        assert!(got.learned.is_empty(), "learned");
+        assert_eq!(learned_file(&w), file, "file");
+        assert_eq!(w.clipboard.writes.borrow().len(), writes, "clipboard");
+        assert_eq!(got.notice, before.notice, "notice");
+    }
+
+    #[test]
+    fn accept_is_refused_outside_finished() {
+        for phase in PHASES {
+            if phase == Phase::Finished {
+                continue;
+            }
+            let w = World::default();
+            let (mut d, _jobs) = at(&w, phase);
+            let refused = d.apply(Action::Accept, "x", &w.ports()).unwrap_err();
+            assert_eq!(refused.to_string(), format!("Cannot accept while {phase}."));
+            assert!(w.clipboard.writes.borrow().is_empty(), "{phase}");
+        }
+    }
+
+    #[test]
+    fn undo_after_accept_restores_the_learned_list() {
+        let w = World::default();
+        let p = w.ports();
+        w.files.write(LEARNED, b"Scriber\nTightBeam\n").unwrap();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let _: Snapshot = d.apply(Action::Accept, TIGHTBEAM_FIXED, &p).unwrap();
+        assert_eq!(learned_file(&w).unwrap(), b"tightbeam\nScriber\n");
+        let undone = d.apply(Action::UndoLearn, "", &p).unwrap();
+        assert_eq!(learned_file(&w).unwrap(), b"Scriber\nTightBeam\n");
+        assert!(undone.learned.is_empty(), "learned");
+    }
+
+    #[test]
+    fn undo_after_accept_can_empty_the_learned_list() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let _: Snapshot = d.apply(Action::Accept, TIGHTBEAM_FIXED, &p).unwrap();
+        let _: Snapshot = d.apply(Action::UndoLearn, "", &p).unwrap();
+        assert_eq!(learned_file(&w).unwrap(), b"", "emptied");
+    }
+
+    #[test]
+    fn copy_still_writes_the_clipboard_then_learns() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        w.clipboard.fail.set(true);
+        let refused = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap_err();
+        assert!(
+            matches!(refused, DictationError::Clipboard(_)),
+            "{refused:?}"
+        );
+        assert!(learned_file(&w).is_none(), "nothing learned");
+        w.clipboard.fail.set(false);
+        let copied = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert_eq!(copied.learned, ["tightbeam"], "learned");
+        assert_eq!(copied.notice.as_deref(), Some(COPIED), "notice");
+        assert_eq!(
+            w.clipboard.writes.borrow().last().map(String::as_str),
+            Some(TIGHTBEAM_FIXED),
+            "clipboard"
+        );
+    }
+
+    #[test]
+    fn accept_then_copy_of_the_same_text_learns_nothing_new() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let _: Snapshot = d.apply(Action::Accept, TIGHTBEAM_FIXED, &p).unwrap();
+        let copied = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert_eq!(copied.learned, ["tightbeam"], "kept");
+        assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "file");
     }
 }

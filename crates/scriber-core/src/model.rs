@@ -62,6 +62,8 @@ pub enum Action {
     Retry,
     /// Copy the (possibly edited) transcript again.
     Copy,
+    /// The user accepted this (possibly edited) transcript: learn from the edits exactly as Copy does, without writing the clipboard.
+    Accept,
     /// Download the speech model again, after a download failed.
     DownloadModel,
     /// Forget the terms the last Copy learned, restoring the learned list
@@ -80,6 +82,7 @@ impl fmt::Display for Action {
             Self::Discard => "discard",
             Self::Retry => "retry",
             Self::Copy => "copy",
+            Self::Accept => "accept",
             Self::DownloadModel => "download the speech model",
             Self::UndoLearn => "undo learning",
         })
@@ -123,6 +126,13 @@ pub struct Snapshot {
     /// ([`crate::learn`]), until Undo, New, Discard or relaunch; empty when
     /// nothing was learned.
     pub learned: Vec<String>,
+    /// The heard segments' raw Whisper text so far, joined in recording
+    /// order; empty for a new session. Cleanup, glyphs and learned spellings
+    /// apply only at finish.
+    pub partial: String,
+    /// Finished only: Whisper's joined transcript before cleanup, glyphs and
+    /// learned spellings; `None` before finish and after a relaunch.
+    pub raw_text: Option<String>,
 }
 
 /// How far the speech model's download has got.

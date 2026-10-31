@@ -333,3 +333,41 @@ test('Copy has a title and works from the keyboard', async ({ page }) => {
   await page.keyboard.press('Enter');
   await expect(page.locator('button.copy.copied')).toBeVisible();
 });
+
+test('while paused the transcript so far shows in a read-only region, which goes away at Done', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record', 'Pause');
+  const region = page.getByRole('region', { name: 'Heard so far' });
+  await expect(region).toBeVisible();
+  await expect(region).toContainText(PART_1);
+  await press(page, 'Resume', 'Pause');
+  await expect(region).toContainText(PART_1);
+  await expect(region).toContainText(PART_2);
+  await press(page, 'Done');
+  await expect(region).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue(`${PART_1}\n\n${PART_2}`);
+});
+
+test('the transcript so far appears only when the segment has been transcribed', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record');
+  await hold(page, 'transcribe');
+  await press(page, 'Pause');
+  const region = page.getByRole('region', { name: 'Heard so far' });
+  await expect(region).toHaveCount(0);
+  await release(page, 'transcribe');
+  await expect(region).toBeVisible();
+});
+
+test('a long transcript so far scrolls inside its region', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await open(page, { long: '1' });
+  await press(page, 'New', 'Record', 'Pause', 'Resume', 'Pause');
+  const region = page.getByRole('region', { name: 'Heard so far' });
+  await expect(region).toContainText(PART_1);
+  await expect(async () => {
+    expect((await region.textContent()) ?? '').toContain('part 2');
+  }).toPass();
+  expect(await region.evaluate((e) => getComputedStyle(e).overflowY)).toBe('auto');
+  expect(await region.evaluate((e) => e.scrollHeight > e.clientHeight)).toBe(true);
+});

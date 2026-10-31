@@ -58,7 +58,7 @@ const FIXTURE = resolve(process.cwd(), '../../crates/scriber-core/tests/fixtures
 const shapes = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, Record<string, unknown>>;
 
 const PHASES: Phase[] = ['idle', 'ready', 'recording', 'paused', 'transcribing', 'finished', 'failed'];
-const ACTIONS: Action[] = ['new', 'record', 'pause', 'resume', 'done', 'discard', 'retry', 'copy', 'undoLearn'];
+const ACTIONS: Action[] = ['new', 'record', 'pause', 'resume', 'done', 'discard', 'retry', 'copy', 'accept', 'undoLearn'];
 
 /** Each key, and the JSON types its value takes across the fixture's examples. */
 function types(examples: Record<string, unknown>[]): Map<string, Set<string>> {
@@ -84,7 +84,7 @@ const CORE_LEGAL: Record<Phase, Action[]> = {
   recording: ['pause', 'done', 'discard'],
   paused: ['resume', 'done', 'discard'],
   transcribing: [],
-  finished: ['new', 'discard', 'copy', 'undoLearn'],
+  finished: ['new', 'discard', 'copy', 'accept', 'undoLearn'],
   failed: ['new', 'discard', 'retry'],
 };
 
@@ -97,6 +97,7 @@ const CORE_ACTION_NAMES: Record<Action, string> = {
   discard: 'discard',
   retry: 'retry',
   copy: 'copy',
+  accept: 'accept',
   downloadModel: 'download the speech model',
   undoLearn: 'undo learning',
 };
@@ -128,7 +129,7 @@ async function settled(): Promise<void> {
 
 test.describe('the mock speaks the Rust JSON shapes', () => {
   test('every snapshot field, with the types the fixture allows', async () => {
-    const allowedTypes = types([shapes.snapshot ?? {}, shapes.snapshotFailed ?? {}, shapes.snapshotDownloading ?? {}]);
+    const allowedTypes = types([shapes.snapshot ?? {}, shapes.snapshotFailed ?? {}, shapes.snapshotPaused ?? {}, shapes.snapshotDownloading ?? {}]);
     const downloading = new Mock('?model=download');
     const failed = new Mock('?model=fail');
     await finished(failed);
@@ -874,3 +875,76 @@ test('a correction copied is learned, enforced next session, and undone on reque
   expect(mock.snapshot().learned).toEqual([]);
 });
 
+
+test('partial follows the heard segments in order, and text and rawText stay empty until finish', async () => {
+  const mock = new Mock('');
+  for (const step of ['new', 'record', 'pause'] as const) await mock.act(step, '');
+  await settled();
+  const first = mock.snapshot();
+  expect(first.partial).toBe(heard(0, false));
+  expect(first.text).toBe('');
+  expect(first.rawText).toBeNull();
+  for (const step of ['resume', 'pause'] as const) await mock.act(step, '');
+  await settled();
+  expect(mock.snapshot().partial).toBe(`${heard(0, false)}\n\n${heard(1, false)}`);
+  const fresh = await mock.act('discard', '');
+  expect(fresh.partial).toBe('');
+  expect(fresh.rawText).toBeNull();
+});
+
+test('a failed segment contributes nothing to partial', async () => {
+  const mock = new Mock('?transcribe=fail');
+  for (const step of ['new', 'record', 'pause'] as const) await mock.act(step, '');
+  await settled();
+  expect(mock.snapshot().partial).toBe('');
+});
+
+test('rawText is the text before learned spellings, non-null whenever finished', async () => {
+  const mock = new Mock('');
+  for (const step of ['new', 'record', 'done'] as const) await mock.act(step, '');
+  await settled();
+  const done = mock.snapshot();
+  expect(done.text).toBe(heard(0, false));
+  expect(done.rawText).toBe(heard(0, false));
+  expect((await mock.act('copy', 'Edited.')).rawText).toBe(heard(0, false));
+  expect((await mock.act('copy', heard(0, false))).rawText).toBe(heard(0, false));
+});
+
+test('rawText keeps what was heard when a learned spelling is enforced', async () => {
+  const mock = new Mock('');
+  for (const step of ['new', 'record', 'done'] as const) await mock.act(step, '');
+  await settled();
+  const learned = await mock.act('copy', 'This is part 1 of the Dictation.');
+  expect(learned.rawText).toBe(heard(0, false));
+  for (const step of ['new', 'record', 'done'] as const) await mock.act(step, '');
+  await settled();
+  const second = mock.snapshot();
+  expect(second.text).toBe('This is part 1 of the Dictation.');
+  expect(second.rawText).toBe(heard(0, false));
+});
+
+test('accept learns like copy but writes no clipboard and sets no notice', async () => {
+  for (const params of ['', '?clipboard=fail']) {
+    const mock = new Mock(params);
+    for (const step of ['new', 'record', 'done'] as const) await mock.act(step, '');
+    await settled();
+    const before = mock.snapshot();
+    const copiedBefore = [...mock.handle.copied];
+    const fixed = before.text.replace('dictation', 'Dictation');
+    const accepted = await mock.act('accept', fixed);
+    expect(accepted.learned).toEqual(['Dictation']);
+    expect(accepted.text).toBe(fixed);
+    expect(accepted.notice).toBe(before.notice);
+    expect(mock.handle.copied).toEqual(copiedBefore);
+    const undone = await mock.act('undoLearn', '');
+    expect(undone.learned).toEqual([]);
+    for (const step of ['new', 'record', 'done'] as const) await mock.act(step, '');
+    await settled();
+    expect(mock.snapshot().text, 'not enforced after the undo').toBe(heard(0, false));
+  }
+});
+
+test('accept is refused from idle', async () => {
+  const mock = new Mock('');
+  await expect(mock.act('accept', 'x')).rejects.toThrow('Cannot accept while idle.');
+});

@@ -582,6 +582,10 @@
                 : 'Listening for sound from the microphone.'}
           </span>
         </div>
+        {#if snapshot.partial !== ''}
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <div class="partial" role="region" aria-label="Heard so far" tabindex="0">{snapshot.partial}</div>
+        {/if}
       {/if}
 
       {#if snapshot.phase === 'finished'}

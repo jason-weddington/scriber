@@ -374,6 +374,7 @@ mod tests {
             "name"
         );
         assert_eq!(Action::UndoLearn.to_string(), "undo learning", "undo name");
+        assert_eq!(Action::Accept.to_string(), "accept", "accept name");
     }
 
     #[test]

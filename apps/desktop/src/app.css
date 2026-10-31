@@ -732,3 +732,22 @@ button:hover:not(:disabled, [aria-current='true']) {
 button:active:not(:disabled, [aria-current='true']) {
   background-image: linear-gradient(var(--press-veil), var(--press-veil));
 }
+
+.partial {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.partial:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

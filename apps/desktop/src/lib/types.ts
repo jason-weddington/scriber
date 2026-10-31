@@ -4,7 +4,7 @@
 
 export type Phase = 'idle' | 'ready' | 'recording' | 'paused' | 'transcribing' | 'finished' | 'failed';
 
-export type Action = 'new' | 'record' | 'pause' | 'resume' | 'done' | 'discard' | 'retry' | 'copy' | 'downloadModel' | 'undoLearn';
+export type Action = 'new' | 'record' | 'pause' | 'resume' | 'done' | 'discard' | 'retry' | 'copy' | 'accept' | 'downloadModel' | 'undoLearn';
 
 /** How far the speech model's download has got. */
 export interface Download {
@@ -38,6 +38,10 @@ export interface Snapshot {
   microphone: string | null;
   /** The terms the last Copy learned from the user's corrections, until Undo, New, Discard or relaunch; [] when none. */
   learned: string[];
+  /** The heard segments' raw Whisper text so far, joined in recording order; '' for a new session. */
+  partial: string;
+  /** Finished only: Whisper's joined transcript before cleanup, glyphs and learned spellings; null before finish and after a relaunch. */
+  rawText: string | null;
 }
 
 /** One recording in the library, as the drawer lists it. */

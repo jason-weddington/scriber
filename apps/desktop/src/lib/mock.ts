@@ -61,9 +61,9 @@
 // Date.now() and setTimeout, so Playwright's clock controls them.
 // Learning (crates/scriber-core/src/learn.rs) is ported exactly below: learnCandidates, learnTerms,
 // rememberTerms and enforceTerms. The mock keeps its learned list in memory (it starts empty, and the
-// mock vocabulary is empty): Copy on a finished session learns the corrections into it and sets the
+// mock vocabulary is empty): Copy and Accept on a finished session learn the corrections into it and sets the
 // snapshot's learned and an undo list like the core (no log); finish enforces the learned spellings;
-// undoLearn restores the list as it was before the last learning Copy; New and Discard clear learned.
+// Accept learns the same way but writes no clipboard and sets no notice; undoLearn restores the list as it was before the last learning Copy or Accept; New and Discard clear learned.
 
 import { clampLibraryWidth, LIBRARY_WIDTH_DEFAULT } from './format';
 import type { Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot } from './types';
@@ -104,6 +104,7 @@ export const ACTION_NAMES: Readonly<Record<Action, string>> = {
   discard: 'discard',
   retry: 'retry',
   copy: 'copy',
+  accept: 'accept',
   downloadModel: 'download the speech model',
   undoLearn: 'undo learning',
 };
@@ -115,7 +116,7 @@ const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
   recording: ['pause', 'done', 'discard'],
   paused: ['resume', 'done', 'discard'],
   transcribing: [],
-  finished: ['new', 'discard', 'copy', 'undoLearn'],
+  finished: ['new', 'discard', 'copy', 'accept', 'undoLearn'],
   failed: ['new', 'discard', 'retry'],
 };
 
@@ -539,6 +540,8 @@ export class Mock {
   private recordedMs = 0;
   private since: number | null = null;
   private text = '';
+  /** Whisper's text of the finished session, before the learned spellings (the core's raw). */
+  private raw: string | null = null;
   private error: string | null = null;
   private notice: string | null = null;
   private revision = 0;
@@ -661,6 +664,8 @@ export class Mock {
       libraryRevision: this.libraryRevision,
       microphone: this.microphone,
       learned: [...this.learned],
+      partial: join(this.slots.map((s) => (s.state === 'heard' ? s.text : null))),
+      rawText: this.phase === 'finished' ? this.raw : null,
     };
   }
 
@@ -869,6 +874,10 @@ export class Mock {
         this.text = text;
         this.notice = COPIED;
         break;
+      case 'accept':
+        this.learnFrom(text);
+        this.text = text;
+        break;
       case 'undoLearn':
         if (this.undo !== null) {
           this.learnedList = this.undo;
@@ -889,6 +898,7 @@ export class Mock {
     this.recordedMs = 0;
     this.since = null;
     this.text = '';
+    this.raw = null;
     this.error = null;
     this.notice = null;
     this.started = null;
@@ -1003,6 +1013,7 @@ export class Mock {
 
   /** The core's finish: keep the transcript, copy it, and archive it. */
   private finish(text: string): void {
+    this.raw = text;
     this.text = enforceTerms(text, this.learnedList);
     this.phase = 'finished';
     if (this.text === '') this.notice = NOTHING_HEARD;

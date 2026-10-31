@@ -16,7 +16,7 @@ export const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
   recording: ['pause', 'done', 'discard'],
   paused: ['resume', 'done', 'discard'],
   transcribing: [],
-  finished: ['new', 'discard', 'copy', 'undoLearn'],
+  finished: ['new', 'discard', 'copy', 'accept', 'undoLearn'],
   failed: ['new', 'discard', 'retry'],
 };
 

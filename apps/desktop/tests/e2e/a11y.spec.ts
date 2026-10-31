@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 
-import { hold, open, press, release, status } from './helpers';
+import { button, hold, open, press, release, status } from './helpers';
 
 // axe-core over every state the window can be in, in light and dark. Any
 // violation fails, whatever its impact: a contrast miss in dark mode is as
@@ -125,6 +125,22 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expect(status(page)).toContainText('Transcribing 1 part');
       await expectNoViolations(page);
       await release(page, 'transcribe');
+    });
+
+    test('paused, with the transcript so far', async ({ page }) => {
+      await open(page);
+      await press(page, 'New', 'Record', 'Pause');
+      await expect(page.getByRole('region', { name: 'Heard so far' })).toBeVisible();
+      await expectNoViolations(page);
+    });
+
+    test('recording, with the transcript so far', async ({ page }) => {
+      await open(page);
+      await press(page, 'New', 'Record', 'Pause');
+      await expect(page.getByRole('region', { name: 'Heard so far' })).toBeVisible();
+      await press(page, 'Resume');
+      await expect(button(page, 'Pause')).toBeVisible();
+      await expectNoViolations(page);
     });
 
     test('transcribing', async ({ page }) => {

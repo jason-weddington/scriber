@@ -170,6 +170,10 @@ impl EngineConfig {
 /// What the engine reports as it works. More variants may come (a
 /// streaming mode, say).
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Snapshot carries the transcript so far; boxing it would change the public Event API"
+)]
 pub enum Event {
     /// The input level while recording, between 0 and 1, on the audio
     /// thread.

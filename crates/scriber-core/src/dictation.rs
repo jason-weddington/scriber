@@ -19,7 +19,7 @@
 //! transcribing until it answers; the transcript copied is the model's reply
 //! when [`cleanup::accept`] keeps it, and Whisper's text otherwise, which then
 //! goes through [`crate::shortcuts::to_glyphs`] and the learned spellings
-//! ([`learn::enforce`]). Copy learns the user's corrections to the
+//! ([`learn::enforce`]). Copy and Accept learn the user's corrections to the
 //! transcript into [`store::LEARNED`]; Undo learning forgets them. An illegal
 //! action returns [`DictationError::Illegal`] and changes nothing.
 
@@ -430,6 +430,8 @@ pub struct Dictation {
     recorded_ms: u64,
     prompt: Option<String>,
     text: String,
+    /// Whisper's joined transcript of the finished session, before cleanup, the shortcut glyphs and the learned spellings.
+    raw: Option<String>,
     error: Option<String>,
     notice: Option<String>,
     /// Bumped by every applied action and every accepted result.
@@ -458,7 +460,7 @@ pub struct Dictation {
 
 impl Dictation {
     /// Runs one action from the window and answers with the new snapshot.
-    /// `text` is the edited transcript for [`Action::Copy`] and ignored
+    /// `text` is the edited transcript for [`Action::Copy`] and [`Action::Accept`] and ignored
     /// otherwise. Segments the action closes go to the queue; one the queue
     /// refuses fails at once, so it can be retried.
     ///
@@ -480,6 +482,7 @@ impl Dictation {
             Action::Discard => self.discard(ports).map(|()| Vec::new()),
             Action::Retry => self.retry(ports),
             Action::Copy => self.copy(text, ports).map(|()| Vec::new()),
+            Action::Accept => self.accept(text, ports).map(|()| Vec::new()),
             Action::DownloadModel => self.download_model(ports).map(|job| vec![job]),
             Action::UndoLearn => self.undo_learn(ports).map(|()| Vec::new()),
         }?;
@@ -601,6 +604,15 @@ impl Dictation {
             library_revision: self.library_revision,
             microphone: self.microphone.clone(),
             learned: self.learned.clone(),
+            partial: join(self.slots.values().filter_map(|s| match s {
+                Slot::Heard(Some(text)) => Some(text.as_str()),
+                Slot::Heard(None) | Slot::Pending | Slot::Failed(_) => None,
+            })),
+            raw_text: if self.phase == Phase::Finished {
+                self.raw.clone()
+            } else {
+                None
+            },
         }
     }
 
@@ -660,6 +672,7 @@ impl Dictation {
         self.recorded_ms = 0;
         self.prompt = Some(prompt(ports));
         self.text.clear();
+        self.raw = None;
         self.error = None;
         self.notice = None;
         self.started = None;
@@ -1056,6 +1069,7 @@ impl Dictation {
     /// as glyphs and learned terms in their learned spelling, keeps it,
     /// copies it, and archives it with the cleanup pass's `record`.
     fn finish(&mut self, text: String, record: &CleanupRecord, ports: &Ports<'_>) {
+        let whisper = record.raw.clone().unwrap_or_else(|| text.clone());
         let glyphs = crate::shortcuts::to_glyphs(&text);
         let glyphs = learn::enforce(&glyphs, &store::learned(ports.files).unwrap_or_default());
         let mut record = record;
@@ -1068,6 +1082,7 @@ impl Dictation {
             record = &archived;
         }
         self.text = glyphs;
+        self.raw = Some(whisper);
         self.phase = Phase::Finished;
         // Losing it only means a relaunch offers Retry instead of the text.
         let _kept = store::save_transcript(ports.files, &self.text);
@@ -1135,11 +1150,29 @@ impl Dictation {
             .clipboard
             .write(text)
             .map_err(DictationError::Clipboard)?;
+        self.keep_and_learn(text, ports);
+        self.notice = Some(COPIED.to_string());
+        Ok(())
+    }
+
+    /// Accept: the user accepted `text` (the transcript as they edited it):
+    /// learns from the edits exactly as Copy does, without writing the
+    /// clipboard or setting a notice.
+    ///
+    /// # Errors
+    ///
+    /// Illegal unless finished.
+    pub fn accept(&mut self, text: &str, ports: &Ports<'_>) -> Result<(), DictationError> {
+        self.allow(Action::Accept, &[Phase::Finished])?;
+        self.keep_and_learn(text, ports);
+        Ok(())
+    }
+
+    /// Learns from `text`, then keeps it as the transcript.
+    fn keep_and_learn(&mut self, text: &str, ports: &Ports<'_>) {
         self.learn_from(text, ports);
         text.clone_into(&mut self.text);
         let _kept = store::save_transcript(ports.files, text);
-        self.notice = Some(COPIED.to_string());
-        Ok(())
     }
 
     /// Learns the corrections from the transcript shown to `edited` into

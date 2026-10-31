@@ -57,6 +57,8 @@ mod tests {
                 library_revision: 3,
                 microphone: Some("Jabra Evolve 65".to_string()),
                 learned: vec!["tightbeam".to_string()],
+                partial: "First thought.\n\nsecond thought".to_string(),
+                raw_text: Some("First thought.\n\nsecond thought".to_string()),
             },
         );
         round_trip(
@@ -80,6 +82,8 @@ mod tests {
                 library_revision: 0,
                 microphone: None,
                 learned: vec![],
+                partial: "First thought.".to_string(),
+                raw_text: None,
             },
         );
         round_trip(
@@ -101,6 +105,28 @@ mod tests {
                 library_revision: 0,
                 microphone: None,
                 learned: vec![],
+                partial: String::new(),
+                raw_text: None,
+            },
+        );
+        round_trip(
+            "snapshotPaused",
+            &Snapshot {
+                revision: 4,
+                phase: Phase::Paused,
+                recorded_ms: 3_000,
+                segments: 2,
+                pending: 1,
+                text: String::new(),
+                error: None,
+                notice: None,
+                model_error: None,
+                download: None,
+                library_revision: 0,
+                microphone: None,
+                learned: vec![],
+                partial: "First thought.".to_string(),
+                raw_text: None,
             },
         );
     }
@@ -316,6 +342,7 @@ mod tests {
             (Action::Discard, "discard"),
             (Action::Retry, "retry"),
             (Action::Copy, "copy"),
+            (Action::Accept, "accept"),
             (Action::DownloadModel, "downloadModel"),
             (Action::UndoLearn, "undoLearn"),
         ] {
@@ -351,6 +378,17 @@ mod tests {
             serde_json::from_value::<Snapshot>(json!({ "phase": "idle", "recordedMs": 0 }))
                 .is_err(),
             "every field is required"
+        );
+        let (_, no_partial) = altered("snapshot", "partial");
+        assert!(
+            serde_json::from_value::<Snapshot>(no_partial).is_err(),
+            "a missing partial is refused"
+        );
+        let (_, no_raw) = altered("snapshot", "rawText");
+        assert_eq!(
+            serde_json::from_value::<Snapshot>(no_raw).unwrap().raw_text,
+            None,
+            "a missing rawText reads as none"
         );
     }
 }

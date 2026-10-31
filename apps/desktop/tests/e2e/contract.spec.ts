@@ -78,6 +78,7 @@ const CALLS: Call[] = [
   { fn: 'dictationState', args: [], command: 'dictation_state', sent: {} },
   { fn: 'act', args: ['pause'], command: 'dictation_act', sent: { action: 'pause', text: '' } },
   { fn: 'act', args: ['copy', 'Edited.'], command: 'dictation_act', sent: { action: 'copy', text: 'Edited.' } },
+  { fn: 'act', args: ['accept', 'Edited.'], command: 'dictation_act', sent: { action: 'accept', text: 'Edited.' } },
   { fn: 'act', args: ['downloadModel'], command: 'dictation_act', sent: { action: 'downloadModel', text: '' } },
   { fn: 'act', args: ['undoLearn'], command: 'dictation_act', sent: { action: 'undoLearn', text: '' } },
   { fn: 'libraryList', args: [], command: 'library_list', sent: {} },
@@ -109,6 +110,8 @@ const SNAPSHOT = {
   libraryRevision: 0,
   microphone: null,
   learned: [],
+  partial: '',
+  rawText: null,
 };
 
 test.describe('bridge.ts against the Rust command signatures', () => {

@@ -706,3 +706,16 @@ test('the gear names ⌘, for assistive tech and in its tooltip', async ({ page 
   await expect(button(page, 'Settings')).toHaveAttribute('title', 'Settings (⌘,)');
   await expect(button(page, 'Settings').locator('kbd')).toHaveCount(0);
 });
+
+test('Space pauses and resumes while the Heard so far region has focus', async ({ page }) => {
+  await open(page);
+  await key(page, 'Meta+n');
+  await key(page, 'Space');
+  await key(page, 'Space');
+  const region = page.getByRole('region', { name: 'Heard so far' });
+  await expect(region).toBeVisible();
+  await region.focus();
+  await key(page, 'Space');
+  await expect(status(page)).toContainText('Recording.');
+  expect((await acts(page)).at(-1)).toBe('resume');
+});
