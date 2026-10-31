@@ -286,6 +286,7 @@ mod tests {
         "Option b",
         "Shift a",
         "Shift Shift a",
+        "Shift Option b",
         "Command-Shift-click",
         "command shift",
     ];

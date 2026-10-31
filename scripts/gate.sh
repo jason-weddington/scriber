@@ -99,9 +99,10 @@ step doctests cargo test --doc --workspace --locked
 
 # Mutation testing runs only in release mode, over the whole core and engine,
 # with zero survivors required. The copies cargo-mutants builds live under target/.
+# Six jobs build and test six copies at once; one job left most of an 18-core Mac idle for over an hour.
 if [ "$mode" = release ]; then
   mkdir -p target/mutants-tmp
-  step mutants env TMPDIR="$PWD/target/mutants-tmp" cargo mutants --no-shuffle
+  step mutants env TMPDIR="$PWD/target/mutants-tmp" cargo mutants --no-shuffle --jobs 6
   step mutants-nonempty grep -Eq '"total_mutants": *[1-9]' mutants.out/outcomes.json
 fi
 

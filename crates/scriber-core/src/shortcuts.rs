@@ -78,14 +78,16 @@ struct Key {
 pub fn to_glyphs(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while let Some(c) = chars.get(i) {
+    let mut skip_to = 0;
+    for (i, c) in chars.iter().enumerate() {
+        if i < skip_to {
+            continue;
+        }
         if let Some((end, replacement)) = start_at(&chars, i) {
             out.push_str(&replacement);
-            i = end;
+            skip_to = end;
         } else {
             out.push(*c);
-            i = i.saturating_add(1);
         }
     }
     out
