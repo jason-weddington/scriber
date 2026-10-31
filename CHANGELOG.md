@@ -2,6 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.3.0 - 2026-10-31
+#### Features
+- (**23229a72**) Optional silence segmentation: close a segment after a sustained pause in speech so text fills in without pressing Pause - (1edb3d6) - claude-code-sonnet, *Claude Sonnet 5.5*
+- (**ab44e90d**) Learn vocabulary from the user's corrections: a word fixed in the transcript before Copy is remembered, and its spelling enforced next time - (a5fc795) - claude-code-sonnet, *Claude Sonnet 5.5*
+- (**c23e8653**) Snapshot publishes the transcript so far (partial) while recording and Whisper's raw transcript (rawText) when finished; Action::Accept learns from an edited text without a clipboard write - (d02f674) - claude-code-sonnet, *Claude Sonnet 5.5*
+#### Bug Fixes
+- (**c4be7824**) No layout shift: the Learned notice and every in-state message share one fixed-height status line, guarded by an e2e test - (4846557) - claude-code-sonnet, *Claude Sonnet 5.5*
+- Learned-spelling loop always moves forward, and tests pin the learning and silence boundaries that mutation testing found unguarded - (4250470) - Jason Weddington, *Claude Opus 5.5*
+- release.sh pushes the new version tag, which --follow-tags skipped because cog's tags are lightweight - (9f3d9d3) - Jason Weddington, *Claude Opus 5.5*
+
+- - -
+
 ## v0.2.0 - 2026-10-31
 #### Features
 - (**062a2dfe**) Rework the record controls so keyboard use is shown cleanly, keeping Space, Space, Return - (32240e6) - claude-code-sonnet, *Claude Sonnet 5.5*
