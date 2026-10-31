@@ -17,7 +17,8 @@
 //! and a cleanup model in the ports, a non-empty transcript then goes to the
 //! model as one more job ([`crate::cleanup`]) and the session stays
 //! transcribing until it answers; the transcript copied is the model's reply
-//! when [`cleanup::accept`] keeps it, and Whisper's text otherwise. An illegal
+//! when [`cleanup::accept`] keeps it, and Whisper's text otherwise, which then
+//! goes through [`crate::shortcuts::to_glyphs`]. An illegal
 //! action returns [`DictationError::Illegal`] and changes nothing.
 
 use std::collections::BTreeMap;
@@ -994,7 +995,17 @@ impl Dictation {
     /// Finishes the session with transcript `text`: keeps it, copies it, and
     /// archives it with the cleanup pass's `record`.
     fn finish(&mut self, text: String, record: &CleanupRecord, ports: &Ports<'_>) {
-        self.text = text;
+        let glyphs = crate::shortcuts::to_glyphs(&text);
+        let mut record = record;
+        let archived;
+        if glyphs != text && record.raw.is_none() {
+            archived = CleanupRecord {
+                raw: Some(text),
+                ..record.clone()
+            };
+            record = &archived;
+        }
+        self.text = glyphs;
         self.phase = Phase::Finished;
         // Losing it only means a relaunch offers Retry instead of the text.
         let _kept = store::save_transcript(ports.files, &self.text);

@@ -1534,6 +1534,218 @@ mod tests {
         );
     }
 
+    const SHORTCUT: &str = "Press command-backslash to toggle the library.";
+
+    const SHORTCUT_GLYPHS: &str = "Press ⌘\\ to toggle the library.";
+
+    #[test]
+    fn shortcuts_are_written_as_glyphs_with_cleanup_off() {
+        let w = World::default();
+        let (_, s) = heard_with(&w, &w.library_ports(), SHORTCUT);
+        assert_eq!(s.text, SHORTCUT_GLYPHS, "snapshot");
+        assert_eq!(*w.clipboard.writes.borrow(), [SHORTCUT_GLYPHS], "clipboard");
+        assert_eq!(
+            w.files.read(TRANSCRIPT).unwrap(),
+            SHORTCUT_GLYPHS.as_bytes(),
+            "kept for a relaunch"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.txt").as_deref(),
+            Some(SHORTCUT_GLYPHS),
+            "entry"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(SHORTCUT),
+            "as spoken"
+        );
+        let json = entry_json(&w);
+        assert_eq!(json.get("cleanup"), Some(&json!("off")), "label");
+        assert_eq!(
+            json.get("summary"),
+            Some(&json!(scriber_core::library::excerpt(SHORTCUT_GLYPHS))),
+            "summary"
+        );
+        assert_eq!(
+            json.get("summary_source"),
+            Some(&json!("excerpt")),
+            "source"
+        );
+    }
+
+    #[test]
+    fn shortcuts_are_written_after_an_unchanged_reply() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, SHORTCUT);
+        let s = cleaned(&w, &mut d, &job, Ok(SHORTCUT));
+        assert_eq!(s.text, SHORTCUT_GLYPHS, "text");
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("unchanged")),
+            "label"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(SHORTCUT),
+            "as spoken"
+        );
+    }
+
+    #[test]
+    fn shortcuts_are_written_after_a_cleaned_reply_and_the_request_is_raw() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("Claude\n"));
+        let (mut d, job) = to_cleanup(&w, "Ask Clawed to press command comma.");
+        let s = cleaned(&w, &mut d, &job, Ok("Ask Claude to press command comma."));
+        assert_eq!(s.text, "Ask Claude to press ⌘,.", "text");
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some("Ask Clawed to press command comma."),
+            "Whisper's text"
+        );
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("cleaned")),
+            "label"
+        );
+        assert!(
+            w.cleaner.calls.borrow()[0].1.contains("command comma"),
+            "the request was unconverted"
+        );
+    }
+
+    #[test]
+    fn shortcuts_are_written_after_a_rejected_reply() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, SHORTCUT);
+        let reply = format!("Here is the text: {SHORTCUT}");
+        let s = cleaned(&w, &mut d, &job, Ok(&reply));
+        assert_eq!(s.text, SHORTCUT_GLYPHS, "text");
+        assert_eq!(
+            entry_file(&w, "cleanup.reply.txt").as_deref(),
+            Some(reply.as_str()),
+            "reply verbatim"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(SHORTCUT),
+            "as spoken"
+        );
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("rejected-new-words")),
+            "label"
+        );
+    }
+
+    #[test]
+    fn shortcuts_are_written_after_a_failed_model() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, SHORTCUT);
+        let s = cleaned(&w, &mut d, &job, Err("down"));
+        assert_eq!(s.text, SHORTCUT_GLYPHS, "text");
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("failed")),
+            "label"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(SHORTCUT),
+            "as spoken"
+        );
+    }
+
+    #[test]
+    fn shortcuts_are_written_when_the_queue_refuses_the_cleanup() {
+        let w = World::default();
+        cleanup_on(&w);
+        let p = w.library_cleaner_ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let job = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(SHORTCUT.to_string()));
+        w.queue.fail.set(true);
+        let s = d.complete(w.run(&job), &p);
+        assert_eq!(s.text, SHORTCUT_GLYPHS, "text");
+        assert_eq!(*w.clipboard.writes.borrow(), [SHORTCUT_GLYPHS], "clipboard");
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("failed")),
+            "label"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(SHORTCUT),
+            "as spoken"
+        );
+    }
+
+    #[test]
+    fn the_summary_job_gets_the_glyphs() {
+        let w = World::default();
+        w.files
+            .write(SETTINGS, br#"{"summaries":true,"summary_model":"late:1b"}"#)
+            .unwrap();
+        let _heard = heard_with(&w, &w.library_ports(), SHORTCUT);
+        let summary = w
+            .queue
+            .jobs
+            .borrow_mut()
+            .iter()
+            .find(|j| format!("{j:?}").contains("Summary"))
+            .cloned()
+            .unwrap();
+        let _outcome = w.run_with(&summary, &w.library_ports());
+        assert_eq!(
+            *w.summarizer.transcripts.borrow(),
+            [SHORTCUT_GLYPHS],
+            "summarized with glyphs"
+        );
+    }
+
+    #[test]
+    fn a_retried_session_writes_the_glyphs() {
+        let w = World::default();
+        let p = w.library_ports();
+        let mut d = idle(&w);
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let seg = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Err("model exploded".to_string()));
+        assert_eq!(d.complete(w.run(&seg), &p).phase, Phase::Failed, "failed");
+        let retry = d.retry(&p).unwrap();
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(SHORTCUT.to_string()));
+        let s = d.complete(w.run(retry.first().unwrap()), &p);
+        assert_eq!(s.text, SHORTCUT_GLYPHS, "text");
+    }
+
+    #[test]
+    fn copy_never_converts() {
+        let w = World::default();
+        let p = w.library_ports();
+        let (mut d, _) = heard_with(&w, &p, SHORTCUT);
+        d.copy("command-k", &p).unwrap();
+        assert_eq!(d.snapshot(&p).text, "command-k", "kept as edited");
+        assert_eq!(
+            w.clipboard.writes.borrow().last().map(String::as_str),
+            Some("command-k"),
+            "clipboard"
+        );
+    }
+
     #[test]
     fn an_unchanged_reply_keeps_no_raw_text() {
         let w = World::default();

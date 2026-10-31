@@ -17,7 +17,8 @@
 //! its start, summarized by a local model or an excerpt, its audio
 //! compressed) and [`settings`] holds the user's settings. [`cleanup`] is
 //! the optional local-model pass over the finished transcript, which fixes
-//! misheard glossary terms and spoken self-corrections.
+//! misheard glossary terms and spoken self-corrections, and [`shortcuts`]
+//! writes spoken keyboard shortcuts as Mac glyphs in the finished transcript.
 
 pub mod audio;
 pub mod cleanup;
@@ -28,6 +29,7 @@ pub mod library;
 pub mod model;
 pub mod ports;
 pub mod settings;
+pub mod shortcuts;
 pub mod store;
 pub mod sync;
 pub mod transcript;
