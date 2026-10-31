@@ -2,7 +2,9 @@
 
 #[cfg(test)]
 mod tests {
-    use scriber_core::vocabulary::{MAX_PROMPT_CHARS, PREFIX, SEPARATOR, STYLE, prompt};
+    use scriber_core::vocabulary::{
+        MAX_PROMPT_CHARS, PREFIX, SEPARATOR, STYLE, glossary, prompt, prompt_for,
+    };
 
     #[test]
     fn the_format_is_pinned() {
@@ -116,6 +118,30 @@ mod tests {
             scriber_core::vocabulary::terms("  Claude \n# c\n\nAgent\u{7}GTD\n"),
             vec!["Claude".to_string(), "AgentGTD".to_string()],
             "trimmed, comments and blanks skipped, control characters removed"
+        );
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn learned_terms_come_first_in_the_glossary() {
+        assert_eq!(
+            glossary(&strings(&["tightbeam"]), &strings(&["Rust", "TightBeam"])),
+            strings(&["tightbeam", "Rust"]),
+            "learned first, case-insensitive duplicates dropped"
+        );
+        assert_eq!(
+            glossary(&[], &strings(&["Rust"])),
+            strings(&["Rust"]),
+            "vocabulary alone"
+        );
+        assert_eq!(prompt_for(&[]), prompt(""), "no terms");
+        assert_eq!(
+            prompt_for(&strings(&["a", "b"])),
+            prompt("a\nb\n"),
+            "the same rule"
         );
     }
 }

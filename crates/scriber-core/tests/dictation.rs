@@ -14,7 +14,7 @@ mod tests {
 
     use scriber_core::library::{entry_path, list};
     use scriber_core::ports::Files as _;
-    use scriber_core::store::{MICROPHONE_LOG, STARTED, TRANSCRIPT};
+    use scriber_core::store::{LEARNED, LEARNING_LOG, MICROPHONE_LOG, STARTED, TRANSCRIPT};
 
     use scriber_core::cleanup::PROMPT;
     use scriber_core::ports::Ports;
@@ -82,7 +82,7 @@ mod tests {
         Phase::Failed,
     ];
 
-    const ACTIONS: [Action; 8] = [
+    const ACTIONS: [Action; 9] = [
         Action::New,
         Action::Record,
         Action::Pause,
@@ -91,6 +91,7 @@ mod tests {
         Action::Discard,
         Action::Retry,
         Action::Copy,
+        Action::UndoLearn,
     ];
 
     fn act(d: &mut Dictation, w: &World, action: Action) -> Result<(), DictationError> {
@@ -106,7 +107,7 @@ mod tests {
             Phase::Recording => matches!(action, A::Pause | A::Done | A::Discard),
             Phase::Paused => matches!(action, A::Resume | A::Done | A::Discard),
             Phase::Transcribing => false,
-            Phase::Finished => matches!(action, A::New | A::Discard | A::Copy),
+            Phase::Finished => matches!(action, A::New | A::Discard | A::Copy | A::UndoLearn),
             Phase::Failed => matches!(action, A::New | A::Discard | A::Retry),
         }
     }
@@ -153,7 +154,8 @@ mod tests {
                 "finish",
                 "discard",
                 "retry",
-                "copy"
+                "copy",
+                "undo learning"
             ],
             "action names"
         );
@@ -196,6 +198,7 @@ mod tests {
                 download: None,
                 library_revision: 0,
                 microphone: None,
+                learned: vec![],
             },
             "idle"
         );
@@ -2571,5 +2574,408 @@ mod tests {
         assert_eq!(before.len(), 2, "a start and a segment");
         d.new_session(&w.ports()).unwrap();
         assert_eq!(log_lines(&w), before, "untouched");
+    }
+
+    const TIGHTBEAM_HEARD: &str = "Open TightBeam now.";
+
+    const TIGHTBEAM_FIXED: &str = "Open tightbeam now.";
+
+    fn learned_file(w: &World) -> Option<Vec<u8>> {
+        w.files.files.borrow().get(LEARNED).cloned()
+    }
+
+    fn learning_log(w: &World) -> Vec<Value> {
+        w.files
+            .files
+            .borrow()
+            .get(LEARNING_LOG)
+            .map(|b| {
+                String::from_utf8(b.clone())
+                    .unwrap()
+                    .lines()
+                    .map(|l| serde_json::from_str(l).unwrap())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn learned_terms_come_first_in_the_prompt_and_the_cleanup_glossary() {
+        let w = World::default();
+        w.files.write(LEARNED, b"tightbeam\n").unwrap();
+        w.files.set_vocabulary(Some("Rust\nTightBeam\n"));
+        let (_, job) = to_cleanup(&w, CLAWED);
+        let calls = w.transcriber.calls.borrow().clone();
+        let (_, prompt) = calls.first().unwrap();
+        assert!(
+            prompt
+                .as_deref()
+                .unwrap()
+                .ends_with("Glossary: tightbeam, Rust."),
+            "{prompt:?}"
+        );
+        let _outcome = w.run_with(&job, &w.library_cleaner_ports());
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.first().unwrap();
+        assert!(
+            request.starts_with("Glossary:\ntightbeam\nRust\n\nTranscript:\n"),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn a_recovered_session_prompts_with_learned_terms_first() {
+        let w = World::default();
+        w.files.write(LEARNED, b"tightbeam\n").unwrap();
+        w.files.set_vocabulary(Some("Rust\n"));
+        w.files.put_segment(0, encode_wav(&speech(16_000)));
+        let p = w.ports();
+        let mut d = Dictation::recover(&p);
+        let jobs = d.retry(&p).unwrap();
+        let _: Snapshot = d.complete(w.run(jobs.first().unwrap()), &p);
+        let calls = w.transcriber.calls.borrow();
+        assert_eq!(
+            calls.first().and_then(|(_, prompt)| prompt.clone()),
+            Some(format!("{STYLE} Glossary: tightbeam, Rust.")),
+            "prompt"
+        );
+    }
+
+    #[test]
+    fn learned_spellings_are_enforced_in_the_finished_transcript() {
+        let w = World::default();
+        w.files.write(LEARNED, b"tightbeam\n").unwrap();
+        let (_, s) = heard_with(&w, &w.ports(), TIGHTBEAM_HEARD);
+        assert_eq!(s.text, TIGHTBEAM_FIXED, "snapshot");
+        assert_eq!(*w.clipboard.writes.borrow(), [TIGHTBEAM_FIXED], "clipboard");
+    }
+
+    #[test]
+    fn the_raw_transcript_keeps_what_whisper_heard() {
+        let w = World::default();
+        w.files.write(LEARNED, b"tightbeam\n").unwrap();
+        let (_, s) = heard_with(&w, &w.library_ports(), TIGHTBEAM_HEARD);
+        assert_eq!(s.text, TIGHTBEAM_FIXED, "snapshot");
+        assert_eq!(
+            entry_file(&w, "transcript.txt").as_deref(),
+            Some(TIGHTBEAM_FIXED),
+            "entry"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(TIGHTBEAM_HEARD),
+            "as heard"
+        );
+    }
+
+    #[test]
+    fn learned_spellings_are_enforced_after_cleanup() {
+        let w = World::default();
+        w.files.write(LEARNED, b"tightbeam\n").unwrap();
+        let (mut d, job) = to_cleanup(&w, "open TightBeam now");
+        let s = cleaned(&w, &mut d, &job, Ok(TIGHTBEAM_HEARD));
+        assert_eq!(s.text, TIGHTBEAM_FIXED, "snapshot");
+        assert_eq!(*w.clipboard.writes.borrow(), [TIGHTBEAM_FIXED], "clipboard");
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some("open TightBeam now"),
+            "as heard"
+        );
+    }
+
+    #[test]
+    fn vocabulary_terms_are_never_enforced() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("TightBeam\n"));
+        let (_, s) = heard_with(&w, &w.ports(), TIGHTBEAM_FIXED);
+        assert_eq!(s.text, TIGHTBEAM_FIXED, "unchanged");
+    }
+
+    #[test]
+    fn a_correction_copied_is_learned_once_and_logged() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let s = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert_eq!(s.learned, strings(&["tightbeam"]), "learned");
+        assert_eq!(s.notice.as_deref(), Some(COPIED), "notice");
+        assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "file");
+        assert_eq!(
+            learning_log(&w),
+            [json!({
+                "event": "learn",
+                "started": null,
+                "found": ["tightbeam"],
+                "added": ["tightbeam"],
+                "outcome": "saved",
+                "error": null,
+            })],
+            "log"
+        );
+        let again = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert_eq!(again.learned, strings(&["tightbeam"]), "still shown");
+        assert_eq!(learning_log(&w).len(), 1, "no new log line");
+        let fresh = d.apply(Action::New, "", &p).unwrap();
+        assert!(fresh.learned.is_empty(), "New forgets it");
+        assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "the file stays");
+    }
+
+    #[test]
+    fn discard_forgets_what_was_learned() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let _: Snapshot = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        let s = d.apply(Action::Discard, "", &p).unwrap();
+        assert!(s.learned.is_empty(), "forgotten");
+    }
+
+    #[test]
+    fn the_learning_log_names_the_session() {
+        let w = World::default();
+        let p = w.library_ports();
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(TIGHTBEAM_HEARD.to_string()));
+        let mut d = idle(&w);
+        let s = library_session(&w, &mut d, 1);
+        assert_eq!(s.text, TIGHTBEAM_HEARD, "heard");
+        let _: Snapshot = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        let log = learning_log(&w);
+        assert_eq!(
+            log.first().and_then(|l| l.get("started")),
+            Some(&json!("2026-10-26 14:03:09")),
+            "{log:?}"
+        );
+    }
+
+    #[test]
+    fn a_copy_the_clipboard_refuses_learns_nothing() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        w.clipboard.fail.set(true);
+        assert!(
+            matches!(
+                d.apply(Action::Copy, TIGHTBEAM_FIXED, &p),
+                Err(DictationError::Clipboard(_))
+            ),
+            "refused"
+        );
+        assert_eq!(learned_file(&w), None, "no file");
+        assert!(learning_log(&w).is_empty(), "no log");
+    }
+
+    #[test]
+    fn an_insertion_learns_nothing_and_logs_nothing() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let s = d
+            .apply(Action::Copy, "Open TightBeam right now.", &p)
+            .unwrap();
+        assert!(s.learned.is_empty(), "nothing learned");
+        assert_eq!(learned_file(&w), None, "no file");
+        assert!(learning_log(&w).is_empty(), "no log");
+    }
+
+    #[test]
+    fn a_damaged_learned_list_is_left_alone() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        w.files.write(LEARNED, &[0xff]).unwrap();
+        let s = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert!(s.learned.is_empty(), "nothing learned");
+        assert_eq!(learned_file(&w).unwrap(), [0xff], "untouched");
+        assert_eq!(
+            w.clipboard.writes.borrow().last().map(String::as_str),
+            Some(TIGHTBEAM_FIXED),
+            "copied"
+        );
+        let log = learning_log(&w);
+        assert_eq!(
+            log.first().and_then(|l| l.get("outcome")),
+            Some(&json!("unreadable")),
+            "{log:?}"
+        );
+    }
+
+    #[test]
+    fn a_learned_list_that_cannot_be_written_is_logged() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        *w.files.fail_write_suffix.borrow_mut() = Some("learned.txt.partial".to_string());
+        let s = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert!(s.learned.is_empty(), "nothing learned");
+        assert_eq!(learned_file(&w), None, "no file");
+        assert_eq!(
+            w.clipboard.writes.borrow().last().map(String::as_str),
+            Some(TIGHTBEAM_FIXED),
+            "copied"
+        );
+        let log = learning_log(&w);
+        let line = log.first().unwrap();
+        assert_eq!(line.get("outcome"), Some(&json!("write_failed")), "{log:?}");
+        assert_eq!(line.get("error"), Some(&json!("disk full")), "{log:?}");
+        assert_eq!(line.get("added"), Some(&json!([])), "{log:?}");
+    }
+
+    #[test]
+    fn a_rewrite_is_capped_and_logged() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(
+            &w,
+            &p,
+            "Use TightBeam and Scribe and Github and Svelt and Ollama and Cargo now.",
+        );
+        let s = d
+            .apply(
+                Action::Copy,
+                "Use tightbeam and Scriber and GitHub and Svelte and ollama and cargo now.",
+                &p,
+            )
+            .unwrap();
+        assert!(s.learned.is_empty(), "nothing learned");
+        assert_eq!(learned_file(&w), None, "no file");
+        let log = learning_log(&w);
+        let line = log.first().unwrap();
+        assert_eq!(line.get("outcome"), Some(&json!("capped")), "{log:?}");
+        assert_eq!(
+            line.get("found").and_then(Value::as_array).map(Vec::len),
+            Some(6),
+            "{log:?}"
+        );
+    }
+
+    #[test]
+    fn a_term_already_in_the_vocabulary_is_not_added() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("tightbeam\n"));
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let s = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert!(s.learned.is_empty(), "nothing learned");
+        assert_eq!(learned_file(&w), None, "no file");
+        let log = learning_log(&w);
+        assert_eq!(
+            log.first().and_then(|l| l.get("outcome")),
+            Some(&json!("nothing_added")),
+            "{log:?}"
+        );
+    }
+
+    #[test]
+    fn what_was_learned_is_forgotten_at_relaunch_but_kept_on_disk() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let _: Snapshot = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert!(
+            Dictation::recover(&p).snapshot(&p).learned.is_empty(),
+            "a relaunch shows nothing learned"
+        );
+        assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "kept");
+    }
+
+    #[test]
+    fn undo_restores_the_learned_list() {
+        let w = World::default();
+        w.files.write(LEARNED, b"Scriber\nTightBeam\n").unwrap();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        // TightBeam is already learned, so the transcript shows it as is.
+        let _: Snapshot = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert_eq!(
+            learned_file(&w).unwrap(),
+            b"tightbeam\nScriber\n",
+            "learned"
+        );
+        let s = d.apply(Action::UndoLearn, "", &p).unwrap();
+        assert_eq!(
+            learned_file(&w).unwrap(),
+            b"Scriber\nTightBeam\n",
+            "restored"
+        );
+        assert!(s.learned.is_empty(), "forgotten");
+        assert_eq!(s.notice.as_deref(), Some(COPIED), "notice unchanged");
+        assert_eq!(
+            learning_log(&w).last(),
+            Some(&json!({
+                "event": "undo",
+                "started": null,
+                "removed": ["tightbeam"],
+                "outcome": "restored",
+                "error": null,
+            })),
+            "log"
+        );
+    }
+
+    #[test]
+    fn undo_of_the_first_term_leaves_an_empty_list() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let _: Snapshot = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        let _: Snapshot = d.apply(Action::UndoLearn, "", &p).unwrap();
+        assert_eq!(learned_file(&w).unwrap(), b"", "0 bytes");
+    }
+
+    #[test]
+    fn an_undo_that_cannot_be_written_changes_nothing_and_can_be_tried_again() {
+        let w = World::default();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let _: Snapshot = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        let before = snap(&d, &w);
+        *w.files.fail_write_suffix.borrow_mut() = Some("learned.txt.partial".to_string());
+        let refused = d.apply(Action::UndoLearn, "", &p).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "Could not undo learning: disk full",
+            "error"
+        );
+        assert_eq!(snap(&d, &w), before, "unchanged");
+        assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "file unchanged");
+        assert_eq!(
+            learning_log(&w)
+                .last()
+                .and_then(|l| l.get("outcome"))
+                .cloned(),
+            Some(json!("write_failed")),
+            "logged"
+        );
+        *w.files.fail_write_suffix.borrow_mut() = None;
+        let undone = d.apply(Action::UndoLearn, "", &p).unwrap();
+        assert!(undone.learned.is_empty(), "undone");
+        assert_eq!(learned_file(&w).unwrap(), b"", "restored");
+    }
+
+    #[test]
+    fn undo_with_nothing_learned_only_bumps_the_revision() {
+        let w = World::default();
+        w.files.write(LEARNED, b"tightbeam\n").unwrap();
+        let p = w.ports();
+        let (mut d, before) = heard_with(&w, &p, "Hello.");
+        let s = d.apply(Action::UndoLearn, "", &p).unwrap();
+        assert_eq!(s.revision, before.revision.wrapping_add(1), "revision");
+        assert_eq!(
+            Snapshot {
+                revision: before.revision,
+                ..s
+            },
+            before,
+            "nothing else"
+        );
+        assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "file unchanged");
+        assert!(learning_log(&w).is_empty(), "no log");
     }
 }

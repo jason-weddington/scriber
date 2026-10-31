@@ -531,6 +531,12 @@
         </div>
       {/if}
       <p class="status" aria-live="polite">{statusText(snapshot)}</p>
+      {#if snapshot.phase === 'finished' && snapshot.learned.length > 0}
+        <div class="learned-row">
+          <p class="learned" aria-live="polite">Learned: {snapshot.learned.join(', ')}</p>
+          <button type="button" class="undo-learn" disabled={busy} onclick={() => run('undoLearn')}>Undo</button>
+        </div>
+      {/if}
       {#if snapshot.phase === 'failed' && snapshot.error !== null}
         <p class="error" role="alert">{snapshot.error}</p>
       {/if}

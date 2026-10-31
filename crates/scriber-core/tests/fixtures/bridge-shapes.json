@@ -11,7 +11,8 @@
     "modelError": null,
     "download": null,
     "libraryRevision": 3,
-    "microphone": "Jabra Evolve 65"
+    "microphone": "Jabra Evolve 65",
+    "learned": ["tightbeam"]
   },
   "snapshotFailed": {
     "revision": 7,
@@ -25,7 +26,8 @@
     "modelError": "Could not download the speech model: the connection was reset.",
     "download": null,
     "libraryRevision": 0,
-    "microphone": null
+    "microphone": null,
+    "learned": []
   },
   "snapshotDownloading": {
     "revision": 1,
@@ -42,7 +44,8 @@
       "totalBytes": 1624555275
     },
     "libraryRevision": 0,
-    "microphone": null
+    "microphone": null,
+    "learned": []
   },
   "libraryEntry": {
     "id": "20261026-140309",

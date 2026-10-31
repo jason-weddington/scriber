@@ -10,6 +10,7 @@
 //! machine, [`audio`] turns captured sound into 16 kHz mono and WAV files,
 //! [`transcript`] filters and joins what the transcriber heard,
 //! [`vocabulary`] builds the transcriber's prompt: a style sentence for punctuation, then the user's glossary,
+//! [`learn`] learns vocabulary from the corrections the user copies and enforces its spelling,
 //! [`store`] lays out the data folder, [`level`] meters the microphone for
 //! the window's waveform, [`download`] fetches and verifies a missing speech
 //! model, and [`sync`] holds the model that loads once for every caller.
@@ -24,6 +25,7 @@ pub mod audio;
 pub mod cleanup;
 pub mod dictation;
 pub mod download;
+pub mod learn;
 pub mod level;
 pub mod library;
 pub mod model;

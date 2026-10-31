@@ -373,6 +373,7 @@ mod tests {
             "download the speech model",
             "name"
         );
+        assert_eq!(Action::UndoLearn.to_string(), "undo learning", "undo name");
     }
 
     #[test]

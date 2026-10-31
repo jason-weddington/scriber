@@ -6,7 +6,9 @@ import type { Action, Download, InputDevices, LibraryEntry, Phase, Snapshot } fr
 /**
  * The actions the core accepts in each phase (crates/scriber-core/src/dictation.rs).
  * The window offers only the buttons controlsFor gives for the phase, except
- * New, which stays in the band, disabled; the core refuses anything else anyway.
+ * New, which stays in the band, disabled, and Copy and Undo, which are offered
+ * outside the recorder row (the transcript box and the learned line); the core
+ * refuses anything else anyway.
  */
 export const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
   idle: ['new'],
@@ -14,7 +16,7 @@ export const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
   recording: ['pause', 'done', 'discard'],
   paused: ['resume', 'done', 'discard'],
   transcribing: [],
-  finished: ['new', 'discard', 'copy'],
+  finished: ['new', 'discard', 'copy', 'undoLearn'],
   failed: ['new', 'discard', 'retry'],
 };
 

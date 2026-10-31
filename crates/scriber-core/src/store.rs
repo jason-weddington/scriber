@@ -11,6 +11,9 @@
 //! library/<id>/audio.m4a         its audio (audio.wav until encoded, or when encoding fails)
 //! models/ggml-large-v3-turbo.bin the speech model (read by the transcriber, not here)
 //! microphone-log.jsonl           which microphone each Record or Resume opened, and each segment's format (newest 200 lines)
+//! learned.txt                    terms learned from the user's corrections, newest first (crate::learn); never vocabulary.txt
+//! learned.txt.partial            learned.txt while it is being written, before the rename
+//! learning-log.jsonl             each learning Copy and each Undo: what was found and added, and why (newest 200 lines)
 //! ```
 
 use crate::ports::{Files, PortError};
@@ -37,6 +40,21 @@ pub const MICROPHONE_LOG: &str = "microphone-log.jsonl";
 
 /// How many lines [`MICROPHONE_LOG`] keeps, the newest.
 const MICROPHONE_LOG_LINES: usize = 200;
+
+/// The terms learned from the user's corrections ([`crate::learn`]): one
+/// per line, newest first. Always in the data folder, never the configured
+/// glossary path; written only by the app.
+pub const LEARNED: &str = "learned.txt";
+
+/// Where [`LEARNED`] is written before it is renamed into place.
+const LEARNED_PARTIAL: &str = "learned.txt.partial";
+
+/// The learning log: one JSON line per Copy that found a correction (what
+/// was found and added, and the outcome) and one per Undo of learning.
+pub const LEARNING_LOG: &str = "learning-log.jsonl";
+
+/// How many lines [`LEARNING_LOG`] keeps, the newest.
+pub const LEARNING_LOG_LINES: usize = 200;
 
 /// The default glossary file.
 pub const VOCABULARY: &str = "vocabulary.txt";
@@ -168,12 +186,22 @@ pub fn vocabulary(files: &dyn Files) -> Option<String> {
 /// counts as empty, and a failure to write it is ignored, because the log
 /// must never stop a recording.
 pub fn log_microphone(files: &dyn Files, line: &str) {
-    let old = files.read(MICROPHONE_LOG).unwrap_or_default();
+    log_line(files, MICROPHONE_LOG, MICROPHONE_LOG_LINES, line);
+}
+
+/// Adds `line` (one JSON object, no newline) to [`LEARNING_LOG`], keeping
+/// the newest [`LEARNING_LOG_LINES`] lines, best effort like
+/// [`log_microphone`].
+pub fn log_learning(files: &dyn Files, line: &str) {
+    log_line(files, LEARNING_LOG, LEARNING_LOG_LINES, line);
+}
+
+/// Appends `line` to the log at `path`, keeping its newest `keep` lines.
+fn log_line(files: &dyn Files, path: &str, keep: usize, line: &str) {
+    let old = files.read(path).unwrap_or_default();
     let old = String::from_utf8_lossy(&old);
     let lines: Vec<&str> = old.lines().collect();
-    let drop = lines
-        .len()
-        .saturating_sub(MICROPHONE_LOG_LINES.saturating_sub(1));
+    let drop = lines.len().saturating_sub(keep.saturating_sub(1));
     let mut text = String::new();
     for kept in lines.iter().skip(drop) {
         text.push_str(kept);
@@ -181,5 +209,35 @@ pub fn log_microphone(files: &dyn Files, line: &str) {
     }
     text.push_str(line);
     text.push('\n');
-    let _kept = files.write(MICROPHONE_LOG, text.as_bytes());
+    let _kept = files.write(path, text.as_bytes());
+}
+
+/// The learned terms ([`LEARNED`]), in file order, read like the glossary
+/// ([`crate::vocabulary::terms`]). A file that cannot be read counts as
+/// empty, because the [`Files`] port cannot tell missing from unreadable;
+/// `None` when it is not UTF-8, so it is never overwritten.
+#[must_use]
+pub fn learned(files: &dyn Files) -> Option<Vec<String>> {
+    let Ok(bytes) = files.read(LEARNED) else {
+        return Some(Vec::new());
+    };
+    String::from_utf8(bytes)
+        .ok()
+        .map(|text| crate::vocabulary::terms(&text))
+}
+
+/// Writes the learned terms, one per line, atomically like
+/// [`save_transcript`].
+///
+/// # Errors
+///
+/// The file cannot be written or renamed into place.
+pub fn save_learned(files: &dyn Files, terms: &[String]) -> Result<(), PortError> {
+    let mut text = String::new();
+    for term in terms {
+        text.push_str(term);
+        text.push('\n');
+    }
+    files.write(LEARNED_PARTIAL, text.as_bytes())?;
+    files.rename(LEARNED_PARTIAL, LEARNED)
 }

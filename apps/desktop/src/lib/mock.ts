@@ -59,6 +59,11 @@
 // ('ollama_models' holds it) and counts its calls in
 // window.__mockBridge.modelListings. Segment durations and the level and download timers run on
 // Date.now() and setTimeout, so Playwright's clock controls them.
+// Learning (crates/scriber-core/src/learn.rs) is ported exactly below: learnCandidates, learnTerms,
+// rememberTerms and enforceTerms. The mock keeps its learned list in memory (it starts empty, and the
+// mock vocabulary is empty): Copy on a finished session learns the corrections into it and sets the
+// snapshot's learned and an undo list like the core (no log); finish enforces the learned spellings;
+// undoLearn restores the list as it was before the last learning Copy; New and Discard clear learned.
 
 import { clampLibraryWidth, LIBRARY_WIDTH_DEFAULT } from './format';
 import type { Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot } from './types';
@@ -100,6 +105,7 @@ export const ACTION_NAMES: Readonly<Record<Action, string>> = {
   retry: 'retry',
   copy: 'copy',
   downloadModel: 'download the speech model',
+  undoLearn: 'undo learning',
 };
 
 /** The core's legal actions per phase. */
@@ -109,7 +115,7 @@ const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
   recording: ['pause', 'done', 'discard'],
   paused: ['resume', 'done', 'discard'],
   transcribing: [],
-  finished: ['new', 'discard', 'copy'],
+  finished: ['new', 'discard', 'copy', 'undoLearn'],
   failed: ['new', 'discard', 'retry'],
 };
 
@@ -259,6 +265,208 @@ function stored(sent: string, saved: string): string {
   return sent === MOCK_DEFAULT_MODEL ? '' : sent;
 }
 
+/** The core's learn::MAX_RUN_WORDS, MAX_RUNS, MIN_FIX_CHARS and MAX_LEARNED. */
+export const MAX_RUN_WORDS = 3;
+export const MAX_RUNS = 5;
+export const MIN_FIX_CHARS = 4;
+export const MAX_LEARNED = 100;
+
+/** The core's `char::is_alphanumeric`. */
+function isAlnum(c: string): boolean {
+  return /[\p{Alphabetic}\p{N}]/u.test(c);
+}
+
+/** The core's whitespace for splitting words. */
+function isWhite(c: string): boolean {
+  return /\p{White_Space}/u.test(c);
+}
+
+interface LearnWord {
+  text: string;
+  start: boolean;
+}
+
+/** The core's learn::words: stripped words and whether each starts a sentence. */
+function learnWords(text: string): LearnWord[] {
+  const raws: string[] = [];
+  let raw = '';
+  for (const c of Array.from(text)) {
+    if (isWhite(c)) {
+      raws.push(raw);
+      raw = '';
+    } else raw += c;
+  }
+  raws.push(raw);
+  const out: LearnWord[] = [];
+  let afterEnd = true;
+  for (const token of raws) {
+    const chars = Array.from(token);
+    let from = 0;
+    let to = chars.length;
+    while (from < to && !isAlnum(chars[from] ?? '')) from++;
+    while (to > from && !isAlnum(chars[to - 1] ?? '')) to--;
+    let word = chars.slice(from, to);
+    const n = word.length;
+    if (n > 2 && (word[n - 2] === "'" || word[n - 2] === '\u2019') && (word[n - 1] === 's' || word[n - 1] === 'S')) {
+      word = word.slice(0, n - 2);
+    }
+    if (word.length === 0) continue;
+    out.push({ text: word.join(''), start: afterEnd });
+    const trimmed = Array.from(token);
+    while (trimmed.length > 0 && ['"', "'", '\u201D', '\u2019', ')', ']'].includes(trimmed.at(-1) ?? '')) trimmed.pop();
+    afterEnd = ['.', '!', '?'].includes(trimmed.at(-1) ?? '');
+  }
+  return out;
+}
+
+/** The core's learn::runs: the unmatched stretches between matched words. */
+function learnRuns(original: LearnWord[], edited: LearnWord[]): [LearnWord[], LearnWord[]][] {
+  let prefix = 0;
+  while (prefix < original.length && prefix < edited.length && original[prefix]?.text === edited[prefix]?.text) prefix++;
+  const rest = Math.min(original.length, edited.length) - prefix;
+  let suffix = 0;
+  while (suffix < rest && original[original.length - 1 - suffix]?.text === edited[edited.length - 1 - suffix]?.text) suffix++;
+  const o = original.slice(prefix, original.length - suffix);
+  const e = edited.slice(prefix, edited.length - suffix);
+  const table = Array.from({ length: o.length + 1 }, () => new Array<number>(e.length + 1).fill(0));
+  const lcs = (i: number, j: number): number => table[i]?.[j] ?? 0;
+  for (let i = o.length - 1; i >= 0; i--) {
+    const row = table[i] ?? [];
+    for (let j = e.length - 1; j >= 0; j--) {
+      row[j] = o[i]?.text === e[j]?.text ? lcs(i + 1, j + 1) + 1 : Math.max(lcs(i + 1, j), lcs(i, j + 1));
+    }
+  }
+  const out: [LearnWord[], LearnWord[]][] = [];
+  let i = 0;
+  let j = 0;
+  let fromI = 0;
+  let fromJ = 0;
+  while (i < o.length && j < e.length) {
+    if (o[i]?.text === e[j]?.text) {
+      out.push([o.slice(fromI, i), e.slice(fromJ, j)]);
+      i++;
+      j++;
+      fromI = i;
+      fromJ = j;
+    } else if (lcs(i + 1, j) >= lcs(i, j + 1)) i++;
+    else j++;
+  }
+  out.push([o.slice(fromI), e.slice(fromJ)]);
+  return out;
+}
+
+/** The Levenshtein distance between two code point sequences. */
+function levenshtein(a: string[], b: string[]): number {
+  let row = Array.from({ length: b.length + 1 }, (_, k) => k);
+  a.forEach((ca, i) => {
+    const next = [i + 1];
+    b.forEach((cb, j) => {
+      const diagonal = row[j] ?? 0;
+      next.push(ca === cb ? diagonal : Math.min(diagonal, row[j + 1] ?? 0, next[j] ?? 0) + 1);
+    });
+    row = next;
+  });
+  return row.at(-1) ?? 0;
+}
+
+/** The core's learn::qualifies. */
+function qualifies(o: LearnWord[], e: LearnWord[]): boolean {
+  if (o.length === e.length && o.every((w, k) => w.text.toLowerCase() === e[k]?.text.toLowerCase())) {
+    return o.some((w, k) => {
+      const a = Array.from(w.text);
+      const b = Array.from(e[k]?.text ?? '');
+      if (a.length !== b.length) return true;
+      return a.some((c, n) => c !== b[n] && (n !== 0 || !w.start));
+    });
+  }
+  const key = (ws: LearnWord[]): string =>
+    Array.from(
+      ws
+        .map((w) => w.text)
+        .join(' ')
+        .toLowerCase(),
+    )
+      .filter((c) => c !== ' ' && c !== '-')
+      .join('');
+  if (key(o) === key(e)) return true;
+  const [a] = o;
+  const [b] = e;
+  if (o.length === 1 && e.length === 1 && a !== undefined && b !== undefined) {
+    if (Array.from(b.text).length < MIN_FIX_CHARS) return false;
+    const la = Array.from(a.text.toLowerCase());
+    const lb = Array.from(b.text.toLowerCase());
+    return levenshtein(la, lb) <= Math.max(1, Math.floor(Math.max(la.length, lb.length) / 3));
+  }
+  return false;
+}
+
+/** The core's learn::candidates: every qualifying term, in document order. */
+export function learnCandidates(original: string, edited: string): string[] {
+  const inRange = (n: number): boolean => n >= 1 && n <= MAX_RUN_WORDS;
+  return learnRuns(learnWords(original), learnWords(edited))
+    .filter(([o, e]) => inRange(o.length) && inRange(e.length) && qualifies(o, e))
+    .map(([, e]) => e.map((w) => w.text).join(' '));
+}
+
+/** The core's learn::learn: nothing past MAX_RUNS, else the candidates de-duplicated case-insensitively. */
+export function learnTerms(original: string, edited: string): string[] {
+  const found = learnCandidates(original, edited);
+  if (found.length > MAX_RUNS) return [];
+  const out: string[] = [];
+  for (const term of found) if (!out.some((t) => t.toLowerCase() === term.toLowerCase())) out.push(term);
+  return out;
+}
+
+/** The core's learn::remember: the new list and the terms placed at its head. */
+export function rememberTerms(list: string[], learned: string[], vocabulary: string[]): [string[], string[]] {
+  const added = learned.filter((t) => !vocabulary.includes(t));
+  const lowered = added.map((t) => t.toLowerCase());
+  const next = [...added, ...list.filter((t) => !lowered.includes(t.toLowerCase()))].slice(0, MAX_LEARNED);
+  return [next, added];
+}
+
+/** Whether `c` joins a word, so it cannot border a match. */
+function joins(c: string | undefined): boolean {
+  return c !== undefined && (isAlnum(c) || c === '_' || c === '-');
+}
+
+/** The core's learn::enforce: learned terms rewritten to their spelling, whole words only. */
+export function enforceTerms(text: string, terms: string[]): string {
+  const keys: [string, string][] = [];
+  for (const term of terms) {
+    const key = Array.from(term.toLowerCase())
+      .filter((c) => c !== ' ' && c !== '-')
+      .join('');
+    if (key !== '' && Array.from(key).every(isAlnum)) keys.push([term, key]);
+  }
+  const chars = Array.from(text);
+  let out = '';
+  let i = 0;
+  while (i < chars.length) {
+    let best: [number, string] | null = null;
+    if (!joins(chars[i - 1])) {
+      let joined = '';
+      let at = i;
+      for (let k = 0; k < 3 && isAlnum(chars[at] ?? ''); k++) {
+        while (isAlnum(chars[at] ?? '')) joined += chars[at++] ?? '';
+        const lowered = joined.toLowerCase();
+        const found = keys.find(([, key]) => key === lowered);
+        if (!joins(chars[at]) && found !== undefined) best = [at, found[0]];
+        if (chars[at] !== ' ' && chars[at] !== '-') break;
+        at++;
+      }
+    }
+    if (best === null) {
+      out += chars[i] ?? '';
+      i++;
+    } else {
+      out += best[1];
+      i = best[0];
+    }
+  }
+  return out;
+}
+
 type Slot = { state: 'pending' } | { state: 'heard'; text: string | null } | { state: 'failed'; reason: string };
 
 /** What a test reaches through `window.__mockBridge`. */
@@ -319,6 +527,12 @@ export class Mock {
   private settings: Settings;
   /** Date.now() at the session's first Record, else null. */
   private started: number | null = null;
+  /** The mock's learned.txt, newest first. */
+  private learnedList: string[] = [];
+  /** The terms the last learning Copy added, until Undo, New or Discard. */
+  private learned: string[] = [];
+  /** The learned list before the last learning Copy, for Undo. */
+  private undo: string[] | null = null;
 
   private phase: Phase = 'idle';
   private slots: Slot[] = [];
@@ -446,6 +660,7 @@ export class Mock {
       download: this.received === null ? null : ({ receivedBytes: this.received, totalBytes: MODEL_BYTES } satisfies Download),
       libraryRevision: this.libraryRevision,
       microphone: this.microphone,
+      learned: [...this.learned],
     };
   }
 
@@ -650,8 +865,16 @@ export class Mock {
       case 'copy':
         if (this.clipboardFails) throw new Error('Could not copy to the clipboard: pasteboard unavailable');
         this.copied.push(text);
+        this.learnFrom(text);
         this.text = text;
         this.notice = COPIED;
+        break;
+      case 'undoLearn':
+        if (this.undo !== null) {
+          this.learnedList = this.undo;
+          this.learned = [];
+          this.undo = null;
+        }
         break;
     }
     this.revision += 1;
@@ -670,7 +893,20 @@ export class Mock {
     this.notice = null;
     this.started = null;
     this.microphone = null;
+    this.learned = [];
+    this.undo = null;
     this.phase = 'ready';
+  }
+
+  /** The core's learn_from: learns the corrections from the shown transcript to `edited`. */
+  private learnFrom(edited: string): void {
+    const found = learnCandidates(this.text, edited);
+    if (found.length === 0 || found.length > MAX_RUNS) return;
+    const [next, added] = rememberTerms(this.learnedList, learnTerms(this.text, edited), []);
+    if (added.length === 0) return;
+    this.undo = this.learnedList;
+    this.learnedList = next;
+    this.learned = added;
   }
 
   /** Closes the running segment; returns its index. */
@@ -767,7 +1003,7 @@ export class Mock {
 
   /** The core's finish: keep the transcript, copy it, and archive it. */
   private finish(text: string): void {
-    this.text = text;
+    this.text = enforceTerms(text, this.learnedList);
     this.phase = 'finished';
     if (this.text === '') this.notice = NOTHING_HEARD;
     else if (this.clipboardFails) this.notice = 'Could not copy to the clipboard: pasteboard unavailable. Use Copy to try again.';

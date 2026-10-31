@@ -7,3 +7,8 @@ extend-ignore-re = ["`[0-9a-f]{7,40}`"]
 [files]
 # Machine-written files.
 extend-exclude = ["CHANGELOG.md", "*.lock", "pnpm-lock.yaml", "apps/desktop/src-tauri/icons/"]
+
+[default.extend-words]
+# Deliberate misspellings in the learning corpus (crates/scriber-core/tests/learn.rs, mock.spec.ts).
+Svelt = "Svelt"
+Ollamma = "Ollamma"

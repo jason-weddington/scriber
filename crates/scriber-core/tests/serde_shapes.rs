@@ -56,6 +56,7 @@ mod tests {
                 download: None,
                 library_revision: 3,
                 microphone: Some("Jabra Evolve 65".to_string()),
+                learned: vec!["tightbeam".to_string()],
             },
         );
         round_trip(
@@ -78,6 +79,7 @@ mod tests {
                 download: None,
                 library_revision: 0,
                 microphone: None,
+                learned: vec![],
             },
         );
         round_trip(
@@ -98,6 +100,7 @@ mod tests {
                 }),
                 library_revision: 0,
                 microphone: None,
+                learned: vec![],
             },
         );
     }
@@ -314,6 +317,7 @@ mod tests {
             (Action::Retry, "retry"),
             (Action::Copy, "copy"),
             (Action::DownloadModel, "downloadModel"),
+            (Action::UndoLearn, "undoLearn"),
         ] {
             assert_eq!(serde_json::to_value(action).unwrap(), json!(name), "{name}");
             assert_eq!(

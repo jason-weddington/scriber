@@ -18,7 +18,9 @@
 //! model as one more job ([`crate::cleanup`]) and the session stays
 //! transcribing until it answers; the transcript copied is the model's reply
 //! when [`cleanup::accept`] keeps it, and Whisper's text otherwise, which then
-//! goes through [`crate::shortcuts::to_glyphs`]. An illegal
+//! goes through [`crate::shortcuts::to_glyphs`] and the learned spellings
+//! ([`learn::enforce`]). Copy learns the user's corrections to the
+//! transcript into [`store::LEARNED`]; Undo learning forgets them. An illegal
 //! action returns [`DictationError::Illegal`] and changes nothing.
 
 use std::collections::BTreeMap;
@@ -27,6 +29,7 @@ use std::sync::Mutex;
 use crate::audio::{decode_wav, duration_ms, encode_wav, to_mono_16k};
 use crate::cleanup;
 use crate::download::{self, Source};
+use crate::learn;
 use crate::library::{self, CleanupRecord, clean_summary, entry_path, valid_id};
 use crate::model::{Action, Download, Phase, Snapshot};
 use crate::ports::{Library, PortError, Ports};
@@ -34,7 +37,7 @@ use crate::settings;
 use crate::store;
 use crate::sync::lock;
 use crate::transcript::{is_silent, join, kept_text, trim_trailing_silence};
-use crate::vocabulary::{self, prompt};
+use crate::vocabulary;
 use serde::Serialize;
 
 /// Why an action was refused. The session is unchanged.
@@ -69,6 +72,9 @@ pub enum DictationError {
     /// The clipboard could not be written.
     #[error("Could not copy to the clipboard: {0}")]
     Clipboard(PortError),
+    /// The learned list could not be restored.
+    #[error("Could not undo learning: {0}")]
+    Learning(PortError),
 }
 
 /// The sentence shown when the speech model is missing and not downloading.
@@ -345,6 +351,51 @@ struct SegmentLine<'a> {
     peak: f32,
 }
 
+/// A [`store::LEARNING_LOG`] line for one Copy that found corrections.
+#[derive(Serialize)]
+struct LearnLine<'a> {
+    event: &'static str,
+    started: Option<&'a str>,
+    found: &'a [String],
+    added: &'a [String],
+    outcome: &'static str,
+    error: Option<String>,
+}
+
+/// A [`store::LEARNING_LOG`] line for one Undo of learning.
+#[derive(Serialize)]
+struct UndoLine<'a> {
+    event: &'static str,
+    started: Option<&'a str>,
+    removed: &'a [String],
+    outcome: &'static str,
+    error: Option<String>,
+}
+
+/// Writes `line` to [`store::LEARNING_LOG`], best effort.
+fn log_learning(ports: &Ports<'_>, line: &impl Serialize) {
+    if let Ok(text) = serde_json::to_string(line) {
+        store::log_learning(ports.files, &text);
+    }
+}
+
+/// The glossary's terms: the learned ones first, then the vocabulary's
+/// ([`vocabulary::glossary`]).
+fn glossary(ports: &Ports<'_>) -> Vec<String> {
+    let learned = store::learned(ports.files).unwrap_or_default();
+    vocabulary::glossary(&learned, &vocabulary_terms(ports))
+}
+
+/// The terms of the user's glossary file.
+fn vocabulary_terms(ports: &Ports<'_>) -> Vec<String> {
+    vocabulary::terms(&store::vocabulary(ports.files).unwrap_or_default())
+}
+
+/// The transcriber's prompt for the glossary.
+fn prompt(ports: &Ports<'_>) -> String {
+    vocabulary::prompt_for(&glossary(ports))
+}
+
 /// Writes `line` to [`store::MICROPHONE_LOG`], best effort.
 fn log(ports: &Ports<'_>, line: &impl Serialize) {
     if let Ok(text) = serde_json::to_string(line) {
@@ -398,6 +449,11 @@ pub struct Dictation {
     cleaning: Option<(String, Vec<String>)>,
     /// The input device opened for the session's latest segment.
     microphone: Option<String>,
+    /// The terms the last learning Copy added to [`store::LEARNED`].
+    learned: Vec<String>,
+    /// [`store::LEARNED`]'s list as it was before the last learning write,
+    /// for Undo.
+    undo: Option<Vec<String>>,
 }
 
 impl Dictation {
@@ -425,6 +481,7 @@ impl Dictation {
             Action::Retry => self.retry(ports),
             Action::Copy => self.copy(text, ports).map(|()| Vec::new()),
             Action::DownloadModel => self.download_model(ports).map(|job| vec![job]),
+            Action::UndoLearn => self.undo_learn(ports).map(|()| Vec::new()),
         }?;
         self.revision = self.revision.wrapping_add(1);
         self.queue(jobs, ports);
@@ -502,7 +559,7 @@ impl Dictation {
                 .iter()
                 .map(|i| (*i, Slot::Failed("interrupted".to_string())))
                 .collect();
-            this.prompt = Some(prompt(&store::vocabulary(ports.files).unwrap_or_default()));
+            this.prompt = Some(prompt(ports));
             this.phase = Phase::Failed;
             this.error = Some(format!(
                 "The last session was not transcribed. Retry to transcribe its {} recorded {}, or start a new session.",
@@ -543,6 +600,7 @@ impl Dictation {
             },
             library_revision: self.library_revision,
             microphone: self.microphone.clone(),
+            learned: self.learned.clone(),
         }
     }
 
@@ -600,12 +658,14 @@ impl Dictation {
         self.slots.clear();
         self.next_index = 0;
         self.recorded_ms = 0;
-        self.prompt = Some(prompt(&store::vocabulary(ports.files).unwrap_or_default()));
+        self.prompt = Some(prompt(ports));
         self.text.clear();
         self.error = None;
         self.notice = None;
         self.started = None;
         self.microphone = None;
+        self.learned.clear();
+        self.undo = None;
         self.phase = Phase::Ready;
     }
 
@@ -972,7 +1032,7 @@ impl Dictation {
         }
         let text = join(texts);
         if !text.is_empty() && ports.cleaner.is_some() && settings::load(ports.files).cleanup {
-            let mut terms = vocabulary::terms(&store::vocabulary(ports.files).unwrap_or_default());
+            let mut terms = glossary(ports);
             terms.truncate(cleanup::MAX_TERMS);
             self.cleaning = Some((text.clone(), terms.clone()));
             let job = Job(Work::Cleanup {
@@ -992,10 +1052,12 @@ impl Dictation {
         self.finish(text, &record, ports);
     }
 
-    /// Finishes the session with transcript `text`: keeps it, copies it, and
-    /// archives it with the cleanup pass's `record`.
+    /// Finishes the session with transcript `text`: writes spoken shortcuts
+    /// as glyphs and learned terms in their learned spelling, keeps it,
+    /// copies it, and archives it with the cleanup pass's `record`.
     fn finish(&mut self, text: String, record: &CleanupRecord, ports: &Ports<'_>) {
         let glyphs = crate::shortcuts::to_glyphs(&text);
+        let glyphs = learn::enforce(&glyphs, &store::learned(ports.files).unwrap_or_default());
         let mut record = record;
         let archived;
         if glyphs != text && record.raw.is_none() {
@@ -1061,7 +1123,8 @@ impl Dictation {
     }
 
     /// Copy: puts `text` (the transcript as the user edited it) on the
-    /// clipboard and keeps it as the transcript.
+    /// clipboard, learns the user's corrections to the transcript shown
+    /// ([`Self::learn_from`]) and keeps `text` as the transcript.
     ///
     /// # Errors
     ///
@@ -1072,9 +1135,86 @@ impl Dictation {
             .clipboard
             .write(text)
             .map_err(DictationError::Clipboard)?;
+        self.learn_from(text, ports);
         text.clone_into(&mut self.text);
         let _kept = store::save_transcript(ports.files, text);
         self.notice = Some(COPIED.to_string());
+        Ok(())
+    }
+
+    /// Learns the corrections from the transcript shown to `edited` into
+    /// [`store::LEARNED`] and logs what happened. Nothing happens when there
+    /// is no correction; the learned terms and the undo list change only
+    /// when the list is saved.
+    fn learn_from(&mut self, edited: &str, ports: &Ports<'_>) {
+        let found = learn::candidates(&self.text, edited);
+        if found.is_empty() {
+            return;
+        }
+        let mut added = Vec::new();
+        let mut error = None;
+        let outcome = if found.len() > learn::MAX_RUNS {
+            "capped"
+        } else if let Some(list) = store::learned(ports.files) {
+            let terms = learn::learn(&self.text, edited);
+            let (new, placed) = learn::remember(&list, &terms, &vocabulary_terms(ports));
+            if placed.is_empty() {
+                "nothing_added"
+            } else if let Err(e) = store::save_learned(ports.files, &new) {
+                error = Some(e.to_string());
+                "write_failed"
+            } else {
+                added.clone_from(&placed);
+                self.learned = placed;
+                self.undo = Some(list);
+                "saved"
+            }
+        } else {
+            "unreadable"
+        };
+        log_learning(
+            ports,
+            &LearnLine {
+                event: "learn",
+                started: self.started.as_deref(),
+                found: &found,
+                added: &added,
+                outcome,
+                error,
+            },
+        );
+    }
+
+    /// Undo learning: restores [`store::LEARNED`] as it was before the last
+    /// learning Copy and forgets the terms it learned; with nothing to undo
+    /// it changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Illegal unless finished; the learned list cannot be written.
+    pub fn undo_learn(&mut self, ports: &Ports<'_>) -> Result<(), DictationError> {
+        self.allow(Action::UndoLearn, &[Phase::Finished])?;
+        let Some(prior) = &self.undo else {
+            return Ok(());
+        };
+        let saved = store::save_learned(ports.files, prior);
+        log_learning(
+            ports,
+            &UndoLine {
+                event: "undo",
+                started: self.started.as_deref(),
+                removed: &self.learned,
+                outcome: if saved.is_ok() {
+                    "restored"
+                } else {
+                    "write_failed"
+                },
+                error: saved.as_ref().err().map(ToString::to_string),
+            },
+        );
+        saved.map_err(DictationError::Learning)?;
+        self.learned.clear();
+        self.undo = None;
         Ok(())
     }
 }

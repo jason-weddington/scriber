@@ -11,12 +11,19 @@ import {
   DOWNLOAD_STEPS,
   DOWNLOADING,
   downloadFailed,
+  enforceTerms,
   excerpt,
   heard,
   inputFallback,
   join,
+  learnCandidates,
+  learnTerms,
   LEVEL_MS,
   leftover,
+  MAX_LEARNED,
+  MAX_RUN_WORDS,
+  MAX_RUNS,
+  MIN_FIX_CHARS,
   Mock,
   MOCK_DEFAULT_INPUT,
   MOCK_DEFAULT_MODEL,
@@ -35,6 +42,7 @@ import {
   storedWidth,
   preloaded,
   refusal,
+  rememberTerms,
   syntheticLevel,
   title,
 } from '../../src/lib/mock';
@@ -50,7 +58,7 @@ const FIXTURE = resolve(process.cwd(), '../../crates/scriber-core/tests/fixtures
 const shapes = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, Record<string, unknown>>;
 
 const PHASES: Phase[] = ['idle', 'ready', 'recording', 'paused', 'transcribing', 'finished', 'failed'];
-const ACTIONS: Action[] = ['new', 'record', 'pause', 'resume', 'done', 'discard', 'retry', 'copy'];
+const ACTIONS: Action[] = ['new', 'record', 'pause', 'resume', 'done', 'discard', 'retry', 'copy', 'undoLearn'];
 
 /** Each key, and the JSON types its value takes across the fixture's examples. */
 function types(examples: Record<string, unknown>[]): Map<string, Set<string>> {
@@ -76,7 +84,7 @@ const CORE_LEGAL: Record<Phase, Action[]> = {
   recording: ['pause', 'done', 'discard'],
   paused: ['resume', 'done', 'discard'],
   transcribing: [],
-  finished: ['new', 'discard', 'copy'],
+  finished: ['new', 'discard', 'copy', 'undoLearn'],
   failed: ['new', 'discard', 'retry'],
 };
 
@@ -90,6 +98,7 @@ const CORE_ACTION_NAMES: Record<Action, string> = {
   retry: 'retry',
   copy: 'copy',
   downloadModel: 'download the speech model',
+  undoLearn: 'undo learning',
 };
 
 /** A mock driven to `phase` (transcriptions held at 'transcribing'). */
@@ -725,3 +734,143 @@ test('the fallback notice goes at pause and returns at a resume that falls back'
   await mock.act('resume', '');
   expect([mock.snapshot().microphone, mock.snapshot().notice], 'listed again').toEqual(['Gone Mic', null]);
 });
+
+// ---- learning (crates/scriber-core/tests/learn.rs, the same tables) ----------
+
+const SIX = 'Use TightBeam and Scribe and Github and Svelt and Ollama and Cargo now.';
+
+const LEARN_CORPUS: [string, string, string[]][] = [
+  ['Open TightBeam now.', 'Open tightbeam now.', ['tightbeam']],
+  ['The tight beam runner.', 'The tightbeam runner.', ['tightbeam']],
+  ['Ask the scribe app.', 'Ask the Scriber app.', ['Scriber']],
+  ['The build was fast.', 'The build was quick.', []],
+  ['The cat sat.', 'the cat sat.', []],
+  ["TightBeam's queue.", "tightbeam's queue.", ['tightbeam']],
+  [SIX, 'Use tightbeam and Scriber and GitHub and Svelte and ollama and cargo now.', []],
+  [
+    SIX,
+    'Use tightbeam and Scriber and GitHub and Svelte and ollama and Cargo now.',
+    ['tightbeam', 'Scriber', 'GitHub', 'Svelte', 'ollama'],
+  ],
+  ['Open the app.', 'Open the new app.', []],
+  ['Open the old app.', 'Open the app.', []],
+  ['Run tightbeam now.', 'Run tight beam now.', ['tight beam']],
+  ['The tight-beam runner.', 'The tightbeam runner.', ['tightbeam']],
+  ['Check the g t d board.', 'Check the GTD board.', ['GTD']],
+  ['Say alpha beta gamma delta now.', 'Say one two three four now.', []],
+  ['Send it to Tom.', 'Send it to Tim.', []],
+  ['A bird flew.', 'A word flew.', []],
+  ['Ping Ollamma now.', 'Ping Ollama now.', ['Ollama']],
+  ['Done? Yes.', 'Done? yes.', []],
+  ['Hello there.', 'hello there.', []],
+  ['Done. Hello.', 'Done. hello.', []],
+  ['Open TightBeam and TightBeam.', 'Open tightbeam and Tightbeam.', ['tightbeam']],
+  ['Ask Zoë now.', 'Ask Zoe now.', []],
+  ['Open Münchenn now.', 'Open München now.', ['München']],
+  ['Same text.', 'Same text.', []],
+  ['Ask scribe about it. "Done." Github is up and it is fast', 'Ask Scriber about it. "Done." github is up and it is quick', ['Scriber']],
+  ['one two three', 'one two three four five', []],
+  ['x tightbeam y z', 'x y tight beam z', []],
+  ['a b c', 'c b a', []],
+  ["it's fine", 'Its fine', []],
+  ['New Scribe!', 'New Scriber!', ['Scriber']],
+  ['\u0130stanbul now.', 'i\u0307stanbul now.', ['i\u0307stanbul']],
+];
+
+const REMEMBER: [string[], string[], string[], string[], string[]][] = [
+  [[], ['tightbeam'], [], ['tightbeam'], ['tightbeam']],
+  [['Scriber', 'TightBeam'], ['tightbeam'], [], ['tightbeam', 'Scriber'], ['tightbeam']],
+  [['Scriber', 'tightbeam'], ['tightbeam'], [], ['tightbeam', 'Scriber'], ['tightbeam']],
+  [[], ['tightbeam'], ['tightbeam'], [], []],
+  [[], ['tightbeam'], ['TightBeam'], ['tightbeam'], ['tightbeam']],
+];
+
+const ENFORCE: [string[], string, string][] = [
+  [['tightbeam'], 'Open TightBeam, then tight beam and Tight-Beam.', 'Open tightbeam, then tightbeam and tightbeam.'],
+  [['tightbeam'], "TightBeam's queue", "tightbeam's queue"],
+  [['tightbeam'], 'tightbeams and xtightbeam', 'tightbeams and xtightbeam'],
+  [['tightbeam'], 'foo-tightbeam', 'foo-tightbeam'],
+  [['tightbeam'], 'Tightbeam works.', 'tightbeam works.'],
+  [['tight beam'], 'tightbeam', 'tight beam'],
+  [['Scriber'], 'the scriber app', 'the Scriber app'],
+  [['v2.0'], 'V2.0', 'V2.0'],
+  [[], 'Open TightBeam.', 'Open TightBeam.'],
+  [['München'], 'in münchen today', 'in München today'],
+  [['tightbeam'], 'tightbeam_x and x_tightbeam', 'tightbeam_x and x_tightbeam'],
+  [['tightbeam'], 'tight  beam', 'tight  beam'],
+  [['tightbeam'], 'tight beam-', 'tight beam-'],
+  [['GTD'], 'the g t d board', 'the GTD board'],
+  [['ab'], 'a b c d', 'ab c d'],
+  [['abcd'], 'a b c d', 'a b c d'],
+  [['', '-'], 'a - b', 'a - b'],
+  [['tight beam', 'TightBeam'], 'TIGHTBEAM', 'tight beam'],
+  [['Scrib', 'Scriber'], 'scriber scrib', 'Scriber Scrib'],
+  [['ab', 'abc'], 'a b c', 'abc'],
+];
+
+test('learning follows the core rule (learn.rs)', () => {
+  expect([MAX_RUN_WORDS, MAX_RUNS, MIN_FIX_CHARS, MAX_LEARNED]).toEqual([3, 5, 4, 100]);
+  for (const [original, edited, expected] of LEARN_CORPUS) {
+    expect(learnTerms(original, edited), `${original} => ${edited}`).toEqual(expected);
+  }
+  expect(learnCandidates(SIX, 'Use tightbeam and Scriber and GitHub and Svelte and ollama and cargo now.')).toEqual([
+    'tightbeam',
+    'Scriber',
+    'GitHub',
+    'Svelte',
+    'ollama',
+    'cargo',
+  ]);
+  expect(learnCandidates('Open TightBeam and TightBeam.', 'Open tightbeam and Tightbeam.')).toEqual(['tightbeam', 'Tightbeam']);
+  for (const [list, learned, vocabulary, next, added] of REMEMBER) {
+    expect(rememberTerms(list, learned, vocabulary), `${String(list)} + ${String(learned)}`).toEqual([next, added]);
+  }
+  for (const size of [100, 99]) {
+    const list = Array.from({ length: size }, (_, k) => `t${String(k + 1)}`);
+    const [next, added] = rememberTerms(list, ['new'], []);
+    expect(next.length, `${String(size)}: capped`).toBe(100);
+    expect([next[0], next.at(-1)], `${String(size)}: ends`).toEqual(['new', 't99']);
+    expect(added).toEqual(['new']);
+  }
+  for (const [terms, text, expected] of ENFORCE) {
+    expect(enforceTerms(text, terms), `${String(terms)}: ${text}`).toEqual(expected);
+  }
+});
+
+test('a correction copied is learned, enforced next session, and undone on request', async () => {
+  const mock = new Mock('');
+  for (const step of ['new', 'record', 'done'] as const) await mock.act(step, '');
+  await settled();
+  const shown = mock.snapshot().text;
+  expect(shown).toBe(heard(0, false));
+  const fixed = shown.replace('dictation', 'Dictation');
+  const copied = await mock.act('copy', fixed);
+  expect(copied.learned, 'learned').toEqual(['Dictation']);
+  expect(copied.notice).toBe(COPIED);
+  const again = await mock.act('copy', fixed);
+  expect(again.learned, 'a second Copy learns nothing new and keeps it').toEqual(['Dictation']);
+  const undone = await mock.act('undoLearn', '');
+  expect(undone.learned, 'undone').toEqual([]);
+  expect(undone.notice, 'notice unchanged').toBe(COPIED);
+  const nothing = await mock.act('undoLearn', '');
+  expect(nothing.revision, 'nothing to undo').toBe(undone.revision + 1);
+  await mock.act('copy', fixed.replace('This', 'this'));
+  expect(mock.snapshot().learned, 'a sentence start is not learned').toEqual([]);
+  for (const step of ['new', 'record', 'done'] as const) await mock.act(step, '');
+  await settled();
+  expect(mock.snapshot().text, 'nothing enforced after Undo').toBe(heard(0, false));
+  await mock.act('copy', fixed);
+  expect(mock.snapshot().learned).toEqual(['Dictation']);
+  const fresh = await mock.act('new', '');
+  expect(fresh.learned, 'New clears it').toEqual([]);
+  for (const step of ['record', 'done'] as const) await mock.act(step, '');
+  await settled();
+  expect(mock.snapshot().text, 'enforced').toBe(fixed);
+  await mock.act('copy', `${fixed} one two three four five six`);
+  await mock.act('copy', SIX);
+  await mock.act('copy', SIX.replace('TightBeam and Scribe and Github and Svelt and Ollama and Cargo', 'tightbeam and Scriber and GitHub and Svelte and ollama and cargo'));
+  expect(mock.snapshot().learned, 'a rewrite is capped').toEqual([]);
+  await mock.act('discard', '');
+  expect(mock.snapshot().learned).toEqual([]);
+});
+

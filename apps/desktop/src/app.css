@@ -150,6 +150,21 @@ main {
   margin: 0;
 }
 
+/* What the last Copy learned from the user's corrections, with its Undo. */
+.learned-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.learned {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .error {
   flex-shrink: 0;
   margin: 0;

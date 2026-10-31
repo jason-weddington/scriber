@@ -4,7 +4,7 @@
 
 export type Phase = 'idle' | 'ready' | 'recording' | 'paused' | 'transcribing' | 'finished' | 'failed';
 
-export type Action = 'new' | 'record' | 'pause' | 'resume' | 'done' | 'discard' | 'retry' | 'copy' | 'downloadModel';
+export type Action = 'new' | 'record' | 'pause' | 'resume' | 'done' | 'discard' | 'retry' | 'copy' | 'downloadModel' | 'undoLearn';
 
 /** How far the speech model's download has got. */
 export interface Download {
@@ -36,6 +36,8 @@ export interface Snapshot {
   libraryRevision: number;
   /** The input device opened for this session's latest segment, by name; null before the first Record. */
   microphone: string | null;
+  /** The terms the last Copy learned from the user's corrections, until Undo, New, Discard or relaunch; [] when none. */
+  learned: string[];
 }
 
 /** One recording in the library, as the drawer lists it. */

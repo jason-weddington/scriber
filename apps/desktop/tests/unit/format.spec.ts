@@ -45,6 +45,7 @@ const base: Snapshot = {
   download: null,
   libraryRevision: 0,
   microphone: null,
+  learned: [],
 };
 
 test('recorded time reads m:ss, then h:mm:ss, rounded down', () => {
@@ -97,7 +98,7 @@ test('the recorder row offers exactly these controls in each phase', () => {
   for (const phase of Object.keys(table) as Phase[]) {
     expect(controlsFor(phase), phase).toEqual(table[phase]);
     const offered = controlsFor(phase).map((c) => c.action).sort();
-    const legal = LEGAL[phase].filter((a) => a !== 'new' && a !== 'copy').sort();
+    const legal = LEGAL[phase].filter((a) => a !== 'new' && a !== 'copy' && a !== 'undoLearn').sort();
     expect(offered, phase).toEqual(legal);
   }
 });

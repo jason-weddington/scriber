@@ -84,6 +84,36 @@ test('an edited transcript is copied again with Copy', async ({ page }) => {
   await expect(button(page, 'Copy')).toBeDisabled();
 });
 
+test('a corrected word is learned, shown with Undo, and Undo forgets it', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record', 'Done');
+  const transcript = page.getByRole('textbox', { name: 'Transcript' });
+  await transcript.fill(PART_1.replace('dictation', 'Dictation'));
+  await press(page, 'Copy');
+  await expect(page.getByText('Learned: Dictation')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Undo' })).toBeVisible();
+  await press(page, 'Undo');
+  await expect(page.getByText('Learned: Dictation')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Undo' })).toHaveCount(0);
+  await expect(status(page)).toHaveText('Copied to the clipboard.');
+  await press(page, 'New', 'Record', 'Done');
+  await expect(transcript).toHaveValue(PART_1);
+});
+
+test('a learned word is spelled the learned way next time', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record', 'Done');
+  const transcript = page.getByRole('textbox', { name: 'Transcript' });
+  await transcript.fill(PART_1.replace('dictation', 'Dictation'));
+  await press(page, 'Copy');
+  await expect(page.getByText('Learned: Dictation')).toBeVisible();
+  await press(page, 'New');
+  await expect(page.getByText('Learned: Dictation')).toHaveCount(0);
+  await press(page, 'Record', 'Done');
+  await expect(transcript).toHaveValue('This is part 1 of the Dictation.');
+  expect((await copied(page)).at(-1)).toBe('This is part 1 of the Dictation.');
+});
+
 test('New after a transcript starts an empty session', async ({ page }) => {
   await open(page);
   await press(page, 'New', 'Record', 'Done', 'New');

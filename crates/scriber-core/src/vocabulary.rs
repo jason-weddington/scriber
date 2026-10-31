@@ -39,10 +39,33 @@ pub fn terms(file: &str) -> Vec<String> {
 /// list. No terms gives the style sentence alone.
 #[must_use]
 pub fn prompt(file: &str) -> String {
+    prompt_for(&terms(file))
+}
+
+/// The glossary as the transcriber and the cleanup pass see it: the
+/// `learned` terms first ([`crate::learn`]), then the `vocabulary` terms
+/// not equal to a learned one case-insensitively.
+#[must_use]
+pub fn glossary(learned: &[String], vocabulary: &[String]) -> Vec<String> {
+    let lowered: Vec<String> = learned.iter().map(|t| t.to_lowercase()).collect();
+    learned
+        .iter()
+        .chain(
+            vocabulary
+                .iter()
+                .filter(|t| !lowered.contains(&t.to_lowercase())),
+        )
+        .cloned()
+        .collect()
+}
+
+/// The prompt for a list of terms, by the same budget rule as [`prompt`].
+#[must_use]
+pub fn prompt_for(terms: &[String]) -> String {
     let mut prompt = format!("{STYLE} {PREFIX}");
     let mut length = prompt.chars().count();
     let mut added = 0usize;
-    for term in terms(file) {
+    for term in terms {
         let separator = if added == 0 { "" } else { SEPARATOR };
         let grown = length
             .saturating_add(separator.chars().count())
@@ -51,7 +74,7 @@ pub fn prompt(file: &str) -> String {
             break;
         }
         prompt.push_str(separator);
-        prompt.push_str(&term);
+        prompt.push_str(term);
         length = grown;
         added = added.saturating_add(1);
     }

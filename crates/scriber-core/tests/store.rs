@@ -7,6 +7,9 @@ mod common;
 mod tests {
     use scriber_core::ports::PortError;
     use scriber_core::store::{
+        LEARNED, LEARNING_LOG, LEARNING_LOG_LINES, learned, log_learning, save_learned,
+    };
+    use scriber_core::store::{
         MODEL, SEGMENTS, STARTED, TRANSCRIPT, VOCABULARY, clear, load, remove_segments, save,
         save_transcript, segment_index, segment_path, stored, transcript, vocabulary,
         vocabulary_path,
@@ -226,5 +229,77 @@ mod tests {
         files.fail_list.set(true);
         remove_segments(&files);
         assert_eq!(files.segments(), 1, "an unreadable folder keeps its files");
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn the_learned_list_is_read_leniently() {
+        assert_eq!(LEARNED, "learned.txt", "path");
+        assert_eq!(LEARNING_LOG, "learning-log.jsonl", "log path");
+        assert_eq!(LEARNING_LOG_LINES, 200, "log length");
+        let files = FakeFiles::default();
+        assert_eq!(learned(&files), Some(vec![]), "no file");
+        files
+            .write(LEARNED, b"tightbeam\n# note\n\n Scriber \n")
+            .unwrap();
+        assert_eq!(
+            learned(&files),
+            Some(strings(&["tightbeam", "Scriber"])),
+            "read like the glossary"
+        );
+        files.fail_read.set(true);
+        assert_eq!(learned(&files), Some(vec![]), "unreadable counts as empty");
+        files.fail_read.set(false);
+        files.write(LEARNED, &[0xff]).unwrap();
+        assert_eq!(learned(&files), None, "not UTF-8");
+    }
+
+    #[test]
+    fn the_learned_list_is_written_then_renamed_into_place() {
+        let files = FakeFiles::default();
+        save_learned(&files, &strings(&["tightbeam", "Scriber"])).unwrap();
+        assert_eq!(
+            files.read(LEARNED).unwrap(),
+            b"tightbeam\nScriber\n",
+            "one term per line"
+        );
+        assert!(
+            !files.files.borrow().contains_key("learned.txt.partial"),
+            "no partial file left"
+        );
+        save_learned(&files, &[]).unwrap();
+        assert_eq!(
+            files.read(LEARNED).unwrap(),
+            b"",
+            "an empty list is 0 bytes"
+        );
+        files.write(LEARNED, b"old\n").unwrap();
+        files.fail_rename.set(true);
+        assert!(
+            save_learned(&files, &strings(&["new"])).is_err(),
+            "the rename failed"
+        );
+        assert_eq!(files.read(LEARNED).unwrap(), b"old\n", "unchanged");
+    }
+
+    #[test]
+    fn the_learning_log_keeps_the_newest_lines() {
+        let files = FakeFiles::default();
+        log_learning(&files, "first");
+        assert_eq!(files.read(LEARNING_LOG).unwrap(), b"first\n", "one line");
+        let old: String = (0..200)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        files.write(LEARNING_LOG, old.as_bytes()).unwrap();
+        log_learning(&files, "new");
+        let text = String::from_utf8(files.read(LEARNING_LOG).unwrap()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 200, "keeps 200");
+        assert_eq!(lines.first().copied(), Some("line 1"), "the oldest dropped");
+        assert_eq!(lines.last().copied(), Some("new"), "the newest last");
     }
 }

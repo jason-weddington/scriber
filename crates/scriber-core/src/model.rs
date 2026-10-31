@@ -64,6 +64,9 @@ pub enum Action {
     Copy,
     /// Download the speech model again, after a download failed.
     DownloadModel,
+    /// Forget the terms the last Copy learned, restoring the learned list
+    /// as it was before it.
+    UndoLearn,
 }
 
 impl fmt::Display for Action {
@@ -78,6 +81,7 @@ impl fmt::Display for Action {
             Self::Retry => "retry",
             Self::Copy => "copy",
             Self::DownloadModel => "download the speech model",
+            Self::UndoLearn => "undo learning",
         })
     }
 }
@@ -115,6 +119,10 @@ pub struct Snapshot {
     /// The input device actually opened for this session's latest segment,
     /// by name; `None` before the session's first Record.
     pub microphone: Option<String>,
+    /// The terms the last Copy learned from the user's corrections
+    /// ([`crate::learn`]), until Undo, New, Discard or relaunch; empty when
+    /// nothing was learned.
+    pub learned: Vec<String>,
 }
 
 /// How far the speech model's download has got.
