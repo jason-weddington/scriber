@@ -7,7 +7,7 @@ import type { Action, Download, InputDevices, LibraryEntry, Phase, Snapshot } fr
  * The actions the core accepts in each phase (crates/scriber-core/src/dictation.rs).
  * The window offers only the buttons controlsFor gives for the phase, except
  * New, which stays in the band, disabled, and Copy and Undo, which are offered
- * outside the recorder row (the transcript box and the learned line); the core
+ * outside the recorder row (the transcript box and the status row); the core
  * refuses anything else anyway.
  */
 export const LEGAL: Readonly<Record<Phase, readonly Action[]>> = {
@@ -85,6 +85,20 @@ export function statusText(s: Snapshot): string {
     case 'failed':
       return 'The transcript is not ready.';
   }
+}
+
+/** The status row's text: the status, plus what a Copy learned. No layout shift: see CLAUDE.md. */
+export function statusLine(s: Snapshot): string {
+  return s.phase === 'finished' && s.learned.length > 0
+    ? `${statusText(s)} Learned: ${s.learned.join(', ')}.`
+    : statusText(s);
+}
+
+/** The alert the status row shows instead of the status text, if any. */
+export function statusAlert(s: Snapshot, actionError: string | null): string | null {
+  if (actionError !== null) return actionError;
+  if (s.phase === 'failed' && s.error !== null) return s.error;
+  return s.modelError;
 }
 
 // ---- the microphone ------------------------------------------------------------------

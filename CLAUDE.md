@@ -35,6 +35,7 @@ bash scripts/exit-check.sh [--control]   # Mac exit check: quitting with the mod
 - **No `#[allow(...)]`.** Use `#[expect(lint, reason = "...")]`, which fails once it is no longer needed.
 - **No logic in `src-tauri`**, and no `@tauri-apps` import outside `bridge.ts`. `scripts/check-architecture.sh` enforces both.
 - **The mock answers like the core.** When a core rule or JSON shape changes, change `mock.ts`, `tests/unit/mock.spec.ts` and `crates/scriber-core/tests/fixtures/bridge-shapes.json` with it.
+- **No layout shift within a screen state.** A message that appears never moves other content: it goes in the one-line status row (`.status-row`) or a space already reserved for it, and `expectNoShift` in `tests/e2e/helpers.ts` guards it.
 - **Never launch the GUI app from an agent session**: no `pnpm tauri dev`, no `open` on the bundle, no osascript, no screen capture. macOS attributes the app's permission prompts to whatever launched it. Build and install with `scripts/install.sh`, and let the human open it. Browser tests through Playwright against the mock are fine.
 - Every list that can grow scrolls, and gets an `expectEveryItemReachable` test (`tests/e2e/helpers.ts`). Every screen state gets an axe check (`tests/e2e/a11y.spec.ts`).
 

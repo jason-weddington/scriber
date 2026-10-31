@@ -41,7 +41,8 @@
     SETTINGS_SHORTCUT,
     LIBRARY_WIDTH_DEFAULT,
     SHORTCUTS,
-    statusText,
+    statusAlert,
+    statusLine,
   } from './lib/format';
   import CopyButton from './lib/CopyButton.svelte';
   import LibraryDrawer from './lib/LibraryDrawer.svelte';
@@ -113,6 +114,8 @@
     snapshot === null ? 0 : snapshot.recordedMs + (recordingSince === null ? 0 : Math.max(0, now - recordingSince)),
   );
   const metering = $derived(snapshot?.phase === 'recording' || snapshot?.phase === 'paused');
+  const line = $derived(snapshot === null ? '' : statusLine(snapshot));
+  const alert = $derived(snapshot === null ? null : statusAlert(snapshot, actionError));
   const latest = $derived(levels.at(-1) ?? 0);
 
   /** Takes a snapshot unless a newer one has already arrived (commands and events race). */
@@ -500,9 +503,6 @@
   <main>
     {#if entry !== null}
       <h2 class="entry-heading">{entry.title}</h2>
-      {#if entryError !== null}
-        <p class="error" role="alert">{entryError}</p>
-      {/if}
       {#if entry.transcript !== null}
         <div class="transcript">
           <label for="entry-transcript">Transcript</label>
@@ -511,38 +511,29 @@
             {#key entry.id}<CopyButton copy={() => copyEntry(entry?.id ?? '')} />{/key}
           </div>
         </div>
-        <p class="entry-status" aria-live="polite">{entryCopied ? 'Copied to the clipboard.' : ''}</p>
       {/if}
+      <div class="status-row">
+        <p class="entry-status" class:visually-hidden={entryError !== null} aria-live="polite">{entryCopied ? 'Copied to the clipboard.' : ''}</p>
+        {#if entryError !== null}
+          <p class="error" role="alert" title={entryError}>{entryError}</p>
+        {/if}
+      </div>
     {:else if loadError !== null}
       <p class="error" role="alert">Could not read the session: {loadError}</p>
       <button type="button" onclick={load}>Try again</button>
-    {:else if snapshot !== null}      {#if snapshot.download !== null}
-        <div class="download">
-          <p class="download-text" id="download-text">{downloadText(snapshot.download)}</p>
-          <progress max="100" value={percent(snapshot.download)} aria-labelledby="download-text"></progress>
-        </div>
-      {/if}
-      {#if snapshot.modelError !== null}
-        <div class="model-error">
-          <p class="error" role="alert">{snapshot.modelError}</p>
-          <button type="button" onclick={() => run('downloadModel')} disabled={!can('downloadModel')}>
-            Retry download
-          </button>
-        </div>
-      {/if}
-      <p class="status" aria-live="polite">{statusText(snapshot)}</p>
-      {#if snapshot.phase === 'finished' && snapshot.learned.length > 0}
-        <div class="learned-row">
-          <p class="learned" aria-live="polite">Learned: {snapshot.learned.join(', ')}</p>
-          <button type="button" class="undo-learn" disabled={busy} onclick={() => run('undoLearn')}>Undo</button>
-        </div>
-      {/if}
-      {#if snapshot.phase === 'failed' && snapshot.error !== null}
-        <p class="error" role="alert">{snapshot.error}</p>
-      {/if}
-      {#if actionError !== null}
-        <p class="error" role="alert">{actionError}</p>
-      {/if}
+    {:else if snapshot !== null}
+      <div class="status-row">
+        <p class="status" aria-live="polite" title={line} class:visually-hidden={alert !== null}>{line}</p>
+        {#if alert !== null}
+          <p class="error" role="alert" title={alert}>{alert}</p>
+        {/if}
+        {#if snapshot.modelError !== null}
+          <button type="button" class="row-action" onclick={() => run('downloadModel')} disabled={!can('downloadModel')}>Retry download</button>
+        {/if}
+        {#if snapshot.phase === 'finished' && snapshot.learned.length > 0}
+          <button type="button" class="row-action" disabled={busy} onclick={() => run('undoLearn')}>Undo</button>
+        {/if}
+      </div>
 
       {#if snapshot.phase === 'ready' || snapshot.phase === 'recording' || snapshot.phase === 'paused'}
         <MicrophoneMenu
@@ -602,6 +593,14 @@
           </div>
         </div>
       {/if}
+
+      <!-- The download block stays the last child of the dictation branch, so its appearing moves nothing; any new in-pane region goes ABOVE it. In-state messages go in .status-row; expectNoShift in tests/e2e/helpers.ts guards both. -->
+      {#if snapshot.download !== null}
+        <div class="download">
+          <p class="download-text" id="download-text">{downloadText(snapshot.download)}</p>
+          <progress max="100" value={percent(snapshot.download)} aria-labelledby="download-text"></progress>
+        </div>
+      {/if}
     {/if}
   </main>
 
@@ -633,7 +632,7 @@
     <h1 class="visually-hidden">Dictation</h1>
     <div class="band-spacer" data-tauri-drag-region></div>
     {#if toggleError !== null}
-      <p class="error" role="alert">{toggleError}</p>
+      <p class="error" role="alert" title={toggleError}>{toggleError}</p>
     {/if}
     {#if snapshot !== null && snapshot.phase !== 'idle' && entry === null}
       <span class="time" class:live={snapshot.phase === 'recording'} title="Recorded time" data-tauri-drag-region>

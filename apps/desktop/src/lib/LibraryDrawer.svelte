@@ -103,9 +103,7 @@
 </script>
 
 <nav id="library" class="library" aria-label="Recordings" hidden={!open} style:width="{width}px" bind:this={nav}>
-  {#if error !== null}
-    <p class="error" role="alert">Could not read the library: {error}</p>
-  {:else if entries.length === 0}
+  {#if error === null && entries.length === 0}
     <p class="empty">No recordings yet.</p>
   {/if}
   <div class="library-scroll">
@@ -129,6 +127,9 @@
       </ul>
     {/each}
   </div>
+  {#if error !== null}
+    <p class="error" role="alert">Could not read the library: {error}</p>
+  {/if}
   <!-- A focusable separator is a widget in WAI-ARIA (a window splitter), which
        Svelte's role table does not know, so it flags the tabindex and the
        handlers. -->

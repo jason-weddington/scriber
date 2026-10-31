@@ -163,12 +163,12 @@
       <option {...{ value }} selected={value === settings.summaryModel}>{text}</option>
     {/each}
   </select>
-  {#if ollamaDown}
-    <p class="note" title={ollamaReason}>Local AI needs Ollama. Start Ollama, then reopen Settings.</p>
-  {/if}
-  {#if error !== null}
-    <p class="error" role="alert">{error}</p>
-  {/if}
+  <div class="status-row">
+    <p class="note" class:visually-hidden={error !== null} title={ollamaDown ? ollamaReason : undefined}>{ollamaDown ? 'Local AI needs Ollama. Start Ollama, then reopen Settings.' : ''}</p>
+    {#if error !== null}
+      <p class="error" role="alert" title={error}>{error}</p>
+    {/if}
+  </div>
   {#if version !== ''}
     <p class="version">Version {version}</p>
   {/if}

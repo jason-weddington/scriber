@@ -68,6 +68,19 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoViolations(page);
     });
 
+    test('finished, having learned five words', async ({ page }) => {
+      await keepCheck(page);
+      await open(page);
+      await press(page, 'New', 'Record', 'Pause', 'Resume', 'Done');
+      await page
+        .getByRole('textbox', { name: 'Transcript' })
+        .fill('This IS part 1 OF the Dictation.\n\nThis is PART 2 of THE dictation.');
+      await press(page, 'Copy');
+      await expect(page.getByText('Copied to the clipboard. Learned: IS, OF, Dictation, PART, THE.')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Undo' })).toBeVisible();
+      await expectNoViolations(page);
+    });
+
     test('a library entry just copied', async ({ page }) => {
       await keepCheck(page);
       await open(page, { library: '3' });

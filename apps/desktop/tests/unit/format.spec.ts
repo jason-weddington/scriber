@@ -29,6 +29,8 @@ import {
   SETTINGS_SHORTCUT,
   SHORTCUTS,
   statusText,
+  statusLine,
+  statusAlert,
 } from '../../src/lib/format';
 import type { InputDevices, Phase, Snapshot } from '../../src/lib/types';
 
@@ -362,4 +364,22 @@ test('⌘, is no dictation shortcut in any phase', () => {
 
 test('the Settings shortcut is named and shown as ⌘,', () => {
   expect(SETTINGS_SHORTCUT).toEqual({ aria: 'Meta+Comma', hint: '⌘,' });
+});
+
+test('the status line adds what a Copy learned, only when finished', () => {
+  const fin: Snapshot = { ...base, phase: 'finished', notice: 'Copied to the clipboard.', learned: ['tightbeam', 'Scriber'] };
+  expect(statusLine(fin)).toBe('Copied to the clipboard. Learned: tightbeam, Scriber.');
+  expect(statusLine({ ...fin, learned: [] })).toBe('Copied to the clipboard.');
+  const rec: Snapshot = { ...fin, phase: 'recording', notice: null };
+  expect(statusLine(rec)).toBe(statusText(rec));
+});
+
+test('the status alert: action error, then failure, then model error', () => {
+  const failed: Snapshot = { ...base, phase: 'failed', error: 'boom', modelError: 'no model' };
+  expect(statusAlert(failed, 'act')).toBe('act');
+  expect(statusAlert(failed, null)).toBe('boom');
+  expect(statusAlert({ ...failed, error: null }, null)).toBe('no model');
+  expect(statusAlert({ ...failed, phase: 'ready' }, null)).toBe('no model');
+  expect(statusAlert({ ...base, modelError: 'no model' }, 'act')).toBe('act');
+  expect(statusAlert(base, null)).toBeNull();
 });

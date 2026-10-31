@@ -439,10 +439,10 @@ test('the version moved from the window into Settings', async ({ page }) => {
   await expect(page.getByText('Version 0.0.0-mock')).toBeHidden();
 });
 
-test('the version is the last thing in Settings, below the note and the alert', async ({ page }) => {
+test('the version is the last thing in Settings, below the status row', async ({ page }) => {
   await openSettings(page, { ollama: 'down', fail: 'vocabulary_open' });
   await editor(page).click();
   await expect(alert(page)).toBeVisible();
-  await expect(page.getByText(DOWN_NOTE)).toBeVisible();
+  await expect(page.locator('.settings .note')).toHaveClass(/visually-hidden/);
   await expect(page.locator('.settings-body > .version:last-child')).toHaveText('Version 0.0.0-mock');
 });

@@ -427,10 +427,12 @@ test.describe('at the minimum window size', () => {
     await expect.poll(() => savedInputs(page)).toEqual(['', 'Microphone 30']);
   });
 
-  // Layout (a): library 30 at 440 wide, a long missing device name.
+  // Layout (a): library 30 at 440 wide, a long missing device name. The status
+  // row no longer grows with a long notice, so the control is put low by a short window.
   test('with more room above the control the popover opens above it', async ({ page }) => {
     const LONG_GONE =
       'Gone Mic from the old desk setup in the spare room upstairs by the window that faces the garden and the shed';
+    await page.setViewportSize({ width: 520, height: 200 });
     await open(page, { library: '30', libraryWidth: '440', inputDevice: LONG_GONE });
     await press(page, 'New', 'Record');
     await expect(status(page)).toContainText('is not available');
