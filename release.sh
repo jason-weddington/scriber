@@ -28,4 +28,5 @@ else
 fi
 
 cog bump --auto
-git push origin main --follow-tags
+# cog makes a lightweight tag, which --follow-tags skips, so name the new tag explicitly.
+git push origin main "$(git describe --tags --exact-match HEAD)"
