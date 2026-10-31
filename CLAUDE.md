@@ -32,6 +32,7 @@ bash scripts/exit-check.sh [--control]   # Mac exit check: quitting with the mod
 - **Hooks check, never fix.** When `fmt` or `cargo-sort` fails, run `cargo fmt --all` or `cargo sort --workspace --grouped` yourself (in both workspaces) and commit again. Never commit with `--no-verify`.
 - **Coverage floors only go up.** They are literals at the top of `scripts/gate.sh` (Rust lines, at least 98; frontend lines). When coverage climbs, raise them; never lower one to get a change through.
 - **Zero surviving mutants** in the core and the engine, checked by `gate.sh release`, which release.sh runs; a survivor found there blocks the release and gets a test.
+- **Mutation-test your own diff before you finish** any change to `crates/`: `git diff origin/main > /tmp/my.diff && mkdir -p target/mutants-tmp && TMPDIR="$PWD/target/mutants-tmp" cargo mutants --in-diff /tmp/my.diff --jobs 6`, then add tests until nothing is missed or times out (a loop must provably advance, so a mutated match cannot hang it). It is not a hook and not part of `gate.sh`; it exists so survivors are fixed where the context is, instead of failing the release.
 - **No `#[allow(...)]`.** Use `#[expect(lint, reason = "...")]`, which fails once it is no longer needed.
 - **No logic in `src-tauri`**, and no `@tauri-apps` import outside `bridge.ts`. `scripts/check-architecture.sh` enforces both.
 - **The mock answers like the core.** When a core rule or JSON shape changes, change `mock.ts`, `tests/unit/mock.spec.ts` and `crates/scriber-core/tests/fixtures/bridge-shapes.json` with it.
