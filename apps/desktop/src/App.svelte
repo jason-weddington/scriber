@@ -78,7 +78,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '' });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0 });
   let settingsOpen = $state(false);
   let settingsButton = $state<HTMLButtonElement>();
   let settingsFromPointer = false;
@@ -121,6 +121,11 @@
   /** Takes a snapshot unless a newer one has already arrived (commands and events race). */
   function accept(next: Snapshot): void {
     if (snapshot !== null && next.revision < snapshot.revision) return;
+    // A part closed at a silence moves time into recordedMs while recording
+    // goes on: shift the running start by as much, so the shown time stays continuous.
+    const t = Date.now();
+    if (next.phase === 'recording' && snapshot?.phase === 'recording' && recordingSince !== null && next.recordedMs > snapshot.recordedMs)
+      recordingSince = t - Math.max(0, snapshot.recordedMs + t - recordingSince - next.recordedMs);
     if (next.phase === 'recording') recordingSince ??= Date.now();
     else recordingSince = null;
     if (next.phase !== 'recording' && next.phase !== 'paused') levels = [];
@@ -176,6 +181,18 @@
 
   function setCleanup(on: boolean): void {
     settings = { ...settings, cleanup: on };
+    settingsSet(settings).then(
+      () => {
+        settingsError = null;
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
+      },
+    );
+  }
+
+  function setSilenceSplit(ms: number): void {
+    settings = { ...settings, silenceSplitMs: ms };
     settingsSet(settings).then(
       () => {
         settingsError = null;
@@ -680,6 +697,7 @@
     oncleanup={setCleanup}
     onbrowse={browseVocabulary}
     onopenvocabulary={openVocabulary}
+    onsilencesplit={setSilenceSplit}
     onclose={settingsClosed}
   />
 </div>

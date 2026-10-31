@@ -152,6 +152,7 @@ mod tests {
                 cleanup_model: "qwen3.8:27b-mlx".to_string(),
                 library_width: 300,
                 input_device: "AirPods Pro".to_string(),
+                silence_split_ms: 2_500,
             },
         );
     }

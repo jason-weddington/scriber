@@ -21,10 +21,15 @@ use scriber_engine::{
 /// How long a test waits for anything.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(5);
 
+/// The recorder's split notifier.
+type Notify = Arc<dyn Fn() + Send + Sync>;
+
 /// A microphone that captures one second of loud sound per segment and
 /// reports a level of 0.25 when it starts. It logs each device asked for in
 /// `opened` and opens it ("Fake Mic" for the default); it lists "Fake Mic"
-/// as the default and "Other Mic", or fails with `inputs_error`.
+/// as the default and "Other Mic", or fails with `inputs_error`. It logs
+/// each start's silence split in `splits`; [`FakeRecorder::close_at_silence`]
+/// plays a split.
 #[derive(Clone, Default)]
 pub(crate) struct FakeRecorder {
     level: Arc<Mutex<Option<LevelSink>>>,
@@ -32,11 +37,37 @@ pub(crate) struct FakeRecorder {
     pub(crate) stops: Arc<AtomicU32>,
     pub(crate) opened: Arc<Mutex<Vec<String>>>,
     pub(crate) inputs_error: Arc<Mutex<Option<String>>>,
+    pub(crate) splits: Arc<Mutex<Vec<u64>>>,
+    closed: Arc<Mutex<VecDeque<Captured>>>,
+    notify: Arc<Mutex<Option<Notify>>>,
+}
+
+impl FakeRecorder {
+    /// The capture closes `captured` at a silence: it waits to be taken and
+    /// the split notifier, if one is set, is called.
+    pub(crate) fn close_at_silence(&self, captured: Captured) {
+        self.closed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(captured);
+        let notify = self
+            .notify
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(notify) = notify {
+            notify();
+        }
+    }
 }
 
 impl Recorder for FakeRecorder {
-    fn start(&self, device: &str) -> Result<String, PortError> {
+    fn start(&self, device: &str, split_ms: u64) -> Result<String, PortError> {
         let _before = self.starts.fetch_add(1, Ordering::SeqCst);
+        self.splits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(split_ms);
         self.opened
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -78,6 +109,18 @@ impl Recorder for FakeRecorder {
             channels: 1,
             sample_rate: 16_000,
         })
+    }
+
+    fn take_closed(&self) -> Vec<Captured> {
+        self.closed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain(..)
+            .collect()
+    }
+
+    fn on_split(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        *self.notify.lock().unwrap_or_else(PoisonError::into_inner) = Some(notify);
     }
 }
 

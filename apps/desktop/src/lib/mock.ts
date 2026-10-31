@@ -33,6 +33,10 @@
 //   ?inputs=long          input_devices answers MOCK_DEFAULT_INPUT and one other with an 80-character name
 //   ?inputs=none          input_devices answers no default and no others (Record then fails)
 //   ?inputDevice=<name>   the saved input device starts as that name (else '', the Mac default)
+//   ?silenceSplitMs=<n>   the silence split starts as n ms in the settings (else 0, off)
+// window.__mockBridge.split() is the fake microphone closing the running part at a silence: with the
+// split read at the last Record or Resume non-zero and the session recording, it closes the part
+// (queued for transcription like a Pause) while recording goes on; otherwise it does nothing.
 // A test can hold a call so the UI is seen mid-call, and release it:
 //   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup' | 'ollama_models' | 'input_devices' | 'window_fullscreen') ... release(...)
 // window.__mockBridge.setFullscreen(on) changes the full-screen state and tells the listeners.
@@ -65,7 +69,7 @@
 // snapshot's learned and an undo list like the core (no log); finish enforces the learned spellings;
 // Accept learns the same way but writes no clipboard and sets no notice; undoLearn restores the list as it was before the last learning Copy or Accept; New and Discard clear learned.
 
-import { clampLibraryWidth, LIBRARY_WIDTH_DEFAULT } from './format';
+import { clampLibraryWidth, LIBRARY_WIDTH_DEFAULT, SILENCE_SPLIT_MAX_MS, SILENCE_SPLIT_MIN_MS } from './format';
 import type { Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot } from './types';
 
 /** The version the mock reports, so a mock can never pass for the real app. */
@@ -258,6 +262,11 @@ export function join(texts: (string | null)[]): string {
 /** The width the core's `load` reads from `settings.json`: a non-negative integer clamped, else the default. */
 export function storedWidth(n: number): number {
   return Number.isInteger(n) && n >= 0 ? clampLibraryWidth(n) : LIBRARY_WIDTH_DEFAULT;
+}
+
+/** The silence split the core's `load` reads from `settings.json`: 0, or a whole number of ms in range, else 0. */
+export function storedSplit(n: number): number {
+  return n === 0 || (Number.isInteger(n) && n >= SILENCE_SPLIT_MIN_MS && n <= SILENCE_SPLIT_MAX_MS) ? n : 0;
 }
 
 /** The engine's write rule for a model: '' keeps the saved one, the default is saved as ''. */
@@ -493,6 +502,8 @@ export interface MockHandle {
   setInputs(others: string[]): void;
   /** Puts the window in or out of full screen and tells the listeners. */
   setFullscreen(on: boolean): void;
+  /** The fake microphone closes the running part at a silence. */
+  split(): void;
 }
 
 declare global {
@@ -539,6 +550,8 @@ export class Mock {
   private slots: Slot[] = [];
   private recordedMs = 0;
   private since: number | null = null;
+  /** The silence split read at the last Record or Resume, like the core; 0 is off. */
+  private splitMs = 0;
   private text = '';
   /** Whisper's text of the finished session, before the learned spellings (the core's raw). */
   private raw: string | null = null;
@@ -580,6 +593,7 @@ export class Mock {
       cleanupModel: params.get('cleanupModel') ?? '',
       libraryWidth: Number(params.get('libraryWidth') ?? LIBRARY_WIDTH_DEFAULT),
       inputDevice: params.get('inputDevice') ?? '',
+      silenceSplitMs: Number(params.get('silenceSplitMs') ?? '0'),
     };
     const inputs = params.get('inputs');
     this.inputs =
@@ -639,6 +653,9 @@ export class Mock {
       },
       setInputs: (others) => {
         this.inputs = { ...this.inputs, others: [...others] };
+      },
+      split: () => {
+        this.split();
       },
     };
   }
@@ -725,6 +742,7 @@ export class Mock {
       summaryModel: this.settings.summaryModel || MOCK_DEFAULT_MODEL,
       cleanupModel: this.settings.cleanupModel || MOCK_DEFAULT_MODEL,
       libraryWidth: storedWidth(this.settings.libraryWidth),
+      silenceSplitMs: storedSplit(this.settings.silenceSplitMs),
     };
   }
 
@@ -839,6 +857,7 @@ export class Mock {
           this.notice = opened.notice;
         }
         if (action === 'record') this.started ??= Date.now();
+        this.splitMs = this.resolved().silenceSplitMs;
         this.since = Date.now();
         this.phase = 'recording';
         this.startLevels();
@@ -897,6 +916,7 @@ export class Mock {
     this.attempts.clear();
     this.recordedMs = 0;
     this.since = null;
+    this.splitMs = 0;
     this.text = '';
     this.raw = null;
     this.error = null;
@@ -917,6 +937,16 @@ export class Mock {
     this.undo = this.learnedList;
     this.learnedList = next;
     this.learned = added;
+  }
+
+  /** The core's split: the fake microphone closed the running part at a silence, and recording goes on. */
+  private split(): void {
+    if (this.phase !== 'recording' || this.splitMs === 0) return;
+    const index = this.close();
+    this.since = Date.now();
+    this.revision += 1;
+    void this.transcribe(index);
+    this.announce();
   }
 
   /** Closes the running segment; returns its index. */

@@ -83,7 +83,8 @@
     "summaryModel": "gemma3:4b",
     "cleanupModel": "qwen3.8:27b-mlx",
     "libraryWidth": 300,
-    "inputDevice": "AirPods Pro"
+    "inputDevice": "AirPods Pro",
+    "silenceSplitMs": 2500
   },
   "inputDevices": {
     "defaultDevice": "Jabra Evolve 65",

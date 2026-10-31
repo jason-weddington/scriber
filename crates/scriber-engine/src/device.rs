@@ -16,6 +16,9 @@ pub struct CpalRecorder {
     level: Arc<dyn Fn(f64) + Send + Sync>,
     /// cpal's stream and the capture it feeds, while recording.
     capture: Mutex<Option<(cpal::Stream, Arc<Mutex<Tap>>)>>,
+    /// Called on the audio thread when the capture closes a segment at a
+    /// silence; set by [`Recorder::on_split`].
+    split: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl CpalRecorder {
@@ -26,12 +29,13 @@ impl CpalRecorder {
         Self {
             level,
             capture: Mutex::default(),
+            split: Mutex::default(),
         }
     }
 }
 
 impl Recorder for CpalRecorder {
-    fn start(&self, device: &str) -> Result<String, PortError> {
+    fn start(&self, device: &str, split_ms: u64) -> Result<String, PortError> {
         let host = cpal::default_host();
         let device = if device.is_empty() {
             host.default_input_device()
@@ -49,9 +53,15 @@ impl Recorder for CpalRecorder {
         );
         let config = device.default_input_config().map_err(fail)?;
         let (channels, rate) = (config.channels(), config.sample_rate());
-        let tap = Arc::new(Mutex::new(Tap::new(channels, rate)));
+        let tap = Arc::new(Mutex::new(Tap::new(channels, rate, split_ms)));
         let level = Arc::clone(&self.level);
-        let deliver = feeder(Arc::clone(&tap), move |l| level(l));
+        let notify = lock(&self.split).clone();
+        let split = move || {
+            if let Some(notify) = &notify {
+                notify();
+            }
+        };
+        let deliver = feeder(Arc::clone(&tap), move |l| level(l), split);
         // A dropout loses a few milliseconds of sound; the segment goes on.
         let stream = device.build_input_stream(config.into(), deliver, |_| {}, None);
         let stream = stream.map_err(fail)?;
@@ -76,5 +86,16 @@ impl Recorder for CpalRecorder {
         let (stream, tap) = lock(&self.capture).take().ok_or(fail("not recording"))?;
         drop(stream);
         Ok(lock(&tap).take())
+    }
+
+    fn take_closed(&self) -> Vec<Captured> {
+        lock(&self.capture)
+            .as_ref()
+            .map(|(_, tap)| lock(tap).take_closed())
+            .unwrap_or_default()
+    }
+
+    fn on_split(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.split) = Some(notify);
     }
 }

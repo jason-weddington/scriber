@@ -186,6 +186,8 @@ pub struct Settings {
     /// The input device to record from, by name, or `""` for the Mac's
     /// default input device. Stored and answered verbatim.
     pub input_device: String,
+    /// Close the running segment after this many milliseconds of silence while recording; 0 is off. Read leniently from disk and read at each Record and Resume; see [`crate::settings`].
+    pub silence_split_ms: u64,
 }
 
 /// The input devices the microphone menu offers.

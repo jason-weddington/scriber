@@ -62,7 +62,7 @@ test('Browse picks another file and saves it', async ({ page }) => {
   await expect(path(page)).toHaveValue(PICKED_NAME);
   await expect(path(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current file').toEqual([DEFAULT]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '' });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -127,7 +127,7 @@ test('post-processing starts off and turning it on saves it', async ({ page }) =
   await expect(cleanupSwitch(page)).toBeChecked();
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -185,11 +185,11 @@ test('choosing a model saves it', async ({ page }) => {
   await summaryModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
   await cleanupModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -445,4 +445,30 @@ test('the version is the last thing in Settings, below the status row', async ({
   await expect(alert(page)).toBeVisible();
   await expect(page.locator('.settings .note')).toHaveClass(/visually-hidden/);
   await expect(page.locator('.settings-body > .version:last-child')).toHaveText('Version 0.0.0-mock');
+});
+
+function splitSelect(page: Page) {
+  return page.getByLabel('Split into parts at a pause');
+}
+
+test('the silence split is chosen in Settings and saved', async ({ page }) => {
+  await openSettings(page);
+  await expect(splitSelect(page).locator('option')).toHaveText(['Off', '1.5 s', '2.5 s', '4 s']);
+  await expect(splitSelect(page)).toHaveValue('0');
+  await splitSelect(page).selectOption({ label: '2.5 s' });
+  await expect.poll(async () => ((await saved(page)).at(-1) as { silenceSplitMs?: number } | undefined)?.silenceSplitMs).toBe(2500);
+  await expect(splitSelect(page)).toHaveValue('2500');
+});
+
+test('a saved silence split outside the four is shown first, selected', async ({ page }) => {
+  await openSettings(page, { silenceSplitMs: '3000' });
+  await expect(splitSelect(page).locator('option')).toHaveText(['3 s', 'Off', '1.5 s', '2.5 s', '4 s']);
+  await expect(splitSelect(page)).toHaveValue('3000');
+  await expect(splitSelect(page)).toBeEnabled();
+});
+
+test('a silence split that fails to save says so', async ({ page }) => {
+  await openSettings(page, { fail: 'settings_set' });
+  await splitSelect(page).selectOption({ label: '4 s' });
+  await expect(alert(page)).toContainText('Mock failure: settings_set');
 });

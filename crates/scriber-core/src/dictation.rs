@@ -12,7 +12,10 @@
 //! Each pause closes a segment. The caller transcribes it off its own
 //! thread with [`Job::run`] and hands the [`Outcome`] back to
 //! [`Dictation::complete`], so segments transcribe while the user thinks and
-//! Done only waits for the last one. Outcomes may arrive in any order; the
+//! Done only waits for the last one. With the silence split on
+//! ([`Settings::silence_split_ms`](crate::model::Settings)), segments also
+//! close at a sustained silence while recording goes on ([`Dictation::split`]).
+//! Outcomes may arrive in any order; the
 //! transcript joins segments in recording order. With the cleanup setting on
 //! and a cleanup model in the ports, a non-empty transcript then goes to the
 //! model as one more job ([`crate::cleanup`]) and the session stays
@@ -30,9 +33,10 @@ use crate::audio::{decode_wav, duration_ms, encode_wav, to_mono_16k};
 use crate::cleanup;
 use crate::download::{self, Source};
 use crate::learn;
+use crate::level::silence_profile;
 use crate::library::{self, CleanupRecord, clean_summary, entry_path, valid_id};
 use crate::model::{Action, Download, Phase, Snapshot};
-use crate::ports::{Library, PortError, Ports};
+use crate::ports::{Captured, Library, PortError, Ports};
 use crate::settings;
 use crate::store;
 use crate::sync::lock;
@@ -337,6 +341,7 @@ struct StartLine<'a> {
     first_error: Option<String>,
     second_error: Option<String>,
     mismatch: bool,
+    split_ms: u64,
 }
 
 /// A [`store::MICROPHONE_LOG`] line for one closed segment.
@@ -349,6 +354,9 @@ struct SegmentLine<'a> {
     sample_rate: u32,
     samples: usize,
     peak: f32,
+    cause: &'static str,
+    longest_silence_ms: u64,
+    quietest_rms: f64,
 }
 
 /// A [`store::LEARNING_LOG`] line for one Copy that found corrections.
@@ -740,10 +748,11 @@ impl Dictation {
             let why = self.model_error(ports).unwrap_or(DOWNLOADING.to_string());
             return Err(DictationError::ModelMissing(why));
         }
-        let wanted = settings::load(ports.files).input_device;
-        let first = ports.recorder.start(&wanted);
+        let saved = settings::load(ports.files);
+        let (wanted, split_ms) = (saved.input_device, saved.silence_split_ms);
+        let first = ports.recorder.start(&wanted, split_ms);
         let second = match &first {
-            Err(_) if !wanted.is_empty() => Some(ports.recorder.start("")),
+            Err(_) if !wanted.is_empty() => Some(ports.recorder.start("", split_ms)),
             Ok(_) | Err(_) => None,
         };
         let error_text = |r: Option<&Result<String, PortError>>| match r {
@@ -777,6 +786,7 @@ impl Dictation {
                 first_error: error_text(Some(&first)),
                 second_error: error_text(second.as_ref()),
                 mismatch,
+                split_ms,
             },
         );
         let (name, notice) = result.map_err(DictationError::Recorder)?;
@@ -826,6 +836,18 @@ impl Dictation {
                 return None;
             }
         };
+        Some(self.close_captured(&captured, "stop", ports))
+    }
+
+    /// Turns `captured`, closed by `cause` ("stop" or "silence"), into a
+    /// pending segment, its audio saved for Retry.
+    fn close_captured(
+        &mut self,
+        captured: &Captured,
+        cause: &'static str,
+        ports: &Ports<'_>,
+    ) -> Job {
+        let profile = silence_profile(&captured.samples, captured.channels, captured.sample_rate);
         let peak = captured.samples.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
         log(
             ports,
@@ -837,9 +859,12 @@ impl Dictation {
                 sample_rate: captured.sample_rate,
                 samples: captured.samples.len(),
                 peak,
+                cause,
+                longest_silence_ms: profile.longest_silence_ms,
+                quietest_rms: profile.quietest_rms,
             },
         );
-        let samples = to_mono_16k(&captured);
+        let samples = to_mono_16k(captured);
         self.recorded_ms = self.recorded_ms.saturating_add(duration_ms(samples.len()));
         let index = self.next_index;
         self.next_index = index.saturating_add(1);
@@ -847,12 +872,26 @@ impl Dictation {
             self.notice = Some(format!("Could not keep this part's audio for Retry: {e}."));
         }
         let _: Option<Slot> = self.slots.insert(index, Slot::Pending);
-        Some(Job::segment(
-            self.session,
-            index,
-            samples,
-            self.prompt.clone(),
-        ))
+        Job::segment(self.session, index, samples, self.prompt.clone())
+    }
+
+    /// The recorder closed segments at a silence: each becomes a pending
+    /// segment, exactly as Pause would close it, while recording goes on.
+    pub fn split(&mut self, ports: &Ports<'_>) -> Option<Snapshot> {
+        if self.phase != Phase::Recording {
+            return None;
+        }
+        let closed = ports.recorder.take_closed();
+        if closed.is_empty() {
+            return None;
+        }
+        let jobs = closed
+            .into_iter()
+            .map(|captured| self.close_captured(&captured, "silence", ports))
+            .collect();
+        self.revision = self.revision.wrapping_add(1);
+        self.queue(jobs, ports);
+        Some(self.snapshot(ports))
     }
 
     /// Pause: closes the running segment. Returns it for transcription.

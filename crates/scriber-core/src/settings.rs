@@ -2,11 +2,11 @@
 //!
 //! On disk the file is a JSON object with the `snake_case` keys `summaries`,
 //! `library_open`, `vocabulary`, `cleanup`, `summary_model`,
-//! `cleanup_model`, `library_width` and `input_device`. Reading is lenient: a missing, unreadable or invalid file
+//! `cleanup_model`, `library_width`, `input_device` and `silence_split_ms`. Reading is lenient: a missing, unreadable or invalid file
 //! means the defaults (`summaries` and `library_open` true, `vocabulary`
 //! empty, `cleanup` false, both models `""`, meaning the engine's default
 //! model, `library_width` 220, `input_device` `""`, meaning the Mac's default
-//! input device),
+//! input device, `silence_split_ms` 0, meaning no split),
 //! and each key is taken on its own, so a missing key or one of another type
 //! takes its default and unknown keys are ignored. `vocabulary` is kept only
 //! when it is an absolute path (it starts with `/`); anything else means `""`,
@@ -14,7 +14,10 @@
 //! as stored when they are strings, else `""`. `library_width` is a
 //! non-negative integer clamped to 110..=440 on read; anything else (a
 //! negative number, a fraction, another type) means 220. `input_device` is
-//! kept exactly as stored when it is a string, else `""`. Saving writes the file beside itself and renames it
+//! kept exactly as stored when it is a string, else `""`.
+//! `silence_split_ms` is kept when it is a non-negative integer that is 0 or
+//! in [`SILENCE_SPLIT_MIN_MS`]..=[`SILENCE_SPLIT_MAX_MS`]; anything else (out
+//! of range, negative, a fraction, another type) means 0. Saving writes the file beside itself and renames it
 //! into place.
 
 use serde::Serialize;
@@ -31,6 +34,12 @@ pub const LIBRARY_WIDTH_MIN: u64 = 110;
 
 /// The widest the drawer may be, in pixels.
 pub const LIBRARY_WIDTH_MAX: u64 = 440;
+
+/// The shortest silence split, in milliseconds, kept on read.
+pub const SILENCE_SPLIT_MIN_MS: u64 = 1_000;
+
+/// The longest silence split, in milliseconds, kept on read.
+pub const SILENCE_SPLIT_MAX_MS: u64 = 10_000;
 
 /// The settings file.
 pub const SETTINGS: &str = "settings.json";
@@ -49,6 +58,7 @@ struct Disk {
     cleanup_model: String,
     library_width: u64,
     input_device: String,
+    silence_split_ms: u64,
 }
 
 /// The saved settings, or the defaults where there are none.
@@ -87,6 +97,11 @@ pub fn load(files: &dyn Files) -> Settings {
                 w.clamp(LIBRARY_WIDTH_MIN, LIBRARY_WIDTH_MAX)
             }),
         input_device: text("input_device"),
+        silence_split_ms: object
+            .get("silence_split_ms")
+            .and_then(Value::as_u64)
+            .filter(|ms| *ms == 0 || (SILENCE_SPLIT_MIN_MS..=SILENCE_SPLIT_MAX_MS).contains(ms))
+            .unwrap_or(0),
     }
 }
 
@@ -105,6 +120,7 @@ pub fn save(files: &dyn Files, s: &Settings) -> Result<(), PortError> {
         cleanup_model: s.cleanup_model.clone(),
         library_width: s.library_width,
         input_device: s.input_device.clone(),
+        silence_split_ms: s.silence_split_ms,
     };
     let bytes = serde_json::to_vec(&disk).map_err(fail)?;
     files.write(SETTINGS_PARTIAL, &bytes)?;

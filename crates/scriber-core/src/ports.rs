@@ -5,6 +5,8 @@
 //! transcription model, the filesystem or the clipboard except through
 //! these.
 
+use std::sync::Arc;
+
 use crate::dictation::Job;
 use crate::model::InputDevices;
 
@@ -62,15 +64,19 @@ impl Captured {
 }
 
 /// The microphone: the system's input devices, and capture from one of them.
+/// A silence split closes a segment while capture goes on: it never stops or
+/// reopens the device.
 pub trait Recorder {
     /// Starts capturing a segment from the input device named `device`, or
-    /// from the system's default input device when `device` is `""`.
-    /// Answers the name of the device actually opened.
+    /// from the system's default input device when `device` is `""`,
+    /// closing a segment after `split_ms` of silence (the silence split from
+    /// the settings; 0 is off). Answers the name of the device actually
+    /// opened.
     ///
     /// # Errors
     ///
     /// There is no such input device, or it cannot be opened.
-    fn start(&self, device: &str) -> Result<String, PortError>;
+    fn start(&self, device: &str, split_ms: u64) -> Result<String, PortError>;
 
     /// The input devices there are now: the system default's name and every
     /// other one's (see [`InputDevices::new`]).
@@ -80,12 +86,22 @@ pub trait Recorder {
     /// The devices cannot be listed.
     fn inputs(&self) -> Result<InputDevices, PortError>;
 
-    /// Stops capturing and hands over everything captured since `start`.
+    /// Stops capturing and hands over, as one capture, everything captured
+    /// since `start` and not yet handed over, closed segments included.
     ///
     /// # Errors
     ///
     /// Nothing was being captured, or the device failed while it was.
     fn stop(&self) -> Result<Captured, PortError>;
+
+    /// Hands over the segments the capture closed at a silence since the
+    /// last call, oldest first, without stopping the device; empty when not
+    /// recording.
+    fn take_closed(&self) -> Vec<Captured>;
+
+    /// Keeps `notify` and calls it on the audio thread, after the tap is
+    /// unlocked, whenever capture closes a segment at a silence.
+    fn on_split(&self, notify: Arc<dyn Fn() + Send + Sync>);
 }
 
 /// Speech to text.

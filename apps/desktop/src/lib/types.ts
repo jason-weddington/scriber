@@ -72,6 +72,8 @@ export interface Settings {
   libraryWidth: number;
   /** The input device to record from, by name; '' means the Mac default. Saved and answered verbatim. */
   inputDevice: string;
+  /** Close the running part after this many ms of silence while recording; 0 is off (the window offers 0, 1500, 2500, 4000). */
+  silenceSplitMs: number;
 }
 
 /** The input devices the microphone menu offers. */

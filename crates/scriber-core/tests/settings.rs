@@ -8,7 +8,8 @@ mod tests {
     use scriber_core::model::Settings;
     use scriber_core::ports::Files as _;
     use scriber_core::settings::{
-        LIBRARY_WIDTH_DEFAULT, LIBRARY_WIDTH_MAX, LIBRARY_WIDTH_MIN, SETTINGS, load, save,
+        LIBRARY_WIDTH_DEFAULT, LIBRARY_WIDTH_MAX, LIBRARY_WIDTH_MIN, SETTINGS,
+        SILENCE_SPLIT_MAX_MS, SILENCE_SPLIT_MIN_MS, load, save,
     };
     use serde_json::{Value, json};
 
@@ -23,6 +24,7 @@ mod tests {
         cleanup_model: String::new(),
         library_width: 220,
         input_device: String::new(),
+        silence_split_ms: 0,
     };
 
     fn with(bytes: &[u8]) -> FakeFiles {
@@ -65,6 +67,7 @@ mod tests {
                     cleanup_model: String::new(),
                     library_width: 220,
                     input_device: String::new(),
+                    silence_split_ms: 0,
                 },
             ),
             (
@@ -78,6 +81,7 @@ mod tests {
                     cleanup_model: String::new(),
                     library_width: 220,
                     input_device: String::new(),
+                    silence_split_ms: 0,
                 },
             ),
             (
@@ -91,6 +95,7 @@ mod tests {
                     cleanup_model: String::new(),
                     library_width: 220,
                     input_device: String::new(),
+                    silence_split_ms: 0,
                 },
             ),
             (
@@ -104,6 +109,7 @@ mod tests {
                     cleanup_model: String::new(),
                     library_width: 220,
                     input_device: String::new(),
+                    silence_split_ms: 0,
                 },
             ),
             (br#"{"libraryOpen":false}"#, DEFAULTS),
@@ -129,6 +135,7 @@ mod tests {
             cleanup_model: String::new(),
             library_width: 220,
             input_device: String::new(),
+            silence_split_ms: 0,
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
@@ -143,13 +150,14 @@ mod tests {
                 "summary_model": "",
                 "cleanup_model": "",
                 "library_width": 220,
-                "input_device": ""
+                "input_device": "",
+                "silence_split_ms": 0
             }),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":""}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
             "compact"
         );
         assert!(
@@ -192,7 +200,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -230,7 +238,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -268,7 +276,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -319,7 +327,7 @@ mod tests {
         save(&files, &s).unwrap();
         let bytes = files.read(SETTINGS).unwrap();
         assert!(
-            bytes.ends_with(br#","library_width":300,"input_device":""}"#),
+            bytes.ends_with(br#","library_width":300,"input_device":"","silence_split_ms":0}"#),
             "{}",
             String::from_utf8_lossy(&bytes)
         );
@@ -329,7 +337,10 @@ mod tests {
     #[test]
     fn the_input_device_is_kept_only_when_it_is_a_string() {
         assert_eq!(
-            load(&with(br#"{"input_device":"AirPods Pro"}"#)).input_device,
+            load(&with(
+                br#"{"input_device":"AirPods Pro","silence_split_ms":0}"#
+            ))
+            .input_device,
             "AirPods Pro",
             "a name"
         );
@@ -350,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn the_input_device_is_saved_last() {
+    fn the_input_device_is_saved_before_the_split() {
         let files = FakeFiles::default();
         let s = Settings {
             input_device: "AirPods Pro".to_string(),
@@ -359,8 +370,54 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro","silence_split_ms":0}"#,
             "bytes"
+        );
+        assert_eq!(load(&files), s, "read back");
+    }
+
+    #[test]
+    fn the_silence_split_is_kept_only_when_it_is_off_or_in_range() {
+        assert_eq!(
+            (SILENCE_SPLIT_MIN_MS, SILENCE_SPLIT_MAX_MS),
+            (1_000, 10_000),
+            "the range"
+        );
+        for (stored, want) in [
+            ("0", 0),
+            ("1000", 1_000),
+            ("1500", 1_500),
+            ("2500", 2_500),
+            ("3000", 3_000),
+            ("4000", 4_000),
+            ("10000", 10_000),
+            ("999", 0),
+            ("10001", 0),
+            ("-1500", 0),
+            ("1500.5", 0),
+            ("\"1500\"", 0),
+            ("null", 0),
+        ] {
+            let bytes = format!(r#"{{"silence_split_ms":{stored}}}"#);
+            assert_eq!(
+                load(&with(bytes.as_bytes())).silence_split_ms,
+                want,
+                "{stored}"
+            );
+        }
+        assert_eq!(load(&with(b"{}")).silence_split_ms, 0, "missing");
+        let files = FakeFiles::default();
+        let s = Settings {
+            silence_split_ms: 2_500,
+            ..DEFAULTS
+        };
+        save(&files, &s).unwrap();
+        assert!(
+            files
+                .read(SETTINGS)
+                .unwrap()
+                .ends_with(br#","input_device":"","silence_split_ms":2500}"#),
+            "saved last"
         );
         assert_eq!(load(&files), s, "read back");
     }

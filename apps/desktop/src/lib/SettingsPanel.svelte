@@ -1,7 +1,9 @@
 <script lang="ts">
   // The settings: the vocabulary file (the glossary that steers
   // transcription), shown as its file name, the full path on hover, with Browse… (the native open panel)
-  // and Open in Text Editor (which creates it empty when missing); then two
+  // and Open in Text Editor (which creates it empty when missing); then the
+  // silence split, "Split into parts at a pause" (Off, 1.5 s, 2.5 s or 4 s; a
+  // saved value outside those four is shown first, so it is never lost); then two
   // switches, each followed by its model: post-processing of each transcript
   // by the local model (glossary fixes and spoken self-corrections), and
   // summaries by the local model. The models are chosen from the ones Ollama
@@ -32,6 +34,7 @@
     oncleanupmodel: (name: string) => void;
     onbrowse: () => void;
     onopenvocabulary: () => void;
+    onsilencesplit: (ms: number) => void;
     onclose: () => void;
   }
 
@@ -49,6 +52,7 @@
     oncleanupmodel,
     onbrowse,
     onopenvocabulary,
+    onsilencesplit,
     onclose,
   }: Props = $props();
 
@@ -77,6 +81,19 @@
     if (listed === null) return [[value, value]];
     const installed = listed.map((name): [string, string] => [name, name]);
     return value !== '' && !listed.includes(value) ? [[value, `${value} (not installed)`], ...installed] : installed;
+  }
+
+  /** The silence splits the window offers, in ms, as [value, text] pairs. */
+  const SPLITS: [number, string][] = [
+    [0, 'Off'],
+    [1500, '1.5 s'],
+    [2500, '2.5 s'],
+    [4000, '4 s'],
+  ];
+
+  /** The split options for the saved `ms`: the four, after `ms` itself when it is none of them. */
+  function splits(ms: number): [number, string][] {
+    return SPLITS.some(([value]) => value === ms) ? SPLITS : [[ms, `${ms / 1000} s`], ...SPLITS];
   }
 </script>
 
@@ -117,6 +134,18 @@
       <button type="button" onclick={onopenvocabulary}>Open in Text Editor</button>
     </div>
   </div>
+  <label for="silence-split">Split into parts at a pause</label>
+  <select
+    id="silence-split"
+    onchange={(e) => {
+      onsilencesplit(Number(e.currentTarget.value));
+    }}
+  >
+    {#each splits(settings.silenceSplitMs) as [ms, text] (ms)}
+      {@const value = String(ms)}
+      <option {...{ value }} selected={ms === settings.silenceSplitMs}>{text}</option>
+    {/each}
+  </select>
   <label class="switch">
     <input
       type="checkbox"

@@ -371,3 +371,33 @@ test('a long transcript so far scrolls inside its region', async ({ page }) => {
   expect(await region.evaluate((e) => getComputedStyle(e).overflowY)).toBe('auto');
   expect(await region.evaluate((e) => e.scrollHeight > e.clientHeight)).toBe(true);
 });
+
+test('a part closed at a silence fills in while recording, and the time stays continuous', async ({ page }) => {
+  await page.clock.install({ time: 0 });
+  await open(page, { silenceSplitMs: '1500' });
+  await page.clock.pauseAt(60_000);
+  await press(page, 'New', 'Record');
+  await page.clock.runFor(3_000);
+  const time = page.locator('.time');
+  await expect(time).toContainText('0:03');
+  await page.evaluate(() => window.__mockBridge?.split());
+  await expect(status(page)).toContainText('Recording.');
+  await expect(time).toContainText('0:03');
+  await page.clock.runFor(2_000);
+  await expect(time).toContainText('0:05');
+  const region = page.getByRole('region', { name: 'Heard so far' });
+  await expect(region).toContainText(PART_1);
+  await expect(status(page)).toContainText('Recording.');
+  await press(page, 'Pause', 'Done');
+  await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue(`${PART_1}\n\n${PART_2}`);
+});
+
+test('with the split off, the microphone never closes a part on its own', async ({ page }) => {
+  await open(page);
+  await press(page, 'New', 'Record');
+  await page.evaluate(() => window.__mockBridge?.split());
+  await press(page, 'Pause');
+  const region = page.getByRole('region', { name: 'Heard so far' });
+  await expect(region).toContainText(PART_1);
+  await expect(region).not.toContainText('part 2');
+});

@@ -2378,7 +2378,7 @@ mod tests {
         assert_eq!(
             log_lines(&w),
             [
-                r#"{"event":"start","started":null,"action":"record","wanted":"AirPods Pro","opened":"Other Mic","outcome":"opened","first_error":null,"second_error":null,"mismatch":true}"#
+                r#"{"event":"start","started":null,"action":"record","wanted":"AirPods Pro","opened":"Other Mic","outcome":"opened","first_error":null,"second_error":null,"mismatch":true,"split_ms":0}"#
             ],
             "mismatch"
         );
@@ -2390,7 +2390,7 @@ mod tests {
         let _session = at(&w, Phase::Recording);
         assert_eq!(
             w.files.read(MICROPHONE_LOG).unwrap(),
-            br#"{"event":"start","started":null,"action":"record","wanted":"","opened":"Fake Mic","outcome":"opened","first_error":null,"second_error":null,"mismatch":false}
+            br#"{"event":"start","started":null,"action":"record","wanted":"","opened":"Fake Mic","outcome":"opened","first_error":null,"second_error":null,"mismatch":false,"split_ms":0}
 "#,
             "opened"
         );
@@ -2405,7 +2405,7 @@ mod tests {
         assert_eq!(
             log_lines(&w2),
             [
-                r#"{"event":"start","started":null,"action":"record","wanted":"Jabra","opened":"Fake Mic","outcome":"fallback","first_error":"gone","second_error":null,"mismatch":false}"#
+                r#"{"event":"start","started":null,"action":"record","wanted":"Jabra","opened":"Fake Mic","outcome":"fallback","first_error":"gone","second_error":null,"mismatch":false,"split_ms":0}"#
             ],
             "fallback"
         );
@@ -2422,7 +2422,7 @@ mod tests {
         assert_eq!(
             log_lines(&w3),
             [
-                r#"{"event":"start","started":null,"action":"record","wanted":"Jabra","opened":null,"outcome":"failed","first_error":"gone","second_error":"no mic","mismatch":false}"#
+                r#"{"event":"start","started":null,"action":"record","wanted":"Jabra","opened":null,"outcome":"failed","first_error":"gone","second_error":"no mic","mismatch":false,"split_ms":0}"#
             ],
             "failed after a fallback"
         );
@@ -2434,7 +2434,7 @@ mod tests {
         assert_eq!(
             log_lines(&w4),
             [
-                r#"{"event":"start","started":null,"action":"record","wanted":"","opened":null,"outcome":"failed","first_error":"no mic","second_error":null,"mismatch":false}"#
+                r#"{"event":"start","started":null,"action":"record","wanted":"","opened":null,"outcome":"failed","first_error":"no mic","second_error":null,"mismatch":false,"split_ms":0}"#
             ],
             "failed"
         );
@@ -2451,7 +2451,7 @@ mod tests {
         assert_eq!(
             log_lines(&w).get(1).map(String::as_str),
             Some(
-                r#"{"event":"segment","started":null,"device":"Fake Mic","channels":1,"sample_rate":16000,"samples":2,"peak":0.75}"#
+                r#"{"event":"segment","started":null,"device":"Fake Mic","channels":1,"sample_rate":16000,"samples":2,"peak":0.75,"cause":"stop","longest_silence_ms":0,"quietest_rms":0.0}"#
             ),
             "segment line"
         );
@@ -2465,7 +2465,7 @@ mod tests {
         assert_eq!(
             log_lines(&w2).get(1).map(String::as_str),
             Some(
-                r#"{"event":"segment","started":null,"device":"Fake Mic","channels":2,"sample_rate":48000,"samples":4,"peak":0.0}"#
+                r#"{"event":"segment","started":null,"device":"Fake Mic","channels":2,"sample_rate":48000,"samples":4,"peak":0.0,"cause":"stop","longest_silence_ms":0,"quietest_rms":0.0}"#
             ),
             "silence"
         );
@@ -3308,5 +3308,317 @@ mod tests {
         let copied = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
         assert_eq!(copied.learned, ["tightbeam"], "kept");
         assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "file");
+    }
+
+    // The silence split: segments the recorder closed at a silence.
+
+    fn save_settings(w: &World, settings: &Value) {
+        w.files
+            .write(SETTINGS, &serde_json::to_vec(settings).unwrap())
+            .unwrap();
+    }
+
+    fn splits(w: &World) -> Vec<u64> {
+        w.recorder.splits.borrow().clone()
+    }
+
+    /// Whether `job` is the segment at `index`.
+    fn is_index(job: &Job, index: u32) -> bool {
+        format!("{job:?}").contains(&format!("index: {index},"))
+    }
+
+    /// A recording session with the split at 1.5 s.
+    fn splitting(w: &World) -> Dictation {
+        save_settings(w, &json!({ "silence_split_ms": 1_500 }));
+        let (d, _) = at(w, Phase::Recording);
+        d
+    }
+
+    #[test]
+    fn record_and_resume_pass_the_saved_split() {
+        let w = World::default();
+        let (mut d, _) = at(&w, Phase::Paused);
+        d.resume(&w.ports()).unwrap();
+        assert_eq!(splits(&w), [0, 0], "no settings");
+        assert!(
+            log_lines(&w)[0].ends_with(r#","mismatch":false,"split_ms":0}"#),
+            "logged off"
+        );
+
+        let w2 = World::default();
+        save_settings(&w2, &json!({ "silence_split_ms": 2_500 }));
+        let (mut d2, _) = at(&w2, Phase::Paused);
+        d2.resume(&w2.ports()).unwrap();
+        assert_eq!(splits(&w2), [2_500, 2_500], "saved");
+        let lines = log_lines(&w2);
+        assert!(
+            lines[0].ends_with(r#","split_ms":2500}"#)
+                && lines[2].ends_with(r#","split_ms":2500}"#),
+            "logged: {lines:?}"
+        );
+
+        let w3 = World::default();
+        save_settings(
+            &w3,
+            &json!({ "input_device": "USB Mic", "silence_split_ms": 2_500 }),
+        );
+        w3.recorder
+            .unavailable
+            .borrow_mut()
+            .push("USB Mic".to_string());
+        let _session = at(&w3, Phase::Recording);
+        assert_eq!(opened(&w3), ["USB Mic", ""], "fell back");
+        assert_eq!(splits(&w3), [2_500, 2_500], "both attempts");
+        assert!(
+            log_lines(&w3)[0].ends_with(r#","split_ms":2500}"#),
+            "fallback logged"
+        );
+
+        let w4 = World::default();
+        let (mut d4, _) = at(&w4, Phase::Paused);
+        save_settings(&w4, &json!({ "silence_split_ms": 2_500 }));
+        d4.resume(&w4.ports()).unwrap();
+        assert_eq!(splits(&w4), [0, 2_500], "read at each start");
+    }
+
+    #[test]
+    fn a_split_closes_a_segment_while_recording_goes_on() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = splitting(&w);
+        let before = snap(&d, &w).revision;
+        w.recorder.closed.borrow_mut().push_back(captured_speech(1));
+        let s = d.split(&p).unwrap();
+        assert_eq!(s, snap(&d, &w), "answers with the snapshot");
+        assert_eq!(
+            (s.phase, s.segments, s.pending, s.recorded_ms, s.revision),
+            (Phase::Recording, 1, 1, 1_000, before + 1),
+            "recording goes on"
+        );
+        assert_eq!(w.queue.jobs.borrow().len(), 1, "one job");
+        let first = w.queue.jobs.borrow()[0].clone();
+        assert!(is_index(&first, 0), "segment 0");
+        let _outcome = w.run(&first);
+        assert_eq!(
+            w.transcriber.calls.borrow()[0].0,
+            16_000,
+            "the whole second"
+        );
+        assert_eq!(
+            decode_wav(&w.files.segment(0).unwrap()).unwrap().len(),
+            16_000,
+            "kept for Retry"
+        );
+        assert_eq!(
+            *w.recorder.calls.borrow(),
+            ["start", "take_closed"],
+            "no stop, no second start"
+        );
+        let lines = log_lines(&w);
+        let last = lines.last().unwrap();
+        assert!(
+            last.starts_with(r#"{"event":"segment""#) && last.contains(r#""cause":"silence""#),
+            "{last}"
+        );
+
+        let second = d.pause(&p).unwrap().unwrap();
+        let _second_outcome = w.run(&second);
+        let calls = w.transcriber.calls.borrow().clone();
+        assert_eq!(calls[1].1, calls[0].1, "the same prompt");
+        assert!(calls[0].1.is_some(), "a prompt");
+        assert!(
+            log_lines(&w).last().unwrap().contains(r#""cause":"stop""#),
+            "pause"
+        );
+    }
+
+    #[test]
+    fn several_closed_segments_close_in_order_with_one_revision() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = splitting(&w);
+        let before = snap(&d, &w).revision;
+        w.recorder
+            .closed
+            .borrow_mut()
+            .extend([captured_speech(1), captured_speech(1)]);
+        let s = d.split(&p).unwrap();
+        assert_eq!(
+            (s.segments, s.pending, s.recorded_ms, s.revision),
+            (2, 2, 2_000, before + 1),
+            "two closed"
+        );
+        let jobs = w.queue.jobs.borrow().clone();
+        assert!(
+            is_index(&jobs[0], 0) && is_index(&jobs[1], 1),
+            "in order: {jobs:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_closed_means_no_split() {
+        let w = World::default();
+        let mut d = splitting(&w);
+        let before = snap(&d, &w);
+        assert_eq!(d.split(&w.ports()), None, "nothing");
+        assert_eq!(snap(&d, &w), before, "unchanged");
+    }
+
+    #[test]
+    fn no_split_unless_recording() {
+        for phase in [
+            Phase::Ready,
+            Phase::Paused,
+            Phase::Transcribing,
+            Phase::Finished,
+        ] {
+            let w = World::default();
+            let (mut d, _) = at(&w, phase);
+            w.recorder.closed.borrow_mut().push_back(captured_speech(1));
+            assert_eq!(d.split(&w.ports()), None, "{phase:?}");
+            assert!(
+                !w.recorder.calls.borrow().contains(&"take_closed"),
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_split_then_pause_then_done_joins_both_parts() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = splitting(&w);
+        w.recorder.closed.borrow_mut().push_back(captured_speech(1));
+        let _split = d.split(&p).unwrap();
+        let second = d.pause(&p).unwrap().unwrap();
+        assert!(is_index(&second, 1), "the next index");
+        assert!(d.done(&p).unwrap().is_none(), "nothing was recording");
+        let first = w.queue.jobs.borrow()[0].clone();
+        let _two = answer(&w, &mut d, &second, Ok("Two."));
+        let done = answer(&w, &mut d, &first, Ok("One."));
+        assert_eq!(done.phase, Phase::Finished, "finished");
+        assert_eq!(
+            done.text,
+            format!("One.{}Two.", scriber_core::transcript::SEGMENT_SEPARATOR),
+            "joined in recording order"
+        );
+    }
+
+    #[test]
+    fn a_split_the_queue_refuses_fails_at_once() {
+        let w = World::default();
+        let mut d = splitting(&w);
+        w.queue.fail.set(true);
+        w.recorder.closed.borrow_mut().push_back(captured_speech(1));
+        let s = d.split(&w.ports()).unwrap();
+        assert_eq!(
+            (s.phase, s.segments, s.pending),
+            (Phase::Recording, 1, 0),
+            "failed, not pending"
+        );
+        w.queue.fail.set(false);
+        let done = d.apply(Action::Done, "", &w.ports()).unwrap();
+        assert_eq!(
+            (done.segments, done.pending),
+            (2, 1),
+            "the paused part queued"
+        );
+        let pause = w.queue.jobs.borrow()[0].clone();
+        let failed = answer(&w, &mut d, &pause, Ok("Two."));
+        assert_eq!(failed.phase, Phase::Failed, "the split part failed");
+        assert!(
+            failed
+                .error
+                .unwrap()
+                .starts_with("Part 1 of 2 could not be"),
+            "which"
+        );
+    }
+
+    #[test]
+    fn a_split_whose_audio_cannot_be_kept_still_transcribes() {
+        let w = World::default();
+        let mut d = splitting(&w);
+        *w.files.fail_write_suffix.borrow_mut() = Some(".wav".to_string());
+        w.recorder.closed.borrow_mut().push_back(captured_speech(1));
+        let s = d.split(&w.ports()).unwrap();
+        assert_eq!(
+            s.notice.as_deref(),
+            Some("Could not keep this part's audio for Retry: disk full."),
+            "notice"
+        );
+        assert_eq!(w.queue.jobs.borrow().len(), 1, "still queued");
+    }
+
+    #[test]
+    fn a_split_keeps_the_fallback_notice() {
+        let w = World::default();
+        save_settings(
+            &w,
+            &json!({ "input_device": "Jabra", "silence_split_ms": 1_500 }),
+        );
+        w.recorder
+            .unavailable
+            .borrow_mut()
+            .push("Jabra".to_string());
+        let (mut d, _) = at(&w, Phase::Recording);
+        w.recorder.closed.borrow_mut().push_back(captured_speech(1));
+        let s = d.split(&w.ports()).unwrap();
+        assert_eq!(s.notice, Some(input_fallback("Jabra", "Fake Mic")), "kept");
+    }
+
+    #[test]
+    fn a_split_part_fills_in_the_partial_while_recording() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = splitting(&w);
+        w.recorder.closed.borrow_mut().push_back(captured_speech(1));
+        let _split = d.split(&p).unwrap();
+        let first = w.queue.jobs.borrow()[0].clone();
+        let s = answer(&w, &mut d, &first, Ok("One."));
+        assert_eq!(
+            (s.phase, s.partial.as_str()),
+            (Phase::Recording, "One."),
+            "partial"
+        );
+    }
+
+    #[test]
+    fn segment_lines_carry_the_silence_profile() {
+        let w = World::default();
+        let mut speech_then_silence = captured_speech(1);
+        speech_then_silence.samples.extend(vec![0.0; 24_000]);
+        w.recorder
+            .captures
+            .borrow_mut()
+            .push_back(Ok(speech_then_silence));
+        let _session = at(&w, Phase::Paused);
+        assert!(
+            log_lines(&w)[1]
+                .ends_with(r#","cause":"stop","longest_silence_ms":1500,"quietest_rms":0.0}"#),
+            "{:?}",
+            log_lines(&w)
+        );
+
+        let w2 = World::default();
+        w2.recorder
+            .captures
+            .borrow_mut()
+            .push_back(Ok(Captured::new(vec![0.5; 16_000], 1, 16_000)));
+        let _session2 = at(&w2, Phase::Paused);
+        assert!(
+            log_lines(&w2)[1]
+                .ends_with(r#","cause":"stop","longest_silence_ms":0,"quietest_rms":0.5}"#),
+            "{:?}",
+            log_lines(&w2)
+        );
+    }
+
+    #[test]
+    fn the_recorder_takes_a_split_notifier() {
+        use scriber_core::ports::Recorder as _;
+        let w = World::default();
+        w.recorder.on_split(std::sync::Arc::new(|| {}));
+        assert_eq!(*w.recorder.calls.borrow(), ["on_split"], "kept");
     }
 }

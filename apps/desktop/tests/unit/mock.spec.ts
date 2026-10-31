@@ -39,6 +39,7 @@ import {
   NOT_IN_LIBRARY,
   NOTHING_HEARD,
   partFailed,
+  storedSplit,
   storedWidth,
   preloaded,
   refusal,
@@ -440,8 +441,8 @@ test('summaries off, or Ollama down, keep the excerpt; nothing is archived from 
 
 test('settings round-trip, and the library calls fail on request', async () => {
   const mock = new Mock('?libraryOpen=0&summaries=off');
-  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '' });
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '' })).toEqual({
+  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: '/x/terms.txt',
@@ -450,8 +451,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
     cleanupModel: MOCK_DEFAULT_MODEL,
     libraryWidth: 220,
     inputDevice: '',
+    silenceSplitMs: 0,
   });
-  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '' });
+  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
   await expect(mock.libraryGet('../segments')).rejects.toThrow(NOT_IN_LIBRARY);
   for (const call of ['library_list', 'library_get', 'library_copy', 'settings_get', 'settings_set'] as const) {
     const failing = new Mock(`?fail=${call}&library=1`);
@@ -460,7 +462,7 @@ test('settings round-trip, and the library calls fail on request', async () => {
       library_get: () => failing.libraryGet('20261026-090000'),
       library_copy: () => failing.libraryCopy('20261026-090000'),
       settings_get: () => failing.settingsGet(),
-      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' }),
+      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 }),
     }[call];
     await expect(attempt(), call).rejects.toThrow(`Mock failure: ${call}`);
   }
@@ -475,9 +477,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
 test('the vocabulary file is kept like the engine keeps it', async () => {
   const mock = new Mock('');
   expect((await mock.settingsGet()).vocabulary, 'the default, as a path').toBe(MOCK_VOCABULARY);
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' });
-  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' })).toEqual({
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
+  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: MOCK_VOCABULARY,
@@ -486,9 +488,10 @@ test('the vocabulary file is kept like the engine keeps it', async () => {
     cleanupModel: MOCK_DEFAULT_MODEL,
     libraryWidth: 220,
     inputDevice: '',
+    silenceSplitMs: 0,
   });
   // Stored as '': a later '' keeps the default rather than an old path.
-  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' })).vocabulary).toBe(MOCK_VOCABULARY);
+  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 })).vocabulary).toBe(MOCK_VOCABULARY);
   expect(mock.handle.saved.map((s) => s.vocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', MOCK_VOCABULARY, '']);
 });
 
@@ -529,7 +532,7 @@ test('the open panel picks ?pick=, a default, or nothing, and fails on request',
 test('opening the vocabulary file records the resolved path, or fails like the engine', async () => {
   const mock = new Mock('');
   await mock.vocabularyOpen();
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' });
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
   await mock.vocabularyOpen();
   expect(mock.handle.opened).toEqual([MOCK_VOCABULARY, '/x/terms.txt']);
   const failing = new Mock('?fail=vocabulary_open');
@@ -543,13 +546,13 @@ test('the models are kept like the engine keeps them', async () => {
   expect([got.summaryModel, got.cleanupModel], 'the defaults, by name').toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   expect((await new Mock('?summaryModel=llama3:70b').settingsGet()).summaryModel).toBe('llama3:70b');
   expect((await new Mock('?cleanupModel=llama3:70b').settingsGet()).cleanupModel).toBe('llama3:70b');
-  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '' };
+  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 };
   await mock.settingsSet({ ...base, summaryModel: 'gemma3:4b', cleanupModel: 'llama3:8b' });
   const kept = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '' });
   expect([kept.summaryModel, kept.cleanupModel], "'' keeps them").toEqual(['gemma3:4b', 'llama3:8b']);
   await mock.settingsSet({ ...base, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL });
   // Stored as '': a later '' keeps the default rather than an old model.
-  const after = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '' });
+  const after = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
   expect([after.summaryModel, after.cleanupModel]).toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   const read = await mock.settingsGet();
   expect([read.summaryModel, read.cleanupModel]).toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
@@ -947,4 +950,98 @@ test('accept learns like copy but writes no clipboard and sets no notice', async
 test('accept is refused from idle', async () => {
   const mock = new Mock('');
   await expect(mock.act('accept', 'x')).rejects.toThrow('Cannot accept while idle.');
+});
+
+test('a split closes the running part at a silence while recording goes on, and its text fills in partial', async () => {
+  const mock = new Mock('?silenceSplitMs=1500');
+  for (const step of ['new', 'record'] as const) await mock.act(step, '');
+  await new Promise((resolve) => setTimeout(resolve, LEVEL_MS * 3));
+  const before = mock.snapshot();
+  mock.handle.split();
+  const split = mock.snapshot();
+  expect(split.phase).toBe('recording');
+  expect(split.segments).toBe(1);
+  expect(split.recordedMs).toBeGreaterThanOrEqual(LEVEL_MS * 3);
+  expect(split.revision).toBe(before.revision + 1);
+  await settled();
+  expect(mock.snapshot().phase).toBe('recording');
+  expect(mock.snapshot().partial).toBe(heard(0, false));
+  const paused = await mock.act('pause', '');
+  expect(paused.recordedMs).toBeGreaterThanOrEqual(split.recordedMs);
+  expect(paused.segments).toBe(2);
+});
+
+test('with the split off, or while paused, split() changes nothing', async () => {
+  const off = new Mock('');
+  for (const step of ['new', 'record'] as const) await off.act(step, '');
+  const before = off.snapshot();
+  off.handle.split();
+  expect(off.snapshot()).toEqual(before);
+  await off.act('pause', '');
+
+  const paused = new Mock('?silenceSplitMs=1500');
+  for (const step of ['new', 'record', 'pause'] as const) await paused.act(step, '');
+  await settled();
+  const still = paused.snapshot();
+  paused.handle.split();
+  expect(paused.snapshot()).toEqual(still);
+});
+
+test('the silence split is stored like the core reads it', async () => {
+  const mock = new Mock('');
+  const base = await mock.settingsGet();
+  expect(base.silenceSplitMs).toBe(0);
+  expect((await mock.settingsSet({ ...base, silenceSplitMs: 3000 })).silenceSplitMs).toBe(3000);
+  for (const ms of [500, 10001, 1500.5]) {
+    expect((await mock.settingsSet({ ...base, silenceSplitMs: ms })).silenceSplitMs, String(ms)).toBe(0);
+  }
+  expect((await new Mock('?silenceSplitMs=2500').settingsGet()).silenceSplitMs).toBe(2500);
+});
+
+test('after a split, Pause closes the next part and Done joins both', async () => {
+  const mock = new Mock('?silenceSplitMs=1500');
+  for (const step of ['new', 'record'] as const) await mock.act(step, '');
+  mock.handle.split();
+  const paused = await mock.act('pause', '');
+  expect(paused.segments).toBe(2);
+  await mock.act('done', '');
+  await settled();
+  const done = mock.snapshot();
+  expect(done.phase).toBe('finished');
+  expect(done.text).toBe(`${heard(0, false)}\n\n${heard(1, false)}`);
+});
+
+test('the split is read at Record and Resume, not while recording', async () => {
+  const mock = new Mock('');
+  for (const step of ['new', 'record'] as const) await mock.act(step, '');
+  await mock.settingsSet({ ...(await mock.settingsGet()), silenceSplitMs: 1500 });
+  const before = mock.snapshot();
+  mock.handle.split();
+  expect(mock.snapshot()).toEqual(before);
+  for (const step of ['pause', 'resume'] as const) await mock.act(step, '');
+  mock.handle.split();
+  expect(mock.snapshot().segments).toBe(2);
+  expect(mock.snapshot().phase).toBe('recording');
+  await mock.act('discard', '');
+  await mock.act('record', '');
+  await mock.act('discard', '');
+  const ready = mock.snapshot();
+  mock.handle.split();
+  expect(mock.snapshot(), 'nothing recording after Discard').toEqual(ready);
+});
+
+test('storedSplit keeps 0 or a whole number of ms in range', () => {
+  for (const [n, want] of [
+    [0, 0],
+    [1000, 1000],
+    [1500, 1500],
+    [10000, 10000],
+    [999, 0],
+    [10001, 0],
+    [-1500, 0],
+    [1500.5, 0],
+    [Number.NaN, 0],
+  ] as const) {
+    expect(storedSplit(n), String(n)).toBe(want);
+  }
 });

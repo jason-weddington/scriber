@@ -5,6 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read};
+use std::sync::Arc;
 
 use scriber_core::dictation::{Job, Outcome};
 use scriber_core::model::InputDevices;
@@ -30,7 +31,8 @@ pub(crate) fn captured_speech(seconds: usize) -> Captured {
 /// of speech when the queue is empty). `start` logs the device asked for in
 /// `opened`, fails with "gone" for a device in `unavailable`, then with
 /// `start_error` when set, and otherwise answers `answers_as` when set, else
-/// the device asked for ("Fake Mic" for the default).
+/// the device asked for ("Fake Mic" for the default); it logs each `split_ms`
+/// in `splits`. `take_closed` drains `closed`.
 #[derive(Default)]
 pub(crate) struct FakeRecorder {
     pub(crate) captures: RefCell<VecDeque<Result<Captured, String>>>,
@@ -39,11 +41,14 @@ pub(crate) struct FakeRecorder {
     pub(crate) opened: RefCell<Vec<String>>,
     pub(crate) unavailable: RefCell<Vec<String>>,
     pub(crate) answers_as: RefCell<Option<String>>,
+    pub(crate) closed: RefCell<VecDeque<Captured>>,
+    pub(crate) splits: RefCell<Vec<u64>>,
 }
 
 impl Recorder for FakeRecorder {
-    fn start(&self, device: &str) -> Result<String, PortError> {
+    fn start(&self, device: &str, split_ms: u64) -> Result<String, PortError> {
         self.calls.borrow_mut().push("start");
+        self.splits.borrow_mut().push(split_ms);
         self.opened.borrow_mut().push(device.to_string());
         if self.unavailable.borrow().iter().any(|d| d == device) {
             return Err(PortError("gone".to_string()));
@@ -71,6 +76,15 @@ impl Recorder for FakeRecorder {
             .pop_front()
             .unwrap_or_else(|| Ok(captured_speech(1)))
             .map_err(PortError)
+    }
+
+    fn take_closed(&self) -> Vec<Captured> {
+        self.calls.borrow_mut().push("take_closed");
+        self.closed.borrow_mut().drain(..).collect()
+    }
+
+    fn on_split(&self, _notify: Arc<dyn Fn() + Send + Sync>) {
+        self.calls.borrow_mut().push("on_split");
     }
 }
 

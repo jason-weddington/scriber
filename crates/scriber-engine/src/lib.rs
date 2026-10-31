@@ -179,8 +179,9 @@ pub enum Event {
     /// thread.
     Level(f64),
     /// The session changed off the caller's thread: a download's progress,
-    /// a segment transcribed, the session finished or failed. Delivered on
-    /// a job thread while the session lock is held.
+    /// a segment transcribed, the session finished or failed, a segment
+    /// closed at a silence (on a scriber-split thread). Delivered on a job
+    /// (or split) thread while the session lock is held.
     State(Snapshot),
 }
 
@@ -317,6 +318,30 @@ struct Inner {
     default_model: String,
     /// Keeps the cleanup model loaded while the cleanup setting is on.
     keep_warm: KeepWarm,
+}
+
+/// The recorder's split notice for the engine behind `weak`. It runs on the
+/// audio thread and only spawns a scriber-split thread, which takes the
+/// closed segments into the session and reports the new snapshot. Locking
+/// the session on the audio thread could deadlock: Pause holds the lock while
+/// `stop` drops the stream, which waits for the audio callback. A failed
+/// spawn loses nothing: the closed segment stays in the capture and the next
+/// stop hands it over.
+fn split_notifier(weak: Weak<Inner>) -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(move || {
+        let weak = Weak::clone(&weak);
+        let thread = std::thread::Builder::new().name("scriber-split".to_string());
+        let _spawned = thread.spawn(move || {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let ports = inner.ports();
+            let mut dictation = lock(&inner.dictation);
+            if let Some(snapshot) = dictation.split(&ports) {
+                (inner.events)(Event::State(snapshot));
+            }
+        });
+    })
 }
 
 impl Inner {
@@ -467,6 +492,10 @@ impl Engine {
             default_model: summary_model,
             keep_warm,
         });
+        inner
+            .adapters
+            .recorder
+            .on_split(split_notifier(Arc::downgrade(&inner)));
         let ports = inner.ports();
         // Launched with the lock held, so a job it queues cannot record its
         // outcome in the placeholder session.

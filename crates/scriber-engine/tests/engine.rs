@@ -941,6 +941,7 @@ mod tests {
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             library_width: 220,
             input_device: String::new(),
+            silence_split_ms: 0,
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -951,7 +952,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":""}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -991,6 +992,7 @@ mod tests {
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             library_width: 220,
             input_device: String::new(),
+            silence_split_ms: 0,
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1021,6 +1023,7 @@ mod tests {
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             library_width: 220,
             input_device: String::new(),
+            silence_split_ms: 0,
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1041,6 +1044,7 @@ mod tests {
             cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
             library_width: 220,
             input_device: String::new(),
+            silence_split_ms: 0,
         };
         let kept = Settings {
             summaries: false,
@@ -1065,6 +1069,7 @@ mod tests {
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 library_width: 220,
                 input_device: String::new(),
+                silence_split_ms: 0,
             })
             .unwrap();
         let back = engine
@@ -1077,6 +1082,7 @@ mod tests {
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 library_width: 220,
                 input_device: String::new(),
+                silence_split_ms: 0,
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1109,6 +1115,7 @@ mod tests {
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 library_width: 220,
                 input_device: String::new(),
+                silence_split_ms: 0,
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1178,6 +1185,7 @@ mod tests {
                 cleanup_model: DEFAULT_SUMMARY_MODEL.to_string(),
                 library_width: 220,
                 input_device: String::new(),
+                silence_split_ms: 0,
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1229,6 +1237,7 @@ mod tests {
             cleanup_model: cleanup_model.to_string(),
             library_width: 220,
             input_device: String::new(),
+            silence_split_ms: 0,
         }
     }
 
@@ -1441,6 +1450,7 @@ mod tests {
             cleanup_model: model.to_string(),
             library_width: 220,
             input_device: String::new(),
+            silence_split_ms: 0,
             ..engine.settings()
         }
     }
@@ -1784,6 +1794,7 @@ mod tests {
         let _saved = engine
             .set_settings(Settings {
                 input_device: "AirPods Pro".to_string(),
+                silence_split_ms: 0,
                 ..engine.settings()
             })
             .unwrap();
@@ -1806,6 +1817,7 @@ mod tests {
         let (engine, _rx) = Fakes::default().open(config(&dir));
         let choose = |name: &str| Settings {
             input_device: name.to_string(),
+            silence_split_ms: 0,
             ..engine.settings()
         };
         assert_eq!(
@@ -1826,6 +1838,98 @@ mod tests {
             saved(&dir).contains(r#""input_device":"""#),
             "{}",
             saved(&dir)
+        );
+    }
+
+    // The silence split.
+
+    fn one_second() -> scriber_engine::Captured {
+        scriber_engine::Captured {
+            samples: vec![0.5; 16_000],
+            channels: 1,
+            sample_rate: 16_000,
+        }
+    }
+
+    #[test]
+    fn the_silence_split_is_a_setting_passed_to_the_recorder() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        let split = |ms| Settings {
+            silence_split_ms: ms,
+            ..engine.settings()
+        };
+        assert_eq!(
+            engine.set_settings(split(500)).unwrap().silence_split_ms,
+            0,
+            "out of range"
+        );
+        assert_eq!(engine.settings().silence_split_ms, 0, "read back");
+        assert_eq!(
+            engine.set_settings(split(2_500)).unwrap().silence_split_ms,
+            2_500,
+            "kept"
+        );
+        assert_eq!(engine.settings().silence_split_ms, 2_500, "read back");
+        let _recording = engine.record().unwrap();
+        assert_eq!(*fakes.recorder.splits.lock().unwrap(), [2_500], "passed");
+    }
+
+    #[test]
+    fn a_segment_closed_at_a_silence_transcribes_while_recording_goes_on() {
+        let dir = TempDir::new().unwrap();
+        let (transcriber, gate) = FakeTranscriber::answering(&[Ok("One."), Ok("Two.")]).gated();
+        let fakes = Fakes::with(transcriber);
+        let (engine, rx) = fakes.open(config(&dir));
+        let _recording = engine.record().unwrap();
+        fakes.recorder.close_at_silence(one_second());
+        let split = until(&rx, |s| s.segments == 1).unwrap();
+        assert_eq!(
+            (
+                split.phase,
+                split.segments,
+                split.pending,
+                split.recorded_ms
+            ),
+            (Phase::Recording, 1, 1, 1_000),
+            "recording goes on"
+        );
+        assert_eq!(
+            (
+                fakes.recorder.starts.load(Ordering::SeqCst),
+                fakes.recorder.stops.load(Ordering::SeqCst)
+            ),
+            (1, 0),
+            "the device was never stopped"
+        );
+        gate.send(()).unwrap();
+        gate.send(()).unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE),
+            Ok("One.\n\nTwo.".to_string()),
+            "both parts"
+        );
+        assert_eq!(fakes.recorder.stops.load(Ordering::SeqCst), 1, "one stop");
+    }
+
+    #[test]
+    fn a_split_after_the_engine_is_gone_does_nothing() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, rx) = fakes.open(config(&dir));
+        let _report = engine.shutdown();
+        drop(engine);
+        let deadline = Instant::now() + PATIENCE;
+        while !fakes.transcriber.dropped.is_set() {
+            assert!(Instant::now() < deadline, "dropped in time");
+            thread::sleep(Duration::from_millis(10));
+        }
+        while rx.try_recv().is_ok() {}
+        fakes.recorder.close_at_silence(one_second());
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "no event"
         );
     }
 }

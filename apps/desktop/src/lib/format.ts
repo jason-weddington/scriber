@@ -220,6 +220,14 @@ export const LIBRARY_WIDTH_MIN = 110;
 /** The widest the drawer may be, in px. */
 export const LIBRARY_WIDTH_MAX = 440;
 
+// ---- the silence split ---------------------------------------------------------
+
+/** The shortest silence split kept, in ms (crates/scriber-core/src/settings.rs SILENCE_SPLIT_MIN_MS). */
+export const SILENCE_SPLIT_MIN_MS = 1000;
+
+/** The longest silence split kept, in ms (crates/scriber-core/src/settings.rs SILENCE_SPLIT_MAX_MS). */
+export const SILENCE_SPLIT_MAX_MS = 10000;
+
 /** How far an arrow key moves the drawer's edge, in px. */
 export const LIBRARY_WIDTH_STEP = 10;
 
