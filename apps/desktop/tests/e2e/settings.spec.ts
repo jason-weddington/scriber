@@ -117,7 +117,7 @@ test('a long path never scrolls the window sideways at the minimum size', async 
 });
 
 function cleanupSwitch(page: Page) {
-  return page.getByRole('switch', { name: 'Enable post-processing with local LLM' });
+  return page.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' });
 }
 
 test('post-processing starts off and turning it on saves it', async ({ page }) => {
@@ -152,7 +152,7 @@ const MODELS = ['gemma3:4b', MODEL];
 const DOWN_NOTE = 'Local AI needs Ollama. Start Ollama, then reopen Settings.';
 
 function summaryModel(page: Page) {
-  return page.getByRole('combobox', { name: 'Summary model' });
+  return page.getByRole('combobox', { name: 'Title model' });
 }
 
 function cleanupModel(page: Page) {
@@ -160,7 +160,7 @@ function cleanupModel(page: Page) {
 }
 
 function summarySwitch(page: Page) {
-  return page.getByRole('switch', { name: 'Summarize recordings with local AI (Ollama)' });
+  return page.getByRole('switch', { name: 'Generate library titles with local AI (Ollama)' });
 }
 
 async function optionTexts(select: ReturnType<typeof summaryModel>): Promise<string[]> {

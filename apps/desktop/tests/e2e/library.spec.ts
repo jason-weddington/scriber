@@ -31,7 +31,7 @@ function drawer(page: Page) {
 }
 
 function summarySwitch(page: Page) {
-  return page.getByRole('switch', { name: 'Summarize recordings with local AI (Ollama)' });
+  return page.getByRole('switch', { name: 'Generate library titles with local AI (Ollama)' });
 }
 
 /** Every settings_set call the mock received. */

@@ -188,7 +188,7 @@ test('Space on the focused summaries switch toggles it and sends no action', asy
   await key(page, 'Meta+n');
   await expect(status(page)).toHaveText('Click Record and start talking.');
   await button(page, 'Settings').click();
-  const toggle = page.getByRole('switch', { name: 'Summarize recordings with local AI (Ollama)' });
+  const toggle = page.getByRole('switch', { name: 'Generate library titles with local AI (Ollama)' });
   await toggle.focus();
   await key(page, 'Space');
   await expect(toggle).not.toBeChecked();
@@ -200,7 +200,7 @@ test('Space on the focused post-processing switch toggles it and sends no action
   await key(page, 'Meta+n');
   await expect(status(page)).toHaveText('Click Record and start talking.');
   await button(page, 'Settings').click();
-  const toggle = page.getByRole('switch', { name: 'Enable post-processing with local LLM' });
+  const toggle = page.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' });
   await toggle.focus();
   await key(page, 'Space');
   await expect(toggle).toBeChecked();
@@ -212,7 +212,7 @@ test('Space on the focused summary model dropdown sends no action', async ({ pag
   await key(page, 'Meta+n');
   await expect(status(page)).toHaveText('Click Record and start talking.');
   await button(page, 'Settings').click();
-  const dropdown = page.getByRole('combobox', { name: 'Summary model' });
+  const dropdown = page.getByRole('combobox', { name: 'Title model' });
   await expect(dropdown).toBeEnabled();
   await dropdown.focus();
   await key(page, 'Space');
@@ -658,7 +658,7 @@ test('⌘, lists the models once and does nothing while Settings is open', async
   expect(await listings(page)).toBe(0);
   await key(page, 'Meta+Comma');
   await expect(settings(page)).toBeVisible();
-  const model = page.getByRole('combobox', { name: 'Summary model' });
+  const model = page.getByRole('combobox', { name: 'Title model' });
   await expect(model).toBeEnabled();
   await expect.poll(() => model.locator('option').allTextContents()).toEqual(['gemma3:4b', 'qwen3.8:27b-mlx']);
   expect(await listings(page)).toBe(1);

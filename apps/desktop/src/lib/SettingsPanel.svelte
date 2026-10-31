@@ -126,7 +126,7 @@
         oncleanup(e.currentTarget.checked);
       }}
     />
-    Enable post-processing with local LLM
+    Enable post-processing with local AI (Ollama)
   </label>
   <label for="cleanup-model">Post-processing model</label>
   <select
@@ -149,9 +149,9 @@
         onsummaries(e.currentTarget.checked);
       }}
     />
-    Summarize recordings with local AI (Ollama)
+    Generate library titles with local AI (Ollama)
   </label>
-  <label for="summary-model">Summary model</label>
+  <label for="summary-model">Title model</label>
   <select
     id="summary-model"
     disabled={listed === null}

@@ -209,7 +209,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await open(page, { library: '3' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await expect(page.getByRole('switch')).toHaveCount(2);
-      await expect(page.getByRole('switch', { name: 'Enable post-processing with local LLM' })).toBeVisible();
+      await expect(page.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' })).toBeVisible();
       await expect(page.getByText('Version 0.0.0-mock')).toBeVisible();
       await expectNoViolations(page);
     });
@@ -227,14 +227,14 @@ for (const colorScheme of ['light', 'dark'] as const) {
     test('the settings modal listing the models', async ({ page }) => {
       await open(page, { hold: 'ollama_models' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await expect(page.getByRole('combobox', { name: 'Summary model' })).toBeDisabled();
+      await expect(page.getByRole('combobox', { name: 'Title model' })).toBeDisabled();
       await expectNoViolations(page);
     });
 
     test('the settings modal with the models listed', async ({ page }) => {
       await open(page);
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await expect(page.getByRole('combobox', { name: 'Summary model' })).toBeEnabled();
+      await expect(page.getByRole('combobox', { name: 'Title model' })).toBeEnabled();
       await expectNoViolations(page);
     });
 
