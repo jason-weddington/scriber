@@ -176,6 +176,10 @@ pub struct Config {
     /// Gating decisions by recording name (stage2 mode only).
     #[serde(default)]
     pub decisions: Option<BTreeMap<String, Decisions>>,
+    /// Decode every input segment (features) or non-skipped piece (stage2) a
+    /// second time with identical parameters, to measure determinism.
+    #[serde(default)]
+    pub repeat_decode: bool,
 }
 
 /// A recording's name: its folder's final path component.
@@ -507,6 +511,13 @@ pub fn write_f32_wav(samples: &[f32]) -> Result<Vec<u8>, ExtractError> {
     Ok(bytes)
 }
 
+const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+/// The `SubFormat` GUID of IEEE float: 00000003-0000-0010-8000-00aa00389b71.
+const IEEE_FLOAT_GUID: [u8; 16] = [
+    3, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+];
+
 fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(*bytes.get(at..)?.first_chunk()?))
 }
@@ -516,8 +527,10 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 /// The samples of a 16 kHz mono 32-bit float WAV file (afconvert's
-/// `LEF32@16000` output). Chunks other than `fmt ` and `data` are skipped,
-/// with their even-byte padding.
+/// `LEF32@16000` output, which it writes as `WAVE_FORMAT_EXTENSIBLE`: a
+/// 40-byte `fmt ` chunk whose `SubFormat` GUID is IEEE float, then an `FLLR`
+/// filler chunk). Plain format tag 3 is read too. Chunks other than `fmt `
+/// and `data` are skipped, with their even-byte padding.
 ///
 /// # Errors
 ///
@@ -545,8 +558,17 @@ pub fn read_f32_wav(bytes: &[u8]) -> Result<Vec<f32>, ExtractError> {
     }
     let format = format.ok_or_else(|| wav_error("no fmt chunk"))?;
     let data = data.ok_or_else(|| wav_error("no data chunk"))?;
-    if u16_at(format, 0) != Some(3) {
-        return Err(wav_error("not IEEE float (format tag 3)"));
+    match u16_at(format, 0) {
+        Some(WAVE_FORMAT_IEEE_FLOAT) => {}
+        Some(WAVE_FORMAT_EXTENSIBLE) => {
+            if format.len() < 40 {
+                return Err(wav_error("extensible fmt chunk shorter than 40 bytes"));
+            }
+            if format.get(24..40) != Some(IEEE_FLOAT_GUID.as_slice()) {
+                return Err(wav_error("extensible SubFormat is not IEEE float"));
+            }
+        }
+        _ => return Err(wav_error("not IEEE float (format tag 3)")),
     }
     if u16_at(format, 2) != Some(1) {
         return Err(wav_error("not mono"));
@@ -763,17 +785,13 @@ pub fn check_contiguous(plan: &[PlannedPiece], total: usize) -> Result<(), Extra
     }
 }
 
-/// One phrase of a stage-2 piece.
+/// One phrase of a stage-2 piece: the features-mode phrase of the piece's own
+/// decode, with times on the recording's timeline, and the lab's drop flag.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Stage2Phrase {
-    /// Its index among the piece's Whisper phrases.
-    pub index: usize,
-    /// Its start, in seconds on the recording's timeline.
-    pub t0_s: f64,
-    /// Its end, in seconds on the recording's timeline.
-    pub t1_s: f64,
-    /// Its text, as Whisper produced it.
-    pub text: String,
+    /// The phrase, indexed within this run's decode of the piece.
+    #[serde(flatten)]
+    pub phrase: PhraseOut,
     /// Dropped by the lab's decision.
     pub dropped: bool,
 }
@@ -793,10 +811,16 @@ pub struct Stage2Piece {
     pub trim_end_s: Option<f64>,
     /// How long the decode took.
     pub elapsed_ms: u64,
-    /// The piece's Whisper phrases.
+    /// The piece's Whisper phrases from this run's decode.
     pub phrases: Vec<Stage2Phrase>,
     /// The kept phrases' text, trimmed; `None` when skipped.
     pub text: Option<String>,
+    /// Every phrase's text as Whisper produced it, trimmed, with no drop
+    /// applied; `None` when skipped.
+    pub text_undropped: Option<String>,
+    /// The second decode compared with the first; `None` when not repeated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Repeat>,
 }
 
 /// The stage-2 outcome of one recording.
@@ -808,86 +832,180 @@ pub struct Stage2Output {
     pub pieces: Vec<Stage2Piece>,
     /// The transcript before cleanup; `None` when skipped.
     pub text: Option<String>,
+    /// The transcript with no drop applied; `None` when skipped.
+    pub text_undropped: Option<String>,
+    /// Every non-skipped piece decoded identically twice; `None` when
+    /// `repeat_decode` is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat_all_equal: Option<bool>,
 }
 
-/// The stage-2 transcript of `plan`, given each piece's decoded phrases
-/// (offsets into the piece) and decode time: the kept phrases of each piece
-/// joined as Whisper produced them and trimmed, and the non-empty piece texts
-/// joined as production joins segments.
+/// The stage-2 transcript of `plan`, given each piece's decode (phrase times
+/// relative to the decoded audio, `timeline[range.start..][..decode_len]`)
+/// and, when `repeats` is `Some`, a second decode of each non-skipped piece:
+/// the kept phrases of each piece joined as Whisper produced them and
+/// trimmed, and the non-empty piece texts joined as production joins
+/// segments.
 ///
 /// # Errors
 ///
-/// [`ExtractError::Recording`]: `decoded` or `elapsed_ms` does not hold one
-/// entry per piece, or a drop index is past its piece's phrases.
+/// [`ExtractError::Recording`]: `decoded` or `repeats` does not hold one
+/// entry per piece, a piece reaches past the audio, a non-skipped piece has
+/// no repeat decode, a decode's phrase fails [`check_phrases`], or a drop
+/// index is past its piece's phrases.
 pub fn assemble_pieces(
     plan: &[PlannedPiece],
-    decoded: &[Vec<Phrase>],
-    elapsed_ms: &[u64],
+    timeline: &[f32],
+    decoded: &[Decoded],
+    repeats: Option<&[Option<Decoded>]>,
 ) -> Result<Stage2Output, ExtractError> {
-    if decoded.len() != plan.len() || elapsed_ms.len() != plan.len() {
+    if decoded.len() != plan.len() {
         return Err(recording_error(format!(
-            "{} pieces, but {} decodes and {} timings",
+            "{} pieces, but {} decodes",
             plan.len(),
-            decoded.len(),
-            elapsed_ms.len()
+            decoded.len()
+        )));
+    }
+    if let Some(r) = repeats
+        && r.len() != plan.len()
+    {
+        return Err(recording_error(format!(
+            "{} pieces, but {} repeat decodes",
+            plan.len(),
+            r.len()
         )));
     }
     let mut pieces = Vec::new();
-    for (index, ((piece, phrases), &elapsed)) in
-        plan.iter().zip(decoded).zip(elapsed_ms).enumerate()
-    {
-        if let Some(&bad) = piece.drop.iter().find(|&&i| i >= phrases.len()) {
+    for (index, (piece, first)) in plan.iter().zip(decoded).enumerate() {
+        let end = piece.range.start.saturating_add(piece.decode_len);
+        let pcm = timeline.get(piece.range.start..end).ok_or_else(|| {
+            recording_error(format!(
+                "piece {index}: ends at sample {end}, past the audio"
+            ))
+        })?;
+        let count = first.phrases.len();
+        if let Some(&bad) = piece.drop.iter().find(|&&i| i >= count) {
             return Err(recording_error(format!(
-                "piece {index}: drop index {bad} is past its {} phrases",
-                phrases.len()
+                "piece {index}: drop index {bad} is past its {count} phrases"
             )));
         }
-        let times = phrase_times(phrases, piece.range.start)?;
-        let out: Vec<Stage2Phrase> = phrases
-            .iter()
-            .zip(times)
-            .enumerate()
-            .map(|(i, (p, (t0_s, t1_s)))| Stage2Phrase {
-                index: i,
-                t0_s,
-                t1_s,
-                text: p.text.clone(),
-                dropped: piece.drop.contains(&i),
-            })
-            .collect();
-        let text = (!piece.skip).then(|| {
+        let repeat = match repeats {
+            Some(r) if !piece.skip => {
+                let second = r
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| recording_error(format!("piece {index}: no repeat decode")))?;
+                check_decode(pcm, second)?;
+                Some(compare_repeat(first, second))
+            }
+            _ => None,
+        };
+        let out: Vec<Stage2Phrase> = if piece.skip {
+            phrases_out(pcm, first, piece.range.start)?
+        } else {
+            checked_phrases(pcm, first, piece.range.start)?
+        }
+        .into_iter()
+        .enumerate()
+        .map(|(i, phrase)| Stage2Phrase {
+            phrase,
+            dropped: piece.drop.contains(&i),
+        })
+        .collect();
+        let joined = |all: bool| {
             out.iter()
-                .filter(|p| !p.dropped)
-                .map(|p| p.text.as_str())
+                .filter(|p| all || !p.dropped)
+                .map(|p| p.phrase.text.as_str())
                 .collect::<String>()
                 .trim()
                 .to_string()
-        });
+        };
         pieces.push(Stage2Piece {
             index,
             start_s: samples_to_seconds(piece.range.start)?,
             end_s: samples_to_seconds(piece.range.end)?,
             skipped: piece.skip,
             trim_end_s: piece.trim_end_s,
-            elapsed_ms: elapsed,
+            elapsed_ms: first.elapsed_ms,
+            text: (!piece.skip).then(|| joined(false)),
+            text_undropped: (!piece.skip).then(|| joined(true)),
             phrases: out,
-            text,
+            repeat,
         });
     }
     let skipped = !pieces.is_empty() && pieces.iter().all(|p| p.skipped);
-    let text = (!skipped).then(|| {
-        join(
-            pieces
-                .iter()
-                .filter_map(|p| p.text.as_deref())
-                .filter(|t| !t.is_empty()),
-        )
+    let joined = |pick: fn(&Stage2Piece) -> Option<&str>| {
+        (!skipped).then(|| join(pieces.iter().filter_map(pick).filter(|t| !t.is_empty())))
+    };
+    let text = joined(|p| p.text.as_deref());
+    let text_undropped = joined(|p| p.text_undropped.as_deref());
+    let repeat_all_equal = repeats.map(|_| {
+        pieces
+            .iter()
+            .filter(|p| !p.skipped)
+            .all(|p| p.repeat.as_ref().is_some_and(Repeat::all_equal))
     });
     Ok(Stage2Output {
         skipped,
         pieces,
         text,
+        text_undropped,
+        repeat_all_equal,
     })
+}
+
+/// How a second decode of the same audio compares with the first.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Repeat {
+    /// The decodes' phrase texts, concatenated untrimmed, are byte-equal.
+    pub text_equal: bool,
+    /// The largest absolute difference between corresponding phrases'
+    /// no-speech probabilities; `None` when the phrase counts differ.
+    pub no_speech_probability_max_abs_diff: Option<f64>,
+    /// Both decodes have as many phrases.
+    pub segment_count_equal: bool,
+}
+
+impl Repeat {
+    /// The decodes agree on text, phrase count and every probability.
+    #[must_use]
+    pub fn all_equal(&self) -> bool {
+        self.text_equal
+            && self.segment_count_equal
+            && self.no_speech_probability_max_abs_diff == Some(0.0)
+    }
+}
+
+/// Compares two decodes of the same audio.
+#[must_use]
+pub fn compare_repeat(first: &Decoded, second: &Decoded) -> Repeat {
+    let text = |d: &Decoded| {
+        d.phrases
+            .iter()
+            .map(|p| p.phrase.text.as_str())
+            .collect::<String>()
+    };
+    let segment_count_equal = first.phrases.len() == second.phrases.len();
+    let diffs: Vec<f64> = first
+        .phrases
+        .iter()
+        .zip(&second.phrases)
+        .map(|(a, b)| {
+            (f64::from(a.no_speech_probability) - f64::from(b.no_speech_probability)).abs()
+        })
+        .collect();
+    let no_speech_probability_max_abs_diff = segment_count_equal.then(|| {
+        if diffs.iter().any(|d| d.is_nan()) {
+            f64::NAN
+        } else {
+            diffs.into_iter().fold(0.0, f64::max)
+        }
+    });
+    Repeat {
+        text_equal: text(first) == text(second),
+        no_speech_probability_max_abs_diff,
+        segment_count_equal,
+    }
 }
 
 // ---- features -------------------------------------------------------------------------
@@ -1067,6 +1185,10 @@ pub struct SegmentOut {
     pub duration_untrimmed_s: f64,
     /// Seconds after the trailing trim.
     pub duration_trimmed_s: f64,
+    /// Where it starts on the concatenated untrimmed timeline, in seconds.
+    pub offset_s: f64,
+    /// Its length on the concatenated untrimmed timeline, in seconds.
+    pub length_s: f64,
     /// [`is_silent`] on the untrimmed audio.
     pub is_silent: bool,
     /// [`window_rms_max`] of the untrimmed audio.
@@ -1077,6 +1199,10 @@ pub struct SegmentOut {
     pub trimmed: DecodeResult<PhraseOut>,
     /// Production's outcome.
     pub m0: SegmentM0,
+    /// The second decode of the untrimmed audio compared with the first;
+    /// `None` when not repeated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Repeat>,
 }
 
 /// One input segment as the example hands it over.
@@ -1090,9 +1216,15 @@ pub struct SegmentInput {
     pub untrimmed_decode: Decoded,
     /// Whisper on `trim_trailing_silence(untrimmed)`.
     pub trimmed_decode: Decoded,
+    /// A second decode of `untrimmed`; `None` when `repeat_decode` is off.
+    pub repeat_decode: Option<Decoded>,
 }
 
-fn phrases_out(pcm: &[f32], decoded: &Decoded) -> Result<Vec<PhraseOut>, ExtractError> {
+fn phrases_out(
+    pcm: &[f32],
+    decoded: &Decoded,
+    offset: usize,
+) -> Result<Vec<PhraseOut>, ExtractError> {
     decoded
         .phrases
         .iter()
@@ -1101,8 +1233,8 @@ fn phrases_out(pcm: &[f32], decoded: &Decoded) -> Result<Vec<PhraseOut>, Extract
             let own = phrase_audio(pcm, &d.phrase);
             Ok(PhraseOut {
                 index,
-                t0_s: samples_to_seconds(d.phrase.start)?,
-                t1_s: samples_to_seconds(d.phrase.end)?,
+                t0_s: samples_to_seconds(offset.saturating_add(d.phrase.start))?,
+                t1_s: samples_to_seconds(offset.saturating_add(d.phrase.end))?,
                 text: d.phrase.text.clone(),
                 no_speech_probability: d.no_speech_probability,
                 silent: is_silent(own),
@@ -1124,11 +1256,26 @@ fn phrases_out(pcm: &[f32], decoded: &Decoded) -> Result<Vec<PhraseOut>, Extract
         .collect()
 }
 
-fn decode_result(pcm: &[f32], decoded: &Decoded) -> Result<DecodeResult<PhraseOut>, ExtractError> {
+/// Checks a decode's phrase times against the length of `pcm`.
+fn check_decode(pcm: &[f32], decoded: &Decoded) -> Result<(), ExtractError> {
     let phrases: Vec<Phrase> = decoded.phrases.iter().map(|d| d.phrase.clone()).collect();
-    check_phrases(&phrase_times(&phrases, 0)?, samples_to_seconds(pcm.len())?)?;
+    check_phrases(&phrase_times(&phrases, 0)?, samples_to_seconds(pcm.len())?)
+}
+
+/// The phrases of a decode of `pcm`, checked against its length, with times
+/// shifted by `offset` samples.
+fn checked_phrases(
+    pcm: &[f32],
+    decoded: &Decoded,
+    offset: usize,
+) -> Result<Vec<PhraseOut>, ExtractError> {
+    check_decode(pcm, decoded)?;
+    phrases_out(pcm, decoded, offset)
+}
+
+fn decode_result(pcm: &[f32], decoded: &Decoded) -> Result<DecodeResult<PhraseOut>, ExtractError> {
     Ok(DecodeResult {
-        phrases: phrases_out(pcm, decoded)?,
+        phrases: checked_phrases(pcm, decoded, 0)?,
         elapsed_ms: decoded.elapsed_ms,
     })
 }
@@ -1137,8 +1284,8 @@ fn decode_result(pcm: &[f32], decoded: &Decoded) -> Result<DecodeResult<PhraseOu
 ///
 /// # Errors
 ///
-/// [`ExtractError::Recording`]: a decode's phrase times fail
-/// [`check_phrases`] against the audio it was given.
+/// [`ExtractError::Recording`]: a decode's phrase times (the repeat's too)
+/// fail [`check_phrases`] against the audio it was given.
 pub fn build_segment(index: usize, input: &SegmentInput) -> Result<SegmentOut, ExtractError> {
     let untrimmed = input.untrimmed.as_slice();
     let trimmed = trim_trailing_silence(untrimmed);
@@ -1148,18 +1295,29 @@ pub fn build_segment(index: usize, input: &SegmentInput) -> Result<SegmentOut, E
         .iter()
         .map(|d| d.phrase.clone())
         .collect();
+    let untrimmed_result = decode_result(untrimmed, &input.untrimmed_decode)?;
+    let repeat = match &input.repeat_decode {
+        Some(second) => {
+            check_decode(untrimmed, second)?;
+            Some(compare_repeat(&input.untrimmed_decode, second))
+        }
+        None => None,
+    };
     Ok(SegmentOut {
         index,
         file: input.file.clone(),
+        offset_s: 0.0,
+        length_s: samples_to_seconds(untrimmed.len())?,
         samples_untrimmed: untrimmed.len(),
         samples_trimmed: trimmed.len(),
         duration_untrimmed_s: samples_to_seconds(untrimmed.len())?,
         duration_trimmed_s: samples_to_seconds(trimmed.len())?,
         is_silent: is_silent(untrimmed),
         rms_max: window_rms_max(untrimmed),
-        untrimmed: decode_result(untrimmed, &input.untrimmed_decode)?,
+        untrimmed: untrimmed_result,
         trimmed: decode_result(trimmed, &input.trimmed_decode)?,
         m0: segment_m0(untrimmed, trimmed, &heard),
+        repeat,
     })
 }
 
@@ -1418,6 +1576,10 @@ pub struct FeaturesReport {
     pub silero: Option<SileroOut>,
     /// The input segments.
     pub segments: Vec<SegmentOut>,
+    /// Every input segment decoded identically twice; `None` when
+    /// `repeat_decode` is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat_all_equal: Option<bool>,
 }
 
 fn concatenated(
@@ -1453,17 +1615,43 @@ fn concatenated(
 ///
 /// # Errors
 ///
-/// [`ExtractError::Recording`]: the recording is too long to time.
+/// [`ExtractError::Recording`]: the recording is too long to time, or a
+/// segment's `repeat` is present when `repeat_decode` is off or absent when
+/// it is on.
 pub fn features_report(
     common: Common,
-    segments: Vec<SegmentOut>,
+    mut segments: Vec<SegmentOut>,
     silero: Option<SileroOut>,
+    repeat_decode: bool,
 ) -> Result<FeaturesReport, ExtractError> {
+    if let Some(s) = segments
+        .iter()
+        .find(|s| s.repeat.is_some() != repeat_decode)
+    {
+        return Err(recording_error(format!(
+            "segment {}: repeat decode {} but repeat_decode is {repeat_decode}",
+            s.index,
+            if s.repeat.is_some() {
+                "present"
+            } else {
+                "missing"
+            }
+        )));
+    }
     let untrimmed: Vec<usize> = segments.iter().map(|s| s.samples_untrimmed).collect();
     let trimmed: Vec<usize> = segments.iter().map(|s| s.samples_trimmed).collect();
     let samples_untrimmed = untrimmed.iter().fold(0usize, |a, b| a.saturating_add(*b));
     let samples_trimmed = trimmed.iter().fold(0usize, |a, b| a.saturating_add(*b));
     let m0s: Vec<SegmentM0> = segments.iter().map(|s| s.m0.clone()).collect();
+    for (s, t) in segments.iter_mut().zip(timings(&untrimmed)?) {
+        s.offset_s = t.offset_s;
+        s.length_s = t.length_s;
+    }
+    let repeat_all_equal = repeat_decode.then(|| {
+        segments
+            .iter()
+            .all(|s| s.repeat.as_ref().is_some_and(Repeat::all_equal))
+    });
     Ok(FeaturesReport {
         common,
         thresholds: Thresholds::default(),
@@ -1479,7 +1667,35 @@ pub fn features_report(
         m0: recording_m0(&m0s),
         silero,
         segments,
+        repeat_all_equal,
     })
+}
+
+/// Where an input segment sits on the concatenated untrimmed timeline.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InputSegmentTiming {
+    /// Its position, from 0.
+    pub index: usize,
+    /// Its start in seconds.
+    pub offset_s: f64,
+    /// Its length in seconds.
+    pub length_s: f64,
+}
+
+/// The timeline placement of segments `lengths` samples long, by a running
+/// sum of the lengths.
+fn timings(lengths: &[usize]) -> Result<Vec<InputSegmentTiming>, ExtractError> {
+    let mut offset = 0usize;
+    let mut out = Vec::new();
+    for (index, &len) in lengths.iter().enumerate() {
+        out.push(InputSegmentTiming {
+            index,
+            offset_s: samples_to_seconds(offset)?,
+            length_s: samples_to_seconds(len)?,
+        });
+        offset = offset.saturating_add(len);
+    }
+    Ok(out)
 }
 
 /// The stage-2 report of one recording.
@@ -1492,6 +1708,8 @@ pub struct Stage2Report {
     pub decisions: Option<Decisions>,
     /// Each input segment's length in seconds.
     pub input_segment_lengths_s: Vec<f64>,
+    /// Each input segment's place on the concatenated untrimmed timeline.
+    pub input_segments: Vec<InputSegmentTiming>,
     /// The outcome.
     #[serde(flatten)]
     pub output: Stage2Output,
@@ -1516,6 +1734,7 @@ pub fn stage2_report(
             .iter()
             .map(|&n| samples_to_seconds(n))
             .collect::<Result<_, _>>()?,
+        input_segments: timings(lengths)?,
         output,
     })
 }

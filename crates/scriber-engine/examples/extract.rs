@@ -8,7 +8,17 @@
 //!
 //! # Config
 //!
-//! One JSON object, unknown fields refused at every level: `{"mode": "features" | "stage2", "input": "auto" | "m4a" | "segments" (optional, default "auto"), "model": "<ggml model path>", "output_dir": "<dir>", "recordings": ["<library folder>", ...], "vocabulary": "<file>" (optional), "silero": {"model": "<Silero ggml path>", "settings": [{"name": "...", "threshold": 0.5, "min_silence_duration_ms": 100, "speech_pad_ms": 30, "min_speech_duration_ms": 250}, ...]} (optional, features mode only), "decisions": {"<recording name>": {"split_s": [f64, ...], "pieces": [{"skip": bool, "trim_end_s": f64, "drop": [usize, ...]}, ...]}} (optional, stage2 mode only)}`. A recording's name is its folder's final path component; names must be unique. `output_dir` is created when missing and existing files in it are overwritten.
+//! One JSON object, unknown fields refused at every level: `{"mode": "features" | "stage2", "input": "auto" | "m4a" | "segments" (optional, default "auto"), "model": "<ggml model path>", "output_dir": "<dir>", "recordings": ["<library folder>", ...], "vocabulary": "<file>" (optional), "silero": {"model": "<Silero ggml path>", "settings": [{"name": "...", "threshold": 0.5, "min_silence_duration_ms": 100, "speech_pad_ms": 30, "min_speech_duration_ms": 250}, ...]} (optional, features mode only), "decisions": {"<recording name>": {"split_s": [f64, ...], "pieces": [{"skip": bool, "trim_end_s": f64, "drop": [usize, ...]}, ...]}} (optional, stage2 mode only), "repeat_decode": bool (optional, default false, both modes)}`. A recording's name is its folder's final path component; names must be unique. `output_dir` is created when missing and existing files in it are overwritten.
+//!
+//! # Timeline
+//!
+//! `split_s`, the Silero spans, the stage-2 phrase times and the features report's top-level `untrimmed.phrases` times are seconds on the one concatenated untrimmed timeline, located per input segment by `offset_s`/`length_s` (features: on each `segments` entry; stage2: `input_segments`).
+//!
+//! Each segment's own `untrimmed`/`trimmed` phrase times are relative to that segment's start; the top-level `trimmed.phrases` are on the concatenated trimmed timeline.
+//!
+//! # Repeat decode
+//!
+//! With `repeat_decode`, each input segment's untrimmed PCM (features; the trimmed decode is not repeated) or each non-skipped piece (stage2) is decoded a second time with identical parameters. Each such segment or piece then has `repeat`: `{"text_equal": bool, "no_speech_probability_max_abs_diff": f64 or null (null when the Whisper segment counts differ), "segment_count_equal": bool}`, and the recording has `repeat_all_equal`: bool. Without it, no `repeat` fields appear.
 //!
 //! # Exit codes
 //!
@@ -16,7 +26,7 @@
 //!
 //! # Input
 //!
-//! `input` chooses what each folder is read from. "auto": `segments/segment-NNNN.wav` when there is at least one, else `audio.m4a`, else `audio.wav`. "segments": the segment WAVs only (an error for that recording when there are none). "m4a": `audio.m4a`, else `audio.wav`, never the segment WAVs. Segment WAVs (16 kHz mono 16-bit PCM, the stored parts before the trailing trim) are read in ascending index order, each one input segment, so a multi-part recording keeps its real part boundaries (`input` = "segment-wavs"). `audio.m4a` is decoded by `/usr/bin/afconvert -f WAVE -d LEF32@16000 -c 1` to `<output_dir>/<name>.decoded.tmp.wav`, read and deleted, and is one input segment (`input` = "m4a-decoded-single-segment"); off macOS this call fails, naming `/usr/bin/afconvert`. `audio.wav` (left by the library when encoding failed or has not run) is one input segment (`input` = "wav-single-segment").
+//! `input` chooses what each folder is read from. "auto": `segments/segment-NNNN.wav` when there is at least one, else `audio.m4a`, else `audio.wav`. "segments": the segment WAVs only (an error for that recording when there are none). "m4a": `audio.m4a`, else `audio.wav`, never the segment WAVs. Segment WAVs (16 kHz mono 16-bit PCM, the stored parts before the trailing trim) are read in ascending index order, each one input segment, so a multi-part recording keeps its real part boundaries (`input` = "segment-wavs"). `audio.m4a` is decoded by `/usr/bin/afconvert -f WAVE -d LEF32@16000 -c 1` (which writes the `WAVE_FORMAT_EXTENSIBLE` form of 32-bit float, read as such) to `<output_dir>/<name>.decoded.tmp.wav`, read and deleted, and is one input segment (`input` = "m4a-decoded-single-segment"); off macOS this call fails, naming `/usr/bin/afconvert`. `audio.wav` (left by the library when encoding failed or has not run) is one input segment (`input` = "wav-single-segment").
 //!
 //! Caveat: AAC is lossy, so an m4a-decoded PCM is NOT byte-identical to what production fed Whisper live, and a single-file input loses the part boundaries production decoded separately. Segment WAVs are the exact stored parts, and exist only when the hidden `keep_segments` setting was on for that recording.
 //!
@@ -30,7 +40,7 @@
 //!
 //! # Mode `stage2`
 //!
-//! The lab's gating decisions, as data, applied the way production applies its own. The recording's timeline is its input segments concatenated in order. Pieces are the input segments, cut further at each `split_s` time (seconds on the timeline, strictly increasing, inside the recording and off the input segment boundaries; G3), numbered from 0. `pieces`, when given, holds exactly one decision per piece: `skip: true` drops the piece undecoded (G1); `trim_end_s` (seconds from the piece's start, > 0 and at most its length) decodes only that much of it (G2, no padding and no `trim_trailing_silence`); `drop` lists Whisper phrase indices of the piece to leave out (G4). Each remaining piece is decoded with the production parameters, its kept phrase texts are concatenated as Whisper produced them and trimmed, and the non-empty piece texts are joined with `transcript::join` as production joins parts. A recording with no decisions (no entry, or no `split_s` and no `pieces`) is the no-gating reference: one untrimmed decode per input segment, nothing skipped, trimmed or dropped. `kept_text`, `keep`, `phantom`, `is_silent` and `trim_trailing_silence` are not applied. It writes `<name>.stage2.json` with each piece's extent, decisions, phrases (times on the timeline, `dropped` flags) and text, and the final `text` before cleanup; no WAV.
+//! The lab's gating decisions, as data, applied the way production applies its own. The recording's timeline is its input segments concatenated in order. Pieces are the input segments, cut further at each `split_s` time (seconds on the timeline, strictly increasing, inside the recording and off the input segment boundaries; G3), numbered from 0. `pieces`, when given, holds exactly one decision per piece: `skip: true` drops the piece undecoded (G1); `trim_end_s` (seconds from the piece's start, > 0 and at most its length) decodes only that much of it (G2, no padding and no `trim_trailing_silence`); `drop` lists Whisper phrase indices of the piece to leave out (G4). Each remaining piece is decoded with the production parameters (its own decode: phrase indices, and so `drop`, refer to this run's phrases of the piece, not to stage 1's), its kept phrase texts are concatenated as Whisper produced them and trimmed, and the non-empty piece texts are joined with `transcript::join` as production joins parts. A recording with no decisions (no entry, or no `split_s` and no `pieces`) is the no-gating reference: one untrimmed decode per input segment, nothing skipped, trimmed or dropped. `kept_text`, `keep`, `phantom`, `is_silent` and `trim_trailing_silence` are not applied. Each phrase carries the full features-mode phrase fields (`index`, `t0_s`, `t1_s`, `text`, `no_speech_probability`, `silent`, `phantom`, `rms_max`, `tokens`) computed on the piece's decoded PCM, reported for the lab only and never applied to `text`; only `drop` removes phrases from `text`. It writes `<name>.stage2.json` with each piece's extent, decisions, phrases (times on the timeline, plus `dropped` flags), `text` and `text_undropped` (the piece text with no drop applied), and the recording's `text` and `text_undropped` before cleanup; no WAV.
 //!
 //! # Provenance and prompt
 //!
@@ -51,13 +61,13 @@ use scriber_core::transcript::trim_trailing_silence;
 use scriber_engine::extract::{
     AudioDecode, Common, Config, DecodeParams, Decoded, InputKind, Manifest, Mode, RecordingStatus,
     SegmentFile, SegmentInput, SileroOut, Span, Status, VadRun, WHISPER_RS_VERSION, afconvert_args,
-    assemble_pieces, build_prompt, build_segment, causality, check_contiguous, check_phrases,
-    check_spans, chunk_ranges, features_report, file_name, needs_decode, now_rfc3339, offset_spans,
+    assemble_pieces, build_prompt, build_segment, causality, check_contiguous, check_spans,
+    chunk_ranges, features_report, file_name, needs_decode, now_rfc3339, offset_spans,
     parse_config, plan_pieces, prefix_lengths, provenance, read_f32_wav, recording_name,
     resolve_input, samples_to_seconds, segment_wav_names, sha256_hex, stage2_report, write_f32_wav,
 };
 use scriber_engine::extract::{Provenance, VadSettings};
-use scriber_engine::{AFCONVERT, Transcriber as _, Whisper, vad_spans};
+use scriber_engine::{AFCONVERT, Whisper, vad_spans};
 
 type Failure = Box<dyn std::error::Error>;
 
@@ -340,11 +350,19 @@ fn features(run: &Run, first: bool, name: &str, loaded: &Loaded) -> Result<Files
     let (mut all_untrimmed, mut all_trimmed) = (Vec::new(), Vec::new());
     for (k, (file, untrimmed)) in loaded.segments.iter().enumerate() {
         let trimmed = trim_trailing_silence(untrimmed);
+        let untrimmed_decode = decode(run, untrimmed)?;
+        let trimmed_decode = decode(run, trimmed)?;
+        let repeat_decode = if run.config.repeat_decode {
+            Some(decode(run, untrimmed)?)
+        } else {
+            None
+        };
         let input = SegmentInput {
             file: file.clone(),
             untrimmed: untrimmed.clone(),
-            untrimmed_decode: decode(run, untrimmed)?,
-            trimmed_decode: decode(run, trimmed)?,
+            untrimmed_decode,
+            trimmed_decode,
+            repeat_decode,
         };
         segments.push(build_segment(k, &input)?);
         wavs.push((
@@ -391,7 +409,12 @@ fn features(run: &Run, first: bool, name: &str, loaded: &Loaded) -> Result<Files
         }
         _ => None,
     };
-    let report = features_report(common(run, loaded), segments, silero)?;
+    let report = features_report(
+        common(run, loaded),
+        segments,
+        silero,
+        run.config.repeat_decode,
+    )?;
     let mut files = vec![(format!("{name}.json"), serde_json::to_vec_pretty(&report)?)];
     files.extend(wavs);
     Ok((Status::Ok, files))
@@ -429,28 +452,26 @@ fn stage2(run: &Run, name: &str, loaded: &Loaded) -> Result<Files, Failure> {
     let plan = plan_pieces(&lengths, decisions)?;
     check_contiguous(&plan, timeline.len())?;
     let mut decoded = Vec::new();
-    let mut elapsed = Vec::new();
+    let mut repeats = Vec::new();
     for piece in &plan {
         let end = piece.range.start.saturating_add(piece.decode_len);
         let pcm = timeline
             .get(piece.range.start..end)
             .ok_or("piece past the audio")?;
-        if piece.skip || !needs_decode(pcm) {
-            decoded.push(Vec::new());
-            elapsed.push(0);
-            continue;
-        }
-        let start = Instant::now();
-        let phrases = run.whisper.transcribe(pcm, run.prompt.as_deref())?;
-        elapsed.push(millis(start));
-        let times = phrases
-            .iter()
-            .map(|p| Ok((samples_to_seconds(p.start)?, samples_to_seconds(p.end)?)))
-            .collect::<Result<Vec<_>, Failure>>()?;
-        check_phrases(&times, samples_to_seconds(pcm.len())?)?;
-        decoded.push(phrases);
+        let skip = piece.skip;
+        decoded.push(if skip {
+            Decoded::default()
+        } else {
+            decode(run, pcm)?
+        });
+        repeats.push(if skip || !run.config.repeat_decode {
+            None
+        } else {
+            Some(decode(run, pcm)?)
+        });
     }
-    let output = assemble_pieces(&plan, &decoded, &elapsed)?;
+    let repeats = run.config.repeat_decode.then_some(repeats.as_slice());
+    let output = assemble_pieces(&plan, &timeline, &decoded, repeats)?;
     let status = if output.skipped {
         Status::Skipped
     } else {

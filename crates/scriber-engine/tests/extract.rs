@@ -7,19 +7,19 @@ mod tests {
 
     use scriber_core::audio::decode_wav;
     use scriber_core::transcript::{
-        SILENCE_RMS, TRAILING_PADDING, TRAILING_SILENCE_RMS, is_silent, trim_trailing_silence,
+        SILENCE_RMS, TRAILING_PADDING, TRAILING_SILENCE_RMS, is_silent, join, trim_trailing_silence,
     };
     use scriber_engine::extract::{
         AudioDecode, Causality, Common, Config, Decisions, DecodeParams, Decoded, ExtractError,
-        InputKind, InputMode, Manifest, Mode, PieceDecision, PlannedPiece, Provenance,
-        RecordingStatus, SegmentFile, SegmentInput, SegmentM0, SileroOut, Span, Stage2Output,
-        Status, Thresholds, VadRun, VadSettings, WHISPER_RS_VERSION, afconvert_args,
-        assemble_pieces, build_prompt, build_segment, causality, check_contiguous, check_phrases,
-        check_spans, chunk_ranges, f32_wav_header, features_report, file_name, needs_decode,
-        now_rfc3339, offset_spans, parse_config, plan_pieces, prefix_lengths, provenance,
-        read_f32_wav, recording_m0, recording_name, resolve_input, samples_to_seconds,
-        seconds_to_samples, segment_m0, segment_wav_names, sha256_hex, stage2_report,
-        window_rms_max, write_f32_wav,
+        FeaturesReport, InputKind, InputMode, InputSegmentTiming, Manifest, Mode, PieceDecision,
+        PlannedPiece, Provenance, RecordingStatus, Repeat, SegmentFile, SegmentInput, SegmentM0,
+        SileroOut, Span, Stage2Output, Status, Thresholds, VadRun, VadSettings, WHISPER_RS_VERSION,
+        afconvert_args, assemble_pieces, build_prompt, build_segment, causality, check_contiguous,
+        check_phrases, check_spans, chunk_ranges, compare_repeat, f32_wav_header, features_report,
+        file_name, needs_decode, now_rfc3339, offset_spans, parse_config, plan_pieces,
+        prefix_lengths, provenance, read_f32_wav, recording_m0, recording_name, resolve_input,
+        samples_to_seconds, seconds_to_samples, segment_m0, segment_wav_names, sha256_hex,
+        stage2_report, window_rms_max, write_f32_wav,
     };
     use scriber_engine::{DetailedPhrase, DetailedToken, Phrase};
     use serde_json::{Value, json};
@@ -419,6 +419,26 @@ mod tests {
             "duplicate silero setting a",
             "duplicate"
         );
+    }
+
+    #[test]
+    fn repeat_decode_is_an_optional_bool_in_both_modes() {
+        for json in [features_json, stage2_json] {
+            assert!(!parse_config(&json("")).unwrap().repeat_decode, "default");
+            assert!(
+                parse_config(&json(r#", "repeat_decode": true"#))
+                    .unwrap()
+                    .repeat_decode,
+                "true"
+            );
+            assert!(
+                !parse_config(&json(r#", "repeat_decode": false"#))
+                    .unwrap()
+                    .repeat_decode,
+                "false"
+            );
+            let _e = config_err(&json(r#", "repeat_decode": "yes""#));
+        }
     }
 
     #[test]
@@ -889,6 +909,70 @@ mod tests {
         );
     }
 
+    const FLOAT_GUID: [u8; 16] = [
+        3, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+    ];
+
+    /// afconvert's `fmt ` chunk: format tag 0xFFFE, then cbSize 22, valid
+    /// bits, channel mask and the `SubFormat` GUID.
+    fn extensible_fmt(guid: [u8; 16], len: usize) -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        f.extend_from_slice(&1u16.to_le_bytes());
+        f.extend_from_slice(&16_000u32.to_le_bytes());
+        f.extend_from_slice(&64_000u32.to_le_bytes());
+        f.extend_from_slice(&4u16.to_le_bytes());
+        f.extend_from_slice(&32u16.to_le_bytes());
+        f.extend_from_slice(&22u16.to_le_bytes());
+        f.extend_from_slice(&32u16.to_le_bytes());
+        f.extend_from_slice(&4u32.to_le_bytes());
+        f.extend_from_slice(&guid);
+        f.truncate(len);
+        chunk(*b"fmt ", &f)
+    }
+
+    #[test]
+    fn afconverts_extensible_float_wav_reads() {
+        let samples = [0.25f32, -0.5, 0.125];
+        let fllr = chunk(*b"FLLR", &[0u8; 4020]);
+        assert_eq!(
+            read_f32_wav(&riff(&[
+                extensible_fmt(FLOAT_GUID, 40),
+                fllr.clone(),
+                data(&samples)
+            ]))
+            .unwrap(),
+            samples,
+            "extensible IEEE float"
+        );
+        let mut pcm = FLOAT_GUID;
+        pcm[0] = 1;
+        assert_eq!(
+            wav_err(&riff(&[extensible_fmt(pcm, 40), data(&samples)])),
+            "extensible SubFormat is not IEEE float",
+            "PCM SubFormat"
+        );
+        assert_eq!(
+            wav_err(&riff(&[extensible_fmt(FLOAT_GUID, 16), data(&samples)])),
+            "extensible fmt chunk shorter than 40 bytes",
+            "short fmt"
+        );
+        assert_eq!(
+            wav_err(&riff(&[extensible_fmt(FLOAT_GUID, 39), data(&samples)])),
+            "extensible fmt chunk shorter than 40 bytes",
+            "one byte short"
+        );
+        let mut last = FLOAT_GUID;
+        last[15] = 0x70;
+        assert_eq!(
+            wav_err(&riff(&[extensible_fmt(last, 40), data(&samples)])),
+            "extensible SubFormat is not IEEE float",
+            "the whole GUID is compared"
+        );
+        let tag3 = riff(&[fmt(3, 1, 16_000, 32), data(&samples)]);
+        assert_eq!(read_f32_wav(&tag3).unwrap(), samples, "tag 3 still reads");
+    }
+
     // ---- checks ----------------------------------------------------------------------
 
     #[test]
@@ -1229,16 +1313,33 @@ mod tests {
         );
     }
 
+    fn skipped_piece(range: std::ops::Range<usize>) -> PlannedPiece {
+        PlannedPiece {
+            skip: true,
+            decode_len: 0,
+            ..piece(range)
+        }
+    }
+
+    fn with_nsp(mut d: DetailedPhrase, p: f32) -> DetailedPhrase {
+        d.no_speech_probability = p;
+        d
+    }
+
     #[test]
     fn no_gating_joins_each_input_segment_like_production() {
         let plan = plan_pieces(&[32_000, 16_000], None).unwrap();
         let out = assemble_pieces(
             &plan,
+            &quiet(48_000),
             &[
-                vec![ph(" Hello", 0, 8_000), ph(" world. ", 8_000, 32_000)],
-                vec![ph(" Second.", 1_600, 16_000)],
+                decoded(
+                    vec![dp(" Hello", 0, 8_000), dp(" world. ", 8_000, 32_000)],
+                    12,
+                ),
+                decoded(vec![dp(" Second.", 1_600, 16_000)], 7),
             ],
-            &[12, 7],
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1256,17 +1357,25 @@ mod tests {
         assert!(!second.skipped, "not skipped");
         assert_eq!(second.text.as_deref(), Some("Second."), "piece text");
         let p = &second.phrases[0];
-        assert_eq!(p.index, 0, "phrase index");
-        assert_eq!(bits(p.t0_s), bits(33_600.0 / 16_000.0), "absolute t0");
-        assert_eq!(bits(p.t1_s), bits(3.0), "absolute t1");
-        assert_eq!(p.text, " Second.", "raw text");
+        assert_eq!(p.phrase.index, 0, "phrase index");
+        assert_eq!(
+            bits(p.phrase.t0_s),
+            bits(33_600.0 / 16_000.0),
+            "absolute t0"
+        );
+        assert_eq!(bits(p.phrase.t1_s), bits(3.0), "absolute t1");
+        assert_eq!(p.phrase.text, " Second.", "raw text");
         assert!(!p.dropped, "kept");
-        assert_eq!(out.pieces[0].phrases[1].index, 1, "second phrase index");
+        assert_eq!(
+            out.pieces[0].phrases[1].phrase.index, 1,
+            "second phrase index"
+        );
 
         let one = assemble_pieces(
             &plan_pieces(&[16_000], None).unwrap(),
-            &[vec![ph(" One", 0, 100), ph(" two ", 100, 200)]],
-            &[1],
+            &quiet(16_000),
+            &[decoded(vec![dp(" One", 0, 100), dp(" two ", 100, 200)], 1)],
+            None,
         )
         .unwrap();
         assert_eq!(one.text.as_deref(), Some("One two"), "one segment");
@@ -1275,11 +1384,7 @@ mod tests {
     #[test]
     fn skipped_and_dropped_pieces_leave_no_text() {
         let plan = vec![
-            PlannedPiece {
-                skip: true,
-                decode_len: 0,
-                ..piece(0..100)
-            },
+            skipped_piece(0..100),
             PlannedPiece {
                 drop: vec![0, 1],
                 trim_end_s: Some(0.001),
@@ -1293,12 +1398,13 @@ mod tests {
         ];
         let out = assemble_pieces(
             &plan,
+            &quiet(300),
             &[
-                vec![],
-                vec![ph(" a", 0, 1), ph(" b", 1, 2)],
-                vec![ph(" c", 0, 1), ph(" Thank you.", 1, 2)],
+                Decoded::default(),
+                decoded(vec![dp(" a", 0, 1), dp(" b", 1, 2)], 3),
+                decoded(vec![dp(" c", 0, 1), dp(" Thank you.", 1, 2)], 4),
             ],
-            &[0, 3, 4],
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1316,31 +1422,99 @@ mod tests {
         assert!(!out.skipped, "not every piece skipped");
 
         let all = assemble_pieces(
-            &[
-                PlannedPiece {
-                    skip: true,
-                    decode_len: 0,
-                    ..piece(0..100)
-                },
-                PlannedPiece {
-                    skip: true,
-                    decode_len: 0,
-                    ..piece(100..200)
-                },
-            ],
-            &[vec![], vec![]],
-            &[0, 0],
+            &[skipped_piece(0..100), skipped_piece(100..200)],
+            &quiet(200),
+            &[Decoded::default(), Decoded::default()],
+            None,
         )
         .unwrap();
         assert!(all.skipped, "every piece skipped");
         assert_eq!(all.text, None, "no text");
+        assert_eq!(all.text_undropped, None, "no undropped text");
 
-        let empty = assemble_pieces(&[], &[], &[]).unwrap();
+        let empty = assemble_pieces(&[], &[], &[], None).unwrap();
         assert!(!empty.skipped, "no pieces is not skipped");
         assert_eq!(empty.text.as_deref(), Some(""), "empty text");
 
-        let nothing = assemble_pieces(&[piece(0..100)], &[vec![]], &[0]).unwrap();
+        let nothing =
+            assemble_pieces(&[piece(0..100)], &quiet(100), &[Decoded::default()], None).unwrap();
         assert_eq!(nothing.text.as_deref(), Some(""), "nothing heard");
+        assert_eq!(
+            nothing.pieces[0].text_undropped.as_deref(),
+            Some(""),
+            "default decode"
+        );
+    }
+
+    #[test]
+    fn a_stage2_phrase_times_come_from_the_piece_start_by_integer_samples() {
+        let at = |start: usize, p: DetailedPhrase| {
+            let plan = [piece(start..start + 16_000)];
+            let timeline = quiet(start + 16_000);
+            let out = assemble_pieces(&plan, &timeline, &[decoded(vec![p], 1)], None).unwrap();
+            let phrase = out.pieces[0].phrases[0].phrase.clone();
+            (phrase.t0_s, phrase.t1_s)
+        };
+        let (t0, t1) = at(16_000, dp(" a", 0, 8_000));
+        assert_eq!((bits(t0), bits(t1)), (bits(1.0), bits(1.5)), "dyadic");
+        let (odd0, odd1) = at(16_001, dp(" a", 0, 3));
+        assert_eq!(odd0, samples_to_seconds(16_001).unwrap(), "t0 exact");
+        assert_eq!(odd1, samples_to_seconds(16_004).unwrap(), "t1 exact");
+    }
+
+    #[test]
+    fn stage2_texts_with_and_without_drops() {
+        let plan = [PlannedPiece {
+            drop: vec![1],
+            ..piece(0..16_000)
+        }];
+        let out = assemble_pieces(
+            &plan,
+            &quiet(16_000),
+            &[decoded(
+                vec![dp(" a", 0, 8_000), dp(" b", 8_000, 16_000)],
+                1,
+            )],
+            None,
+        )
+        .unwrap();
+        let p = &out.pieces[0];
+        assert_eq!(p.text.as_deref(), Some("a"), "text");
+        assert_eq!(p.text_undropped.as_deref(), Some("a b"), "undropped");
+        assert_eq!(out.text.as_deref(), Some("a"), "recording text");
+        assert_eq!(
+            out.text_undropped.as_deref(),
+            Some("a b"),
+            "recording undropped"
+        );
+
+        let two = assemble_pieces(
+            &[piece(0..8_000), piece(8_000..16_000)],
+            &quiet(16_000),
+            &[
+                decoded(vec![dp(" a", 0, 100)], 1),
+                decoded(vec![dp(" b", 0, 100)], 1),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(two.text_undropped, Some(join(["a", "b"])), "joined");
+
+        let mixed = assemble_pieces(
+            &[skipped_piece(0..100), piece(100..200)],
+            &quiet(200),
+            &[Decoded::default(), decoded(vec![dp(" x", 0, 5)], 1)],
+            None,
+        )
+        .unwrap();
+        assert_eq!(mixed.pieces[0].text_undropped, None, "skipped piece");
+        assert_eq!(
+            mixed.text_undropped.as_deref(),
+            Some("x"),
+            "skips add nothing"
+        );
+        let v = serde_json::to_value(&mixed.pieces[0]).unwrap();
+        assert!(v["text_undropped"].is_null(), "null for a skipped piece");
     }
 
     #[test]
@@ -1352,8 +1526,9 @@ mod tests {
         assert_eq!(
             rec_err(assemble_pieces(
                 &plan,
-                &[vec![ph("a", 0, 1), ph("b", 1, 2)]],
-                &[0]
+                &quiet(100),
+                &[decoded(vec![dp("a", 0, 1), dp("b", 1, 2)], 0)],
+                None
             )),
             "piece 0: drop index 2 is past its 2 phrases",
             "drop out of range"
@@ -1361,22 +1536,289 @@ mod tests {
         assert!(
             assemble_pieces(
                 &plan,
-                &[vec![ph("a", 0, 1), ph("b", 1, 2), ph("c", 2, 3)]],
-                &[0]
+                &quiet(100),
+                &[decoded(
+                    vec![dp("a", 0, 1), dp("b", 1, 2), dp("c", 2, 3)],
+                    0
+                )],
+                None
             )
             .is_ok(),
             "the last index"
         );
         let two = vec![piece(0..1), piece(1..2)];
         assert_eq!(
-            rec_err(assemble_pieces(&two, &[vec![]], &[0, 0])),
-            "2 pieces, but 1 decodes and 2 timings",
+            rec_err(assemble_pieces(
+                &two,
+                &quiet(2),
+                &[Decoded::default()],
+                None
+            )),
+            "2 pieces, but 1 decodes",
             "decodes"
         );
+        let repeats = [Some(Decoded::default())];
         assert_eq!(
-            rec_err(assemble_pieces(&two, &[vec![], vec![]], &[0])),
-            "2 pieces, but 2 decodes and 1 timings",
-            "timings"
+            rec_err(assemble_pieces(
+                &two,
+                &quiet(2),
+                &[Decoded::default(), Decoded::default()],
+                Some(&repeats)
+            )),
+            "2 pieces, but 1 repeat decodes",
+            "repeats"
+        );
+        assert_eq!(
+            rec_err(assemble_pieces(
+                &[piece(0..10)],
+                &quiet(9),
+                &[Decoded::default()],
+                None
+            )),
+            "piece 0: ends at sample 10, past the audio",
+            "past the audio"
+        );
+        assert!(
+            assemble_pieces(&[piece(0..10)], &quiet(10), &[Decoded::default()], None).is_ok(),
+            "exactly the audio"
+        );
+        assert!(
+            rec_err(assemble_pieces(
+                &[piece(0..10)],
+                &quiet(10),
+                &[decoded(vec![dp("a", 0, 20_000)], 0)],
+                None
+            ))
+            .contains("phrase"),
+            "phrase past the decode"
+        );
+        let both = [Decoded::default(), Decoded::default()];
+        assert_eq!(
+            rec_err(assemble_pieces(
+                &two,
+                &quiet(2),
+                &both,
+                Some(&[Some(Decoded::default()), None])
+            )),
+            "piece 1: no repeat decode",
+            "missing repeat"
+        );
+        assert!(
+            rec_err(assemble_pieces(
+                &[piece(0..10)],
+                &quiet(10),
+                &[Decoded::default()],
+                Some(&[Some(decoded(vec![dp("a", 0, 20_000)], 0))])
+            ))
+            .contains("phrase"),
+            "phrase past the repeat"
+        );
+    }
+
+    #[test]
+    fn repeats_fill_each_piece_and_the_recording() {
+        let plan = [piece(0..100), skipped_piece(100..200), piece(200..300)];
+        let timeline = quiet(300);
+        let first = decoded(vec![dp(" a", 0, 5)], 1);
+        let same = first.clone();
+        let other = decoded(vec![with_nsp(dp(" a", 0, 5), 0.5)], 1);
+        let decodes = [first.clone(), Decoded::default(), first.clone()];
+        let on = assemble_pieces(
+            &plan,
+            &timeline,
+            &decodes,
+            Some(&[Some(same.clone()), Some(other.clone()), Some(same.clone())]),
+        )
+        .unwrap();
+        assert_eq!(on.repeat_all_equal, Some(true), "all equal");
+        assert_eq!(on.pieces[1].repeat, None, "skipped piece ignores its entry");
+        assert_eq!(
+            on.pieces[0].repeat,
+            Some(compare_repeat(&first, &same)),
+            "piece"
+        );
+        let differing = assemble_pieces(
+            &plan,
+            &timeline,
+            &decodes,
+            Some(&[Some(same.clone()), None, Some(other.clone())]),
+        )
+        .unwrap();
+        assert_eq!(differing.repeat_all_equal, Some(false), "one differs");
+        assert_eq!(
+            differing.pieces[2]
+                .repeat
+                .as_ref()
+                .unwrap()
+                .no_speech_probability_max_abs_diff,
+            Some(0.25),
+            "shows the difference"
+        );
+        let off = assemble_pieces(&plan, &timeline, &decodes, None).unwrap();
+        assert_eq!(off.repeat_all_equal, None, "off");
+        assert!(off.pieces.iter().all(|p| p.repeat.is_none()), "no repeats");
+        let skipped = assemble_pieces(
+            &[skipped_piece(0..10)],
+            &quiet(10),
+            &[Decoded::default()],
+            Some(&[None]),
+        )
+        .unwrap();
+        assert_eq!(skipped.repeat_all_equal, Some(true), "vacuous");
+    }
+
+    // ---- repeat comparison -----------------------------------------------------------
+
+    fn three(probs: [f32; 3]) -> Decoded {
+        decoded(
+            vec![
+                with_nsp(dp(" a", 0, 1), probs[0]),
+                with_nsp(dp(" b", 1, 2), probs[1]),
+                with_nsp(dp(" c", 2, 3), probs[2]),
+            ],
+            1,
+        )
+    }
+
+    #[test]
+    fn comparing_repeats() {
+        let a = three([0.0, 0.0, 0.0]);
+        let r1 = compare_repeat(&a, &a.clone());
+        assert_eq!(
+            (
+                r1.text_equal,
+                r1.no_speech_probability_max_abs_diff,
+                r1.segment_count_equal
+            ),
+            (true, Some(0.0), true),
+            "identical"
+        );
+        assert!(r1.all_equal(), "identical is all equal");
+
+        let mut text = a.clone();
+        text.phrases[1].phrase.text = " B".into();
+        let r2 = compare_repeat(&a, &text);
+        assert_eq!(
+            (
+                r2.text_equal,
+                r2.no_speech_probability_max_abs_diff,
+                r2.segment_count_equal
+            ),
+            (false, Some(0.0), true),
+            "one character"
+        );
+        assert!(!r2.all_equal(), "text differs");
+
+        let r3 = compare_repeat(&a, &three([0.0, 0.25, 0.0]));
+        assert_eq!(r3.no_speech_probability_max_abs_diff, Some(0.25), "middle");
+        assert!(!r3.all_equal(), "probability differs");
+        assert_eq!(
+            compare_repeat(&three([0.125, 0.5, 0.25]), &three([0.0, 0.0, 0.0]))
+                .no_speech_probability_max_abs_diff,
+            Some(0.5),
+            "max, not sum or first or last"
+        );
+        assert_eq!(
+            compare_repeat(&three([0.0, 0.5, 0.0]), &three([0.0, 0.0, 0.0]))
+                .no_speech_probability_max_abs_diff,
+            Some(0.5),
+            "negative direction is absolute"
+        );
+        assert_eq!(
+            compare_repeat(&three([0.0, 0.0, 0.0]), &three([0.0, 0.5, 0.0]))
+                .no_speech_probability_max_abs_diff,
+            Some(0.5),
+            "absolute"
+        );
+
+        let fewer = decoded(a.phrases[..2].to_vec(), 1);
+        let r4 = compare_repeat(&a, &fewer);
+        assert_eq!(r4.no_speech_probability_max_abs_diff, None, "counts differ");
+        assert!(!r4.segment_count_equal, "count flag");
+        let one_phrase = decoded(vec![dp(" ab", 0, 1)], 1);
+        let two = decoded(vec![dp(" a", 0, 1), dp("b", 1, 2)], 1);
+        assert!(
+            compare_repeat(&one_phrase, &two).text_equal,
+            "concatenation is untrimmed"
+        );
+        let joined = decoded(vec![dp(" a", 0, 1)], 1);
+        let r5 = compare_repeat(&joined, &decoded(vec![dp(" a", 0, 1), dp("", 1, 1)], 1));
+        assert!(r5.text_equal, "equal text, different counts");
+        assert!(!r5.segment_count_equal, "counts differ");
+        assert!(!r5.all_equal(), "counts differ is not all equal");
+
+        let r6 = compare_repeat(&Decoded::default(), &Decoded::default());
+        assert_eq!(
+            (
+                r6.text_equal,
+                r6.no_speech_probability_max_abs_diff,
+                r6.segment_count_equal
+            ),
+            (true, Some(0.0), true),
+            "both empty"
+        );
+        let nan = compare_repeat(
+            &decoded(vec![with_nsp(dp("a", 0, 1), f32::NAN)], 1),
+            &decoded(vec![with_nsp(dp("a", 0, 1), 0.0)], 1),
+        );
+        assert!(
+            nan.no_speech_probability_max_abs_diff.unwrap().is_nan(),
+            "NaN"
+        );
+        assert!(!nan.all_equal(), "NaN is not equal");
+        let nan_later = compare_repeat(
+            &decoded(vec![dp("a", 0, 1), with_nsp(dp("a", 1, 2), f32::NAN)], 1),
+            &decoded(vec![dp("a", 0, 1), dp("a", 1, 2)], 1),
+        );
+        assert!(
+            nan_later
+                .no_speech_probability_max_abs_diff
+                .unwrap()
+                .is_nan(),
+            "NaN after a number"
+        );
+    }
+
+    #[test]
+    fn all_equal_needs_every_field() {
+        let ok = Repeat {
+            text_equal: true,
+            no_speech_probability_max_abs_diff: Some(0.0),
+            segment_count_equal: true,
+        };
+        assert!(ok.all_equal(), "all three");
+        let text = Repeat {
+            text_equal: false,
+            ..ok.clone()
+        };
+        let count = Repeat {
+            segment_count_equal: false,
+            ..ok.clone()
+        };
+        let diff = Repeat {
+            no_speech_probability_max_abs_diff: Some(0.125),
+            ..ok.clone()
+        };
+        let none = Repeat {
+            no_speech_probability_max_abs_diff: None,
+            ..ok.clone()
+        };
+        for (r, what) in [
+            (text, "text"),
+            (count, "count"),
+            (diff, "diff"),
+            (none, "none"),
+        ] {
+            assert!(!r.all_equal(), "{what}");
+        }
+        assert_keys(
+            &serde_json::to_value(&ok).unwrap(),
+            &[
+                "text_equal",
+                "no_speech_probability_max_abs_diff",
+                "segment_count_equal",
+            ],
+            "repeat keys",
         );
     }
 
@@ -1531,6 +1973,7 @@ mod tests {
                 vec![dp(" Hello.", 0, 32_000), dp(" Thank you.", 32_000, 40_000)],
                 30,
             ),
+            repeat_decode: None,
         }
     }
 
@@ -1540,6 +1983,7 @@ mod tests {
             untrimmed: loud(16_000),
             untrimmed_decode: decoded(vec![dp(" Again.", 0, 16_000)], 5),
             trimmed_decode: decoded(vec![dp(" Again.", 1_600, 16_000)], 6),
+            repeat_decode: None,
         }
     }
 
@@ -1636,6 +2080,7 @@ mod tests {
             untrimmed: vec![],
             untrimmed_decode: Decoded::default(),
             trimmed_decode: Decoded::default(),
+            repeat_decode: None,
         };
         let s = build_segment(0, &input).unwrap();
         assert_eq!(s.samples_trimmed, 0, "empty");
@@ -1698,8 +2143,13 @@ mod tests {
             build_segment(0, &speech_then_silence()).unwrap(),
             build_segment(1, &short_speech()).unwrap(),
         ];
-        let r =
-            features_report(common_fixture(None, InputKind::SegmentWavs), segments, None).unwrap();
+        let r = features_report(
+            common_fixture(None, InputKind::SegmentWavs),
+            segments,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(r.segment_count, 2, "count");
         assert_eq!(r.samples_untrimmed, 80_000, "untrimmed sum");
         assert_eq!(r.samples_trimmed, 40_000 + 16_000, "trimmed sum");
@@ -1737,6 +2187,142 @@ mod tests {
         assert_eq!(r.segments[1].index, 1, "segment kept");
     }
 
+    fn lengths_input(n: usize) -> SegmentInput {
+        SegmentInput {
+            file: None,
+            untrimmed: loud(n),
+            untrimmed_decode: Decoded::default(),
+            trimmed_decode: Decoded::default(),
+            repeat_decode: None,
+        }
+    }
+
+    fn report_of(inputs: &[SegmentInput], repeat: bool) -> Result<FeaturesReport, ExtractError> {
+        let segments = inputs
+            .iter()
+            .enumerate()
+            .map(|(k, i)| build_segment(k, i).unwrap())
+            .collect();
+        features_report(
+            common_fixture(None, InputKind::SegmentWavs),
+            segments,
+            None,
+            repeat,
+        )
+    }
+
+    #[test]
+    fn segments_know_where_they_sit_on_the_timeline() {
+        let r = report_of(&[lengths_input(16_000), lengths_input(8_000)], false).unwrap();
+        let offsets: Vec<f64> = r.segments.iter().map(|s| s.offset_s).collect();
+        let lengths: Vec<f64> = r.segments.iter().map(|s| s.length_s).collect();
+        assert_eq!(offsets, [0.0, 1.0], "offsets");
+        assert_eq!(lengths, [1.0, 0.5], "lengths");
+        assert_eq!(
+            lengths,
+            r.segments
+                .iter()
+                .map(|s| s.duration_untrimmed_s)
+                .collect::<Vec<_>>(),
+            "length is the untrimmed duration"
+        );
+        let mut two = [speech_then_silence(), short_speech()];
+        two[1].untrimmed_decode = decoded(vec![dp(" x", 0, 16_000)], 1);
+        let joined = report_of(&two, false).unwrap();
+        let shift =
+            joined.untrimmed.phrases[2].phrase.t0_s - joined.segments[1].untrimmed.phrases[0].t0_s;
+        assert_eq!(
+            bits(joined.segments[1].offset_s),
+            bits(shift),
+            "the concatenation shift"
+        );
+        let odd = report_of(&[lengths_input(16_001), lengths_input(7)], false).unwrap();
+        assert_eq!(odd.segments[0].offset_s, 0.0, "first");
+        assert_eq!(
+            odd.segments[1].offset_s,
+            samples_to_seconds(16_001).unwrap(),
+            "non-dyadic offset"
+        );
+        assert_eq!(
+            odd.segments[1].length_s,
+            samples_to_seconds(7).unwrap(),
+            "non-dyadic length"
+        );
+        let single = build_segment(0, &lengths_input(100)).unwrap();
+        assert_eq!(single.offset_s, 0.0, "a lone segment starts at 0");
+    }
+
+    fn with_repeat(mut input: SegmentInput, second: Decoded) -> SegmentInput {
+        input.repeat_decode = Some(second);
+        input
+    }
+
+    #[test]
+    fn repeat_decodes_are_reported_when_asked_for() {
+        let base = short_speech();
+        let same = with_repeat(base.clone(), base.untrimmed_decode.clone());
+        let r = report_of(&[same.clone(), same.clone()], true).unwrap();
+        assert_eq!(r.repeat_all_equal, Some(true), "all equal");
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["repeat_all_equal"], true, "key");
+        assert_keys(
+            &v["segments"][0]["repeat"],
+            &[
+                "text_equal",
+                "no_speech_probability_max_abs_diff",
+                "segment_count_equal",
+            ],
+            "repeat",
+        );
+        let off = report_of(std::slice::from_ref(&base), false).unwrap();
+        assert_eq!(off.repeat_all_equal, None, "off");
+        let off_v = serde_json::to_value(&off).unwrap();
+        assert!(
+            !off_v.as_object().unwrap().contains_key("repeat_all_equal"),
+            "no key"
+        );
+        assert!(
+            !off_v["segments"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("repeat"),
+            "no segment key"
+        );
+        assert_eq!(
+            report_of(&[], true).unwrap().repeat_all_equal,
+            Some(true),
+            "vacuous"
+        );
+        assert_eq!(
+            report_of(&[], false).unwrap().repeat_all_equal,
+            None,
+            "off, empty"
+        );
+
+        let texted = decoded(vec![dp(" Other.", 0, 16_000)], 5);
+        let counted = decoded(vec![dp(" Again.", 0, 8_000), dp("", 8_000, 16_000)], 5);
+        let probable = decoded(vec![with_nsp(dp(" Again.", 0, 16_000), 0.5)], 5);
+        for (second, what) in [
+            (texted, "text"),
+            (counted, "count"),
+            (probable, "probability"),
+        ] {
+            let differs =
+                report_of(&[same.clone(), with_repeat(base.clone(), second)], true).unwrap();
+            assert_eq!(differs.repeat_all_equal, Some(false), "{what}");
+        }
+        let bad = with_repeat(base.clone(), decoded(vec![dp("x", 0, 40_000)], 0));
+        assert!(
+            rec_err(build_segment(0, &bad)).contains("past"),
+            "repeat phrase checked"
+        );
+
+        let on_missing = report_of(std::slice::from_ref(&base), true);
+        assert!(rec_err(on_missing).contains("missing"), "on but missing");
+        let off_present = report_of(&[same], false);
+        assert!(rec_err(off_present).contains("present"), "off but present");
+    }
+
     #[test]
     fn a_silent_recording_is_silent() {
         let silent = SegmentInput {
@@ -1744,11 +2330,13 @@ mod tests {
             untrimmed: quiet(16_000),
             untrimmed_decode: Decoded::default(),
             trimmed_decode: Decoded::default(),
+            repeat_decode: None,
         };
         let r = features_report(
             common_fixture(None, InputKind::Wav),
             vec![build_segment(0, &silent).unwrap()],
             None,
+            false,
         )
         .unwrap();
         assert!(r.is_silent, "silent");
@@ -1761,6 +2349,7 @@ mod tests {
                 build_segment(1, &short_speech()).unwrap(),
             ],
             None,
+            false,
         )
         .unwrap();
         assert!(!mixed.is_silent, "one loud segment");
@@ -1772,6 +2361,7 @@ mod tests {
                 build_segment(1, &silent).unwrap(),
             ],
             None,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1914,6 +2504,7 @@ mod tests {
             common_fixture(Some("prompt".into()), InputKind::SegmentWavs),
             segments,
             Some(silero),
+            false,
         )
         .unwrap();
         let v = serde_json::to_value(&r).unwrap();
@@ -2067,6 +2658,8 @@ mod tests {
                     "samples_trimmed",
                     "duration_untrimmed_s",
                     "duration_trimmed_s",
+                    "offset_s",
+                    "length_s",
                     "is_silent",
                     "rms_max",
                     "untrimmed",
@@ -2104,10 +2697,17 @@ mod tests {
             untrimmed: quiet(16_000),
             untrimmed_decode: Decoded::default(),
             trimmed_decode: Decoded::default(),
+            repeat_decode: None,
         };
         let mut common = common_fixture(None, InputKind::Wav);
         common.provenance.scriber_dirty = None;
-        let r = features_report(common, vec![build_segment(0, &silent).unwrap()], None).unwrap();
+        let r = features_report(
+            common,
+            vec![build_segment(0, &silent).unwrap()],
+            None,
+            false,
+        )
+        .unwrap();
         let v = serde_json::to_value(&r).unwrap();
         assert!(v["silero"].is_null(), "silero");
         assert!(v["decode"]["prompt"].is_null(), "prompt");
@@ -2126,6 +2726,119 @@ mod tests {
     }
 
     #[test]
+    fn the_stage2_report_places_its_input_segments() {
+        let report = |lengths: &[usize]| {
+            stage2_report(
+                common_fixture(None, InputKind::SegmentWavs),
+                None,
+                lengths,
+                assemble_pieces(&[], &[], &[], None).unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            report(&[16_000, 8_000]).input_segments,
+            [
+                InputSegmentTiming {
+                    index: 0,
+                    offset_s: 0.0,
+                    length_s: 1.0
+                },
+                InputSegmentTiming {
+                    index: 1,
+                    offset_s: 1.0,
+                    length_s: 0.5
+                },
+            ],
+            "dyadic"
+        );
+        let odd = report(&[16_001, 7]).input_segments;
+        assert_eq!(
+            odd[1].offset_s,
+            samples_to_seconds(16_001).unwrap(),
+            "offset"
+        );
+        assert_eq!(odd[1].length_s, samples_to_seconds(7).unwrap(), "length");
+    }
+
+    #[test]
+    fn the_stage2_report_shows_repeats_only_when_on() {
+        let plan = [piece(0..16_000), skipped_piece(16_000..24_000)];
+        let timeline = quiet(24_000);
+        let first = decoded(vec![dp(" a", 0, 8_000)], 3);
+        let decodes = [first.clone(), Decoded::default()];
+        let report = |repeats: Option<&[Option<Decoded>]>| {
+            let out = assemble_pieces(&plan, &timeline, &decodes, repeats).unwrap();
+            serde_json::to_value(
+                stage2_report(
+                    common_fixture(None, InputKind::SegmentWavs),
+                    None,
+                    &[16_000, 8_000],
+                    out,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let mut top = COMMON_KEYS.to_vec();
+        top.extend([
+            "input_segment_lengths_s",
+            "input_segments",
+            "skipped",
+            "pieces",
+            "text",
+            "text_undropped",
+        ]);
+        let off = report(None);
+        assert_keys(&off, &top, "off");
+        assert!(
+            !off["pieces"][0].as_object().unwrap().contains_key("repeat"),
+            "off piece"
+        );
+
+        top.push("repeat_all_equal");
+        let on = report(Some(&[Some(first.clone()), None]));
+        assert_keys(&on, &top, "on");
+        assert_eq!(on["repeat_all_equal"], true, "all equal");
+        assert_keys(
+            &on["pieces"][0]["repeat"],
+            &[
+                "text_equal",
+                "no_speech_probability_max_abs_diff",
+                "segment_count_equal",
+            ],
+            "piece repeat",
+        );
+        assert!(
+            !on["pieces"][1].as_object().unwrap().contains_key("repeat"),
+            "skipped piece"
+        );
+        let differs = report(Some(&[Some(decoded(vec![dp(" b", 0, 8_000)], 3)), None]));
+        assert_eq!(differs["repeat_all_equal"], false, "one differs");
+        assert_eq!(
+            differs["pieces"][0]["repeat"]["text_equal"], false,
+            "its repeat shows it"
+        );
+
+        let skipped = assemble_pieces(
+            &[skipped_piece(0..10)],
+            &quiet(10),
+            &[Decoded::default()],
+            Some(&[None]),
+        )
+        .unwrap();
+        let v = serde_json::to_value(
+            stage2_report(common_fixture(None, InputKind::M4a), None, &[10], skipped).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["repeat_all_equal"], true, "all skipped");
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one report, every nesting level of its shape"
+    )]
     fn the_stage2_report_has_the_pinned_shape() {
         let d = Decisions {
             split_s: None,
@@ -2141,7 +2854,13 @@ mod tests {
             ]),
         };
         let plan = plan_pieces(&[16_000, 8_000], Some(&d)).unwrap();
-        let out = assemble_pieces(&plan, &[vec![ph(" a", 0, 8_000)], vec![]], &[3, 0]).unwrap();
+        let out = assemble_pieces(
+            &plan,
+            &quiet(24_000),
+            &[decoded(vec![dp(" a", 0, 8_000)], 3), Decoded::default()],
+            None,
+        )
+        .unwrap();
         let r = stage2_report(
             common_fixture(None, InputKind::SegmentWavs),
             Some(d),
@@ -2151,7 +2870,14 @@ mod tests {
         .unwrap();
         let v = serde_json::to_value(&r).unwrap();
         let mut top = COMMON_KEYS.to_vec();
-        top.extend(["input_segment_lengths_s", "skipped", "pieces", "text"]);
+        top.extend([
+            "input_segment_lengths_s",
+            "input_segments",
+            "skipped",
+            "pieces",
+            "text",
+            "text_undropped",
+        ]);
         assert_keys(&v, &top, "top");
         assert_eq!(v["input_segment_lengths_s"], json!([1.0, 0.5]), "lengths");
         assert_eq!(v["text"], "a", "text");
@@ -2176,14 +2902,18 @@ mod tests {
                     "elapsed_ms",
                     "phrases",
                     "text",
+                    "text_undropped",
                 ],
                 "piece",
             );
         }
+        let mut stage2_phrase = PHRASE_KEYS.to_vec();
+        stage2_phrase.push("dropped");
+        assert_keys(&v["pieces"][0]["phrases"][0], &stage2_phrase, "phrase");
         assert_keys(
-            &v["pieces"][0]["phrases"][0],
-            &["index", "t0_s", "t1_s", "text", "dropped"],
-            "phrase",
+            &v["pieces"][0]["phrases"][0]["tokens"][0],
+            &["text", "id", "special", "probability", "log_probability"],
+            "stage-2 token",
         );
         assert_eq!(v["pieces"][0]["trim_end_s"], 0.5, "trim");
         assert!(v["pieces"][1]["trim_end_s"].is_null(), "no trim");
@@ -2195,8 +2925,9 @@ mod tests {
                 decode_len: 0,
                 ..piece(0..10)
             }],
-            &[vec![]],
-            &[0],
+            &quiet(10),
+            &[Decoded::default()],
+            None,
         )
         .unwrap();
         let none = stage2_report(
@@ -2219,6 +2950,8 @@ mod tests {
                 skipped: false,
                 pieces: vec![],
                 text: None,
+                text_undropped: None,
+                repeat_all_equal: None,
             },
         ));
     }
@@ -2562,6 +3295,20 @@ mod tests {
         assert_eq!(v["whisper_rs_version"], "0.16.0", "version");
         assert_eq!(v["config"]["input"], "auto", "config echoed");
         assert!(v["config"]["silero"].is_null(), "config nulls");
+        assert_eq!(v["config"]["repeat_decode"], false, "repeat off");
+        let on = parse_config(&stage2_json(r#", "repeat_decode": true"#)).unwrap();
+        let on = Manifest::new(
+            on,
+            provenance_fixture(),
+            ("ggml.bin".into(), "00".into()),
+            ("a".into(), "b".into()),
+            vec![],
+        );
+        assert_eq!(
+            serde_json::to_value(&on).unwrap()["config"]["repeat_decode"],
+            true,
+            "repeat on"
+        );
         assert_keys(
             &v["recordings"][0],
             &["name", "status", "error", "outputs"],
