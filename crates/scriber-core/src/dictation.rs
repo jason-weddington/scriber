@@ -27,6 +27,7 @@
 //! action returns [`DictationError::Illegal`] and changes nothing.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::Mutex;
 
 use crate::audio::{decode_wav, duration_ms, encode_wav, to_mono_16k};
@@ -1156,10 +1157,20 @@ impl Dictation {
             .started
             .clone()
             .unwrap_or_else(|| library::title(&lib.clock.now()));
-        let Ok(archived) = library::archive(ports.files, &title, &self.text, record) else {
+        let settings = settings::load(ports.files);
+        let Ok(archived) = library::archive(
+            ports.files,
+            &title,
+            &self.text,
+            record,
+            settings.keep_segments,
+        ) else {
             return;
         };
         store::remove_segments(ports.files);
+        if let (Some(e), Some(notice)) = (&archived.keep_error, self.notice.as_mut()) {
+            let _written = write!(notice, " Could not keep the exact audio of the parts: {e}.");
+        }
         self.bump_library();
         let mut jobs = Vec::new();
         if archived.audio {
@@ -1167,7 +1178,7 @@ impl Dictation {
                 id: archived.id.clone(),
             }));
         }
-        if settings::load(ports.files).summaries {
+        if settings.summaries {
             jobs.push(Job(Work::Summary {
                 id: archived.id,
                 text: self.text.clone(),

@@ -25,6 +25,7 @@ mod tests {
         library_width: 220,
         input_device: String::new(),
         silence_split_ms: 0,
+        keep_segments: false,
     };
 
     fn with(bytes: &[u8]) -> FakeFiles {
@@ -68,6 +69,7 @@ mod tests {
                     library_width: 220,
                     input_device: String::new(),
                     silence_split_ms: 0,
+                    keep_segments: false,
                 },
             ),
             (
@@ -82,6 +84,7 @@ mod tests {
                     library_width: 220,
                     input_device: String::new(),
                     silence_split_ms: 0,
+                    keep_segments: false,
                 },
             ),
             (
@@ -96,6 +99,7 @@ mod tests {
                     library_width: 220,
                     input_device: String::new(),
                     silence_split_ms: 0,
+                    keep_segments: false,
                 },
             ),
             (
@@ -110,6 +114,7 @@ mod tests {
                     library_width: 220,
                     input_device: String::new(),
                     silence_split_ms: 0,
+                    keep_segments: false,
                 },
             ),
             (br#"{"libraryOpen":false}"#, DEFAULTS),
@@ -136,6 +141,7 @@ mod tests {
             library_width: 220,
             input_device: String::new(),
             silence_split_ms: 0,
+            keep_segments: false,
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
@@ -151,13 +157,14 @@ mod tests {
                 "cleanup_model": "",
                 "library_width": 220,
                 "input_device": "",
-                "silence_split_ms": 0
+                "silence_split_ms": 0,
+                "keep_segments": false
             }),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false}"#,
             "compact"
         );
         assert!(
@@ -200,7 +207,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -238,7 +245,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -276,7 +283,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -327,7 +334,7 @@ mod tests {
         save(&files, &s).unwrap();
         let bytes = files.read(SETTINGS).unwrap();
         assert!(
-            bytes.ends_with(br#","library_width":300,"input_device":"","silence_split_ms":0}"#),
+            bytes.ends_with(br#","library_width":300,"input_device":"","silence_split_ms":0,"keep_segments":false}"#),
             "{}",
             String::from_utf8_lossy(&bytes)
         );
@@ -338,7 +345,7 @@ mod tests {
     fn the_input_device_is_kept_only_when_it_is_a_string() {
         assert_eq!(
             load(&with(
-                br#"{"input_device":"AirPods Pro","silence_split_ms":0}"#
+                br#"{"input_device":"AirPods Pro","silence_split_ms":0,"keep_segments":false}"#
             ))
             .input_device,
             "AirPods Pro",
@@ -370,7 +377,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro","silence_split_ms":0}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro","silence_split_ms":0,"keep_segments":false}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -416,9 +423,55 @@ mod tests {
             files
                 .read(SETTINGS)
                 .unwrap()
-                .ends_with(br#","input_device":"","silence_split_ms":2500}"#),
+                .ends_with(br#","input_device":"","silence_split_ms":2500,"keep_segments":false}"#),
             "saved last"
         );
         assert_eq!(load(&files), s, "read back");
+    }
+
+    #[test]
+    fn keep_segments_is_true_only_for_the_boolean_true() {
+        for (stored, want) in [
+            (None, false),
+            (Some("true"), true),
+            (Some("false"), false),
+            (Some("\"true\""), false),
+            (Some("1"), false),
+            (Some("null"), false),
+        ] {
+            let bytes = stored.map_or_else(
+                || "{}".to_string(),
+                |v| format!(r#"{{"keep_segments":{v}}}"#),
+            );
+            assert_eq!(
+                load(&with(bytes.as_bytes())).keep_segments,
+                want,
+                "{stored:?}"
+            );
+        }
+        assert!(!load(&FakeFiles::default()).keep_segments, "no file");
+        assert!(!load(&with(b"not json")).keep_segments, "invalid file");
+        let files = FakeFiles::default();
+        let s = Settings {
+            keep_segments: true,
+            ..DEFAULTS
+        };
+        save(&files, &s).unwrap();
+        assert!(
+            files
+                .read(SETTINGS)
+                .unwrap()
+                .ends_with(br#","silence_split_ms":0,"keep_segments":true}"#),
+            "saved last"
+        );
+        assert_eq!(load(&files), s, "read back");
+        assert_eq!(
+            load(&with(br#"{"keep_segments":true}"#)),
+            Settings {
+                keep_segments: true,
+                ..DEFAULTS
+            },
+            "no other key is affected"
+        );
     }
 }

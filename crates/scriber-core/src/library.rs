@@ -6,6 +6,7 @@
 //! library/20261026-140309/transcript.txt      the transcript
 //! library/20261026-140309/transcript.raw.txt  Whisper's transcript as spoken, when an accepted cleanup or the shortcut glyphs changed the text
 //! library/20261026-140309/cleanup.reply.txt   the rejected reply as the Cleaner returned it (the reply's `transcript` field, after the adapter's `</think>` cut)
+//! library/20261026-140309/segments/segment-NNNN.wav  with keep_segments on: each part's WAV exactly as stored; a segment that cannot be kept is reported in `keep_error` and never fails the archive
 //! library/20261026-140309/audio.m4a          the session's audio (audio.wav until encoded, or when encoding fails)
 //! ```
 //!
@@ -171,6 +172,8 @@ pub(crate) struct Archived {
     pub(crate) id: String,
     /// Whether `audio.wav` was written.
     pub(crate) audio: bool,
+    /// The first segment that could not be kept, when `keep_segments` was on; `None` otherwise.
+    pub(crate) keep_error: Option<PortError>,
 }
 
 /// The ids already in the library, with any id-like name counted.
@@ -187,7 +190,10 @@ fn taken(files: &dyn Files) -> Result<BTreeSet<String>, PortError> {
 /// new entry: its stored segments joined into `audio.wav`, its transcript,
 /// then `transcript.raw.txt` and `cleanup.reply.txt` when `cleanup` has them,
 /// and last its entry.json, so an entry without one never lists. The
-/// segments themselves are left for the caller to remove.
+/// segments themselves are left for the caller to remove. With
+/// `keep_segments`, each stored segment is also copied unchanged to
+/// `library/<id>/segments/segment-NNNN.wav`, before entry.json; a segment that
+/// cannot be kept is reported in `keep_error` and never fails the archive.
 ///
 /// # Errors
 ///
@@ -197,6 +203,7 @@ pub(crate) fn archive(
     title: &str,
     text: &str,
     cleanup: &CleanupRecord,
+    keep_segments: bool,
 ) -> Result<Archived, PortError> {
     let base = base_id(title);
     let taken = taken(files)?;
@@ -207,11 +214,13 @@ pub(crate) fn archive(
         id = format!("{base}-{n}");
     }
     let mut all = Vec::new();
+    let mut parts = Vec::new();
     for index in store::stored(files)? {
-        let samples = store::load(files, index)
-            .ok()
-            .and_then(|bytes| decode_wav(&bytes).ok());
-        all.extend(samples.unwrap_or_default());
+        let bytes = store::load(files, index);
+        if let Some(samples) = bytes.as_ref().ok().and_then(|b| decode_wav(b).ok()) {
+            all.extend(samples);
+        }
+        parts.push((index, bytes));
     }
     let audio = !all.is_empty();
     if audio {
@@ -223,6 +232,16 @@ pub(crate) fn archive(
     }
     if let Some(reply) = &cleanup.reply {
         files.write(&entry_path(&id, "cleanup.reply.txt"), reply.as_bytes())?;
+    }
+    let mut keep_error = None;
+    if keep_segments {
+        for (index, bytes) in parts {
+            let kept =
+                bytes.and_then(|b| files.write(&entry_path(&id, &store::segment_path(index)), &b));
+            if let Err(e) = kept {
+                let _first = keep_error.get_or_insert(e);
+            }
+        }
     }
     let entry = EntryFile {
         id: &id,
@@ -237,7 +256,11 @@ pub(crate) fn archive(
     let partial = entry_path(&id, "entry.json.partial");
     files.write(&partial, &json)?;
     files.rename(&partial, &entry_path(&id, "entry.json"))?;
-    Ok(Archived { id, audio })
+    Ok(Archived {
+        id,
+        audio,
+        keep_error,
+    })
 }
 
 /// Replaces entry `id`'s summary with `summary` from the local model,

@@ -797,6 +797,7 @@ impl Engine {
             s.vocabulary = String::new();
         }
         let saved = settings::load(&self.0.files);
+        s.keep_segments = saved.keep_segments;
         for (model, kept) in [
             (&mut s.summary_model, saved.summary_model),
             (&mut s.cleanup_model, saved.cleanup_model),

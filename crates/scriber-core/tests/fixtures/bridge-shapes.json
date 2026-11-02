@@ -84,7 +84,8 @@
     "cleanupModel": "qwen3.8:27b-mlx",
     "libraryWidth": 300,
     "inputDevice": "AirPods Pro",
-    "silenceSplitMs": 2500
+    "silenceSplitMs": 2500,
+    "keepSegments": true
   },
   "inputDevices": {
     "defaultDevice": "Jabra Evolve 65",

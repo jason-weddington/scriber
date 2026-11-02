@@ -162,6 +162,10 @@ pub struct LibraryEntry {
 /// The user's settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a flat bag of independent settings, mirrored by the JSON shape"
+)]
 pub struct Settings {
     /// Whether new library entries are summarized by the local model.
     pub summaries: bool,
@@ -188,6 +192,8 @@ pub struct Settings {
     pub input_device: String,
     /// Close the running segment after this many milliseconds of silence while recording; 0 is off. Read leniently from disk and read at each Record and Resume; see [`crate::settings`].
     pub silence_split_ms: u64,
+    /// A hidden setting (no UI; edited in settings.json): when true, a finished recording also keeps each part's exact WAV in its library entry. Read leniently from disk; see [`crate::settings`].
+    pub keep_segments: bool,
 }
 
 /// The input devices the microphone menu offers.

@@ -2,11 +2,11 @@
 //!
 //! On disk the file is a JSON object with the `snake_case` keys `summaries`,
 //! `library_open`, `vocabulary`, `cleanup`, `summary_model`,
-//! `cleanup_model`, `library_width`, `input_device` and `silence_split_ms`. Reading is lenient: a missing, unreadable or invalid file
+//! `cleanup_model`, `library_width`, `input_device`, `silence_split_ms` and `keep_segments`. Reading is lenient: a missing, unreadable or invalid file
 //! means the defaults (`summaries` and `library_open` true, `vocabulary`
 //! empty, `cleanup` false, both models `""`, meaning the engine's default
 //! model, `library_width` 220, `input_device` `""`, meaning the Mac's default
-//! input device, `silence_split_ms` 0, meaning no split),
+//! input device, `silence_split_ms` 0, meaning no split, `keep_segments` false),
 //! and each key is taken on its own, so a missing key or one of another type
 //! takes its default and unknown keys are ignored. `vocabulary` is kept only
 //! when it is an absolute path (it starts with `/`); anything else means `""`,
@@ -17,7 +17,7 @@
 //! kept exactly as stored when it is a string, else `""`.
 //! `silence_split_ms` is kept when it is a non-negative integer that is 0 or
 //! in [`SILENCE_SPLIT_MIN_MS`]..=[`SILENCE_SPLIT_MAX_MS`]; anything else (out
-//! of range, negative, a fraction, another type) means 0. Saving writes the file beside itself and renames it
+//! of range, negative, a fraction, another type) means 0. `keep_segments` is true only for the JSON boolean true; anything else means false. Saving writes the file beside itself and renames it
 //! into place.
 
 use serde::Serialize;
@@ -49,6 +49,10 @@ const SETTINGS_PARTIAL: &str = "settings.json.partial";
 
 /// The settings as they are written to disk.
 #[derive(Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a flat bag of independent settings, mirrored by the JSON shape"
+)]
 struct Disk {
     summaries: bool,
     library_open: bool,
@@ -59,6 +63,7 @@ struct Disk {
     library_width: u64,
     input_device: String,
     silence_split_ms: u64,
+    keep_segments: bool,
 }
 
 /// The saved settings, or the defaults where there are none.
@@ -102,6 +107,7 @@ pub fn load(files: &dyn Files) -> Settings {
             .and_then(Value::as_u64)
             .filter(|ms| *ms == 0 || (SILENCE_SPLIT_MIN_MS..=SILENCE_SPLIT_MAX_MS).contains(ms))
             .unwrap_or(0),
+        keep_segments: flag("keep_segments", false),
     }
 }
 
@@ -121,6 +127,7 @@ pub fn save(files: &dyn Files, s: &Settings) -> Result<(), PortError> {
         library_width: s.library_width,
         input_device: s.input_device.clone(),
         silence_split_ms: s.silence_split_ms,
+        keep_segments: s.keep_segments,
     };
     let bytes = serde_json::to_vec(&disk).map_err(fail)?;
     files.write(SETTINGS_PARTIAL, &bytes)?;

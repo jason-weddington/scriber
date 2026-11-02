@@ -942,6 +942,7 @@ mod tests {
             library_width: 220,
             input_device: String::new(),
             silence_split_ms: 0,
+            keep_segments: false,
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -952,7 +953,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -962,6 +963,59 @@ mod tests {
             "refused after shutdown"
         );
         assert_eq!(engine.settings(), off, "still readable after shutdown");
+    }
+
+    #[test]
+    fn settings_json_owns_keep_segments() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"keep_segments":true}"#);
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let off = Settings {
+            keep_segments: false,
+            summaries: false,
+            ..engine.settings()
+        };
+        let back = engine.set_settings(off).unwrap();
+        assert!(back.keep_segments, "returned");
+        assert!(engine.settings().keep_segments, "read back");
+        assert!(!back.summaries, "the other keys are saved");
+        assert!(saved(&dir).ends_with(r#""keep_segments":true}"#), "on disk");
+    }
+
+    #[test]
+    fn a_settings_change_cannot_turn_keep_segments_on() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let on = Settings {
+            keep_segments: true,
+            ..engine.settings()
+        };
+        assert!(!engine.set_settings(on).unwrap().keep_segments, "returned");
+        assert!(!engine.settings().keep_segments, "read back");
+        assert!(
+            saved(&dir).ends_with(r#""keep_segments":false}"#),
+            "on disk"
+        );
+    }
+
+    #[test]
+    fn keep_segments_keeps_each_part_on_disk() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"keep_segments":true}"#);
+        let (engine, _rx) = Fakes::default().open(library_config(&dir));
+        let _recording = engine.record().unwrap();
+        assert_eq!(engine.stop_and_wait(PATIENCE).unwrap(), "hello world");
+        let kept = std::fs::read(
+            dir.path()
+                .join("library/20261026-140309/segments/segment-0000.wav"),
+        )
+        .unwrap();
+        assert_eq!(&kept[..4], b"RIFF", "a WAV file");
+        assert_eq!(kept.len(), 44 + 2 * 16_000, "one second of 16-bit PCM");
+        assert!(
+            !dir.path().join("segments/segment-0000.wav").exists(),
+            "the source is removed"
+        );
     }
 
     #[test]
@@ -993,6 +1047,7 @@ mod tests {
             library_width: 220,
             input_device: String::new(),
             silence_split_ms: 0,
+            keep_segments: false,
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1024,6 +1079,7 @@ mod tests {
             library_width: 220,
             input_device: String::new(),
             silence_split_ms: 0,
+            keep_segments: false,
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1045,6 +1101,7 @@ mod tests {
             library_width: 220,
             input_device: String::new(),
             silence_split_ms: 0,
+            keep_segments: false,
         };
         let kept = Settings {
             summaries: false,
@@ -1070,6 +1127,7 @@ mod tests {
                 library_width: 220,
                 input_device: String::new(),
                 silence_split_ms: 0,
+                keep_segments: false,
             })
             .unwrap();
         let back = engine
@@ -1083,6 +1141,7 @@ mod tests {
                 library_width: 220,
                 input_device: String::new(),
                 silence_split_ms: 0,
+                keep_segments: false,
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1116,6 +1175,7 @@ mod tests {
                 library_width: 220,
                 input_device: String::new(),
                 silence_split_ms: 0,
+                keep_segments: false,
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1186,6 +1246,7 @@ mod tests {
                 library_width: 220,
                 input_device: String::new(),
                 silence_split_ms: 0,
+                keep_segments: false,
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1238,6 +1299,7 @@ mod tests {
             library_width: 220,
             input_device: String::new(),
             silence_split_ms: 0,
+            keep_segments: false,
         }
     }
 
@@ -1451,6 +1513,7 @@ mod tests {
             library_width: 220,
             input_device: String::new(),
             silence_split_ms: 0,
+            keep_segments: false,
             ..engine.settings()
         }
     }
@@ -1795,6 +1858,7 @@ mod tests {
             .set_settings(Settings {
                 input_device: "AirPods Pro".to_string(),
                 silence_split_ms: 0,
+                keep_segments: false,
                 ..engine.settings()
             })
             .unwrap();
@@ -1818,6 +1882,7 @@ mod tests {
         let choose = |name: &str| Settings {
             input_device: name.to_string(),
             silence_split_ms: 0,
+            keep_segments: false,
             ..engine.settings()
         };
         assert_eq!(

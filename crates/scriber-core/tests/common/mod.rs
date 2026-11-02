@@ -154,6 +154,8 @@ pub(crate) struct FakeFiles {
     pub(crate) fail_rename: Cell<bool>,
     /// Makes a write fail when its path ends with this.
     pub(crate) fail_write_suffix: RefCell<Option<String>>,
+    /// Makes a read fail when its path ends with this.
+    pub(crate) fail_read_suffix: RefCell<Option<String>>,
 }
 
 impl FakeFiles {
@@ -189,7 +191,13 @@ impl FakeFiles {
 
 impl Files for FakeFiles {
     fn read(&self, path: &str) -> Result<Vec<u8>, PortError> {
-        if self.fail_read.get() {
+        if self.fail_read.get()
+            || self
+                .fail_read_suffix
+                .borrow()
+                .as_deref()
+                .is_some_and(|suffix| path.ends_with(suffix))
+        {
             return Err(PortError("permission denied".to_string()));
         }
         self.files

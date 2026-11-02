@@ -81,7 +81,7 @@ test('turning summaries off in the settings keeps the next excerpt', async ({ pa
   await expect(button(page, 'Settings')).not.toHaveAttribute('aria-controls', /.*/);
   await expect(summarySwitch(page)).toBeChecked();
   await summarySwitch(page).uncheck();
-  await expect.poll(() => saved(page)).toEqual([{ summaries: false, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 }]);
+  await expect.poll(() => saved(page)).toEqual([{ summaries: false, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false }]);
   await page.keyboard.press('Escape');
   await expect(summarySwitch(page)).toBeHidden();
   await dictate(page);
@@ -150,8 +150,8 @@ test('the Library button hides and shows the drawer and saves the choice', async
   await expect
     .poll(() => saved(page))
     .toEqual([
-      { summaries: true, libraryOpen: false, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 },
-      { summaries: true, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 },
+      { summaries: true, libraryOpen: false, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false },
+      { summaries: true, libraryOpen: true, vocabulary: '/mock/data/vocabulary.txt', cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false },
     ]);
 });
 
@@ -221,7 +221,7 @@ test('settings that cannot be read leave the defaults, silently', async ({ page 
   await page.keyboard.press('Escape');
   await nextFrame(page);
   await button(page, 'Library').click();
-  await expect.poll(() => saved(page)).toEqual([{ summaries: true, libraryOpen: false, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 }]);
+  await expect.poll(() => saved(page)).toEqual([{ summaries: true, libraryOpen: false, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false }]);
 });
 
 test('the check resets when another entry is shown', async ({ page }) => {

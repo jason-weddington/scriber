@@ -153,6 +153,7 @@ mod tests {
                 library_width: 300,
                 input_device: "AirPods Pro".to_string(),
                 silence_split_ms: 2_500,
+                keep_segments: true,
             },
         );
     }

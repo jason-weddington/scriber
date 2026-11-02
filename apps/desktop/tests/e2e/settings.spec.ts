@@ -62,7 +62,7 @@ test('Browse picks another file and saves it', async ({ page }) => {
   await expect(path(page)).toHaveValue(PICKED_NAME);
   await expect(path(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current file').toEqual([DEFAULT]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -127,7 +127,7 @@ test('post-processing starts off and turning it on saves it', async ({ page }) =
   await expect(cleanupSwitch(page)).toBeChecked();
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -185,11 +185,11 @@ test('choosing a model saves it', async ({ page }) => {
   await summaryModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
   await cleanupModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0 });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
   await expect(alert(page)).toHaveCount(0);
 });
 

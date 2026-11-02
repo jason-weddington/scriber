@@ -74,6 +74,8 @@ export interface Settings {
   inputDevice: string;
   /** Close the running part after this many ms of silence while recording; 0 is off (the window offers 0, 1500, 2500, 4000). */
   silenceSplitMs: number;
+  /** A hidden setting: no UI, set by editing settings.json. Keeps each part's exact WAV in the library entry. */
+  keepSegments: boolean;
 }
 
 /** The input devices the microphone menu offers. */

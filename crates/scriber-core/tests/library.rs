@@ -242,8 +242,9 @@ mod tests {
     }
 
     /// A library-on session of `parts` segments, each heard as "Part N.",
-    /// driven to finished; the clock reads 14:03:09 throughout.
-    fn session(w: &World, d: &mut Dictation, parts: usize) {
+    /// driven to done; the clock reads 14:03:09 throughout. The jobs are
+    /// the transcriptions, for [`finish_parts`].
+    fn record_parts(w: &World, d: &mut Dictation, parts: usize) -> Vec<Job> {
         let p = w.library_ports();
         d.new_session(&p).unwrap();
         d.record(&p).unwrap();
@@ -259,9 +260,23 @@ mod tests {
             jobs.push(d.pause(&p).unwrap().unwrap());
         }
         assert!(d.done(&p).unwrap().is_none(), "paused");
-        for job in &jobs {
-            let _: Snapshot = d.complete(w.run(job), &p);
+        jobs
+    }
+
+    /// Completes the transcriptions of [`record_parts`], finishing the session.
+    fn finish_parts(w: &World, d: &mut Dictation, jobs: &[Job]) -> Snapshot {
+        let p = w.library_ports();
+        let mut last = None;
+        for job in jobs {
+            last = Some(d.complete(w.run(job), &p));
         }
+        last.unwrap()
+    }
+
+    /// A library-on session of `parts` segments, driven to finished.
+    fn session(w: &World, d: &mut Dictation, parts: usize) {
+        let jobs = record_parts(w, d, parts);
+        let _: Snapshot = finish_parts(w, d, &jobs);
     }
 
     fn library_jobs(w: &World) -> Vec<String> {
@@ -313,6 +328,256 @@ mod tests {
         );
         let jobs = library_jobs(&w);
         assert_eq!(jobs.len(), 2, "an encode and a summary: {jobs:?}");
+        assert!(jobs.first().unwrap().contains("Encode"), "{jobs:?}");
+        assert!(jobs.last().unwrap().contains("Summary"), "{jobs:?}");
+    }
+
+    fn keep_on(w: &World) {
+        put(w, "settings.json", br#"{"keep_segments":true}"#);
+    }
+
+    fn kept(id: &str, n: u32) -> String {
+        entry_path(id, &format!("segments/segment-{n:04}.wav"))
+    }
+
+    fn source(w: &World, n: u32) -> Vec<u8> {
+        w.files
+            .read(&format!("segments/segment-{n:04}.wav"))
+            .unwrap()
+    }
+
+    const COPIED: &str = "Copied to the clipboard.";
+
+    #[test]
+    fn kept_segments_are_byte_identical_copies() {
+        let w = World::default();
+        keep_on(&w);
+        let mut d = Dictation::default();
+        let jobs = record_parts(&w, &mut d, 2);
+        let (first, second) = (source(&w, 0), source(&w, 1));
+        let done = finish_parts(&w, &mut d, &jobs);
+        assert_eq!(w.files.read(&kept(ID, 0)).unwrap(), first, "segment 0");
+        assert_eq!(w.files.read(&kept(ID, 1)).unwrap(), second, "segment 1");
+        assert_eq!(w.files.segments(), 0, "the sources are gone");
+        assert_eq!(done.notice.as_deref(), Some(COPIED), "no suffix");
+    }
+
+    #[test]
+    fn a_missing_segment_is_not_kept() {
+        let w = World::default();
+        keep_on(&w);
+        let mut d = Dictation::default();
+        let jobs = record_parts(&w, &mut d, 3);
+        let (a, c) = (source(&w, 0), source(&w, 2));
+        let _removed = w
+            .files
+            .files
+            .borrow_mut()
+            .remove("segments/segment-0001.wav");
+        let _: Snapshot = finish_parts(&w, &mut d, &jobs);
+        assert_eq!(w.files.read(&kept(ID, 0)).unwrap(), a, "segment 0");
+        assert_eq!(w.files.read(&kept(ID, 2)).unwrap(), c, "segment 2");
+        assert!(w.files.read(&kept(ID, 1)).is_err(), "no segment 1");
+    }
+
+    #[test]
+    fn a_failed_keep_write_is_reported_not_fatal() {
+        let w = World::default();
+        keep_on(&w);
+        *w.files.fail_write_suffix.borrow_mut() = Some(format!("{ID}/segments/segment-0001.wav"));
+        let mut d = Dictation::default();
+        let jobs = record_parts(&w, &mut d, 2);
+        let a = source(&w, 0);
+        let s = finish_parts(&w, &mut d, &jobs);
+        assert_eq!(ids(&w), [ID], "listed");
+        assert!(w.files.read(&entry_path(ID, "entry.json")).is_ok(), "entry");
+        assert_eq!(w.files.read(&kept(ID, 0)).unwrap(), a, "segment 0 kept");
+        assert_eq!(
+            s.notice.as_deref(),
+            Some(
+                "Copied to the clipboard. Could not keep the exact audio of the parts: disk full."
+            ),
+            "notice"
+        );
+        assert_eq!(w.files.segments(), 0, "the sources are removed");
+    }
+
+    #[test]
+    fn a_failed_keep_read_is_reported_not_fatal() {
+        let w = World::default();
+        keep_on(&w);
+        let mut d = Dictation::default();
+        let jobs = record_parts(&w, &mut d, 2);
+        let a = source(&w, 0);
+        *w.files.fail_read_suffix.borrow_mut() = Some("segments/segment-0001.wav".to_string());
+        let s = finish_parts(&w, &mut d, &jobs);
+        *w.files.fail_read_suffix.borrow_mut() = None;
+        assert_eq!(ids(&w), [ID], "listed");
+        assert_eq!(w.files.read(&kept(ID, 0)).unwrap(), a, "segment 0 kept");
+        assert!(w.files.read(&kept(ID, 1)).is_err(), "no segment 1");
+        assert_eq!(
+            s.notice.as_deref(),
+            Some(
+                "Copied to the clipboard. Could not keep the exact audio of the parts: permission denied."
+            ),
+            "notice"
+        );
+    }
+
+    #[test]
+    fn every_segment_is_attempted_after_a_failure() {
+        let w = World::default();
+        keep_on(&w);
+        *w.files.fail_write_suffix.borrow_mut() = Some(format!("{ID}/segments/segment-0000.wav"));
+        let mut d = Dictation::default();
+        let jobs = record_parts(&w, &mut d, 2);
+        let b = source(&w, 1);
+        let _: Snapshot = finish_parts(&w, &mut d, &jobs);
+        assert_eq!(w.files.read(&kept(ID, 1)).unwrap(), b, "segment 1 kept");
+        assert!(w.files.read(&kept(ID, 0)).is_err(), "segment 0 failed");
+    }
+
+    #[test]
+    fn the_first_keep_error_wins() {
+        let w = World::default();
+        keep_on(&w);
+        *w.files.fail_write_suffix.borrow_mut() = Some(format!("{ID}/segments/segment-0001.wav"));
+        let mut d = Dictation::default();
+        let jobs = record_parts(&w, &mut d, 2);
+        *w.files.fail_read_suffix.borrow_mut() = Some("segments/segment-0000.wav".to_string());
+        let s = finish_parts(&w, &mut d, &jobs);
+        let notice = s.notice.unwrap();
+        assert!(notice.ends_with("parts: permission denied."), "{notice}");
+    }
+
+    #[test]
+    fn a_keep_failure_follows_a_clipboard_failure() {
+        let w = World::default();
+        keep_on(&w);
+        *w.files.fail_write_suffix.borrow_mut() = Some(format!("{ID}/segments/segment-0000.wav"));
+        w.clipboard.fail.set(true);
+        let mut d = Dictation::default();
+        let s = {
+            let jobs = record_parts(&w, &mut d, 1);
+            finish_parts(&w, &mut d, &jobs)
+        };
+        assert_eq!(
+            s.notice.as_deref(),
+            Some(
+                "Could not copy to the clipboard: pasteboard unavailable. Use Copy to try again. Could not keep the exact audio of the parts: disk full."
+            ),
+        );
+    }
+
+    #[test]
+    fn segments_are_kept_after_a_cleanup_too() {
+        let w = World::default();
+        put(
+            &w,
+            "settings.json",
+            br#"{"keep_segments":true,"cleanup":true}"#,
+        );
+        let p = w.library_cleaner_ports();
+        let mut d = Dictation::default();
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let job = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        let first = source(&w, 0);
+        let heard = d.complete(w.run(&job), &p);
+        assert_eq!(heard.phase, Phase::Transcribing, "waiting for the cleanup");
+        let cleanup = w.queue.jobs.borrow_mut().pop().unwrap();
+        let done = d.complete(w.run_with(&cleanup, &p), &p);
+        assert_eq!(done.phase, Phase::Finished, "finished");
+        assert_eq!(w.files.read(&kept(ID, 0)).unwrap(), first, "kept");
+    }
+
+    #[test]
+    fn an_undecodable_segment_is_kept_as_it_is() {
+        let w = World::default();
+        keep_on(&w);
+        let mut d = Dictation::default();
+        let p = w.library_ports();
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let job = d.pause(&p).unwrap().unwrap();
+        d.resume(&p).unwrap();
+        let job2 = d.pause(&p).unwrap().unwrap();
+        w.files.put_segment(1, b"not a wav".to_vec());
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        let _: Snapshot = d.complete(w.run(&job), &p);
+        let _: Snapshot = d.complete(w.run(&job2), &p);
+        assert_eq!(w.files.read(&kept(ID, 1)).unwrap(), b"not a wav", "as is");
+        let audio = decode_wav(&w.files.read(&entry_path(ID, "audio.wav")).unwrap()).unwrap();
+        assert_eq!(audio.len(), 16_000, "audio.wav still skips it");
+    }
+
+    #[test]
+    fn nothing_is_kept_by_default() {
+        for settings in [None, Some(&br#"{"keep_segments":false}"#[..])] {
+            let w = World::default();
+            if let Some(bytes) = settings {
+                put(&w, "settings.json", bytes);
+            }
+            let mut d = Dictation::default();
+            session(&w, &mut d, 2);
+            let prefix = format!("library/{ID}/segments/");
+            assert!(
+                w.files
+                    .files
+                    .borrow()
+                    .keys()
+                    .all(|k| !k.starts_with(&prefix)),
+                "nothing under {prefix}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeping_with_no_stored_segments_writes_nothing() {
+        let w = World::default();
+        keep_on(&w);
+        let mut d = Dictation::default();
+        let p = w.library_ports();
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        w.files.fail_write.set(true);
+        let job = d.pause(&p).unwrap().unwrap();
+        w.files.fail_write.set(false);
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        let s = d.complete(w.run(&job), &p);
+        let prefix = format!("library/{ID}/segments/");
+        assert!(
+            w.files
+                .files
+                .borrow()
+                .keys()
+                .all(|k| !k.starts_with(&prefix)),
+            "none written"
+        );
+        assert_eq!(s.notice.as_deref(), Some(COPIED), "notice unchanged");
+    }
+
+    #[test]
+    fn kept_segments_change_nothing_else_about_the_entry() {
+        let off = World::default();
+        session(&off, &mut Dictation::default(), 2);
+        let w = World::default();
+        keep_on(&w);
+        session(&w, &mut Dictation::default(), 2);
+        assert_eq!(list(&w.files), list(&off.files), "the listing");
+        assert_eq!(
+            transcript(&w.files, ID).as_deref(),
+            Some("Part 1.\n\nPart 2."),
+            "the transcript"
+        );
+        assert_eq!(
+            w.files.read(&entry_path(ID, "entry.json")).unwrap(),
+            br#"{"id":"20261026-140309","title":"2026-10-26 14:03:09","summary":"Part 1. Part 2.","summary_source":"excerpt","cleanup":"off","duration_ms":2000}"#,
+            "entry.json"
+        );
+        assert_eq!(library_jobs(&w), library_jobs(&off), "the jobs");
+        let jobs = library_jobs(&w);
         assert!(jobs.first().unwrap().contains("Encode"), "{jobs:?}");
         assert!(jobs.last().unwrap().contains("Summary"), "{jobs:?}");
     }

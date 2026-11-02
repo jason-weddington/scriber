@@ -34,6 +34,7 @@
 //   ?inputs=none          input_devices answers no default and no others (Record then fails)
 //   ?inputDevice=<name>   the saved input device starts as that name (else '', the Mac default)
 //   ?silenceSplitMs=<n>   the silence split starts as n ms in the settings (else 0, off)
+//   ?keepSegments=1       the hidden keep_segments setting starts true (else false)
 // window.__mockBridge.split() is the fake microphone closing the running part at a silence: with the
 // split read at the last Record or Resume non-zero and the session recording, it closes the part
 // (queued for transcription like a Pause) while recording goes on; otherwise it does nothing.
@@ -594,6 +595,7 @@ export class Mock {
       libraryWidth: Number(params.get('libraryWidth') ?? LIBRARY_WIDTH_DEFAULT),
       inputDevice: params.get('inputDevice') ?? '',
       silenceSplitMs: Number(params.get('silenceSplitMs') ?? '0'),
+      keepSegments: params.get('keepSegments') === '1',
     };
     const inputs = params.get('inputs');
     this.inputs =
@@ -758,6 +760,8 @@ export class Mock {
       vocabulary,
       summaryModel: stored(settings.summaryModel, this.settings.summaryModel),
       cleanupModel: stored(settings.cleanupModel, this.settings.cleanupModel),
+      // settings.json owns the hidden key: a change made in the app never touches it.
+      keepSegments: this.settings.keepSegments,
     };
     return this.resolved();
   }
