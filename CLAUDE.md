@@ -23,6 +23,7 @@ bash scripts/install.sh              # release build, verify the signature, inst
 bash scripts/fetch-model.sh          # download the speech model into the app data folder (never in the gate)
 bash scripts/smoke.sh                # real-model check: `say` + ffmpeg + the app's Whisper adapter
 bash scripts/exit-check.sh [--control]   # Mac exit check: quitting with the model loaded must not abort
+cargo run --release -p scriber-engine --example extract -- <config.json>   # study-104 extraction: features, Silero spans, stage-2 transcripts (Mac, real model; not in the gate)
 ./release.sh                         # gate.sh release (full + mutants), then cog bump --auto, tag, push
 ```
 

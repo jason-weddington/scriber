@@ -51,6 +51,7 @@ mod clock;
 mod device;
 mod editor;
 mod encode;
+pub mod extract;
 mod files;
 mod net;
 mod ollama;
@@ -89,7 +90,7 @@ pub use scriber_core::ports::{
     Recorder, Summarizer, Transcriber, fail,
 };
 pub use warm::Warmer;
-pub use whisper::Whisper;
+pub use whisper::{DetailedPhrase, DetailedToken, Whisper, vad_spans};
 
 use crate::warm::KeepWarm;
 

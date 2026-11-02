@@ -28,16 +28,18 @@ crates/scriber-core          all logic; no Tauri, no async runtime, no direct I/
 crates/scriber-engine        the core with the real adapters, as a library for any Rust app (see Engine API); no Tauri, no async runtime
   src/lib.rs                 Engine, EngineConfig, ModelSource, Event, EngineError; the std-thread job queue
   src/device.rs              CpalRecorder: cpal, the chosen input device (by name, else the default); the input devices' names; start(device, split_ms), take_closed, on_split
-  src/whisper.rs             Whisper: whisper-rs, the model loaded once
+  src/whisper.rs             Whisper: whisper-rs, the model loaded once; transcribe_detailed and vad_spans (Silero) for the extractor
   src/files.rs               DataDir: std::fs under the consumer's data folder
   src/net.rs                 HttpDownloader: ureq over native-tls
   src/clock.rs               LocalClock: chrono, the local wall-clock time
   src/encode.rs              Afconvert: macOS's /usr/bin/afconvert, WAV to AAC in M4A
   src/ollama.rs              Ollama: ureq POST to a local Ollama server's /api/chat
   src/editor.rs              TextEditor: macOS's /usr/bin/open -t, the glossary in the default text editor
+  src/extract.rs             the study-104 extractor's pure logic: config, input choice, float WAVs, stage-2 plan, features report, causality, manifest
   tests/common               fakes for the recorder, transcriber, downloader, clock, encoder, summarizer and cleaner
   examples/smoke.rs          real-model smoke check (scripts/smoke.sh), never run by the gate
   examples/exit_check.rs     Mac exit check (scripts/exit-check.sh), never run by the gate: exit() after shutdown must not abort
+  examples/extract.rs        study-104 extraction (decoder features, Silero spans, stage-2 transcripts from recording folders), never run by the gate
 apps/desktop/src-tauri       thin client over the engine: the clipboard and dialog plugins, the two events, ten commands
 apps/desktop/src             Svelte 5 frontend; src/lib/bridge.ts is its only door to Rust
 ```

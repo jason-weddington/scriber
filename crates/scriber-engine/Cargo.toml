@@ -15,8 +15,13 @@ scriber-core = { path = "../scriber-core" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Audio capture from the chosen input device.
 cpal = "0.18.2"
-# The Ollama request and reply, for a library entry's summary.
+# The study-104 extractor's config and reports (src/extract.rs).
+serde = { version = "1", features = ["derive"] }
+# The Ollama request and reply, for a library entry's summary, and the
+# extractor's config and reports.
 serde_json = "1"
+# The extractor's model and audio checksums.
+sha2 = "0.10"
 thiserror = "2"
 # The speech model's download when it is missing, and the local Ollama
 # summary (plain HTTP to 127.0.0.1): HTTPS, blocking, on a job
