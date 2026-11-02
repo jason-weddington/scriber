@@ -6,8 +6,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use scriber_core::level::{
-        CEILING_DBFS, FLOOR_DBFS, MIN_SPLIT_SEGMENT_MS, Meter, SilenceProfile, Splitter, Tap,
-        WINDOW_MS, feeder, is_silent_window, level, silence_profile,
+        CEILING_DBFS, FLOOR_DBFS, MIN_SPLIT_SEGMENT_MS, Meter, PROFILE_SKIP_MS, SilenceProfile,
+        Splitter, Tap, WINDOW_MS, feeder, is_silent_window, level, silence_profile,
     };
     use scriber_core::ports::Captured;
     use scriber_core::transcript::TRAILING_SILENCE_RMS;
@@ -416,7 +416,40 @@ mod tests {
     }
 
     #[test]
+    fn the_silence_profile_skips_the_first_200_ms() {
+        assert_eq!(PROFILE_SKIP_MS, 200);
+        let p = |ms: u64, rms: f64| SilenceProfile {
+            longest_silence_ms: ms,
+            quietest_rms: rms,
+        };
+        let mono = |parts: &[(f32, usize)]| silence_profile(&runs(parts), 1, 20);
+        assert_eq!(silence_profile(&[LOUD; 4], 1, 20), p(0, 0.0));
+        assert_eq!(mono(&[(LOUD, 4), (SILENT, 1)]), p(50, 0.0));
+        assert_eq!(mono(&[(LOUD, 4), (0.25, 1)]), p(0, 0.25));
+        assert_eq!(mono(&[(SILENT, 4), (LOUD, 20)]), p(0, 0.5));
+        assert_eq!(mono(&[(LOUD, 4), (SILENT, 3)]), p(150, 0.0));
+        assert_eq!(mono(&[(SILENT, 5), (LOUD, 1)]), p(50, 0.0));
+        assert_eq!(
+            silence_profile(&runs(&[(0.0, 3_200), (0.015, 16_000)]), 1, 16_000),
+            p(0, 0.015)
+        );
+        let stereo = |parts: &[(f32, usize)]| silence_profile(&runs(parts), 2, 20);
+        assert_eq!(stereo(&[(SILENT, 8), (LOUD, 4)]), p(0, 0.5));
+        assert_eq!(stereo(&[(LOUD, 8), (SILENT, 4)]), p(100, 0.0));
+        let at = |parts: &[(f32, usize)], rate| silence_profile(&runs(parts), 1, rate);
+        assert_eq!(at(&[(LOUD, 8_820), (SILENT, 2_205)], 44_100), p(50, 0.0));
+        assert_eq!(at(&[(LOUD, 8_820), (SILENT, 2_204)], 44_100), p(0, 0.0));
+        assert_eq!(silence_profile(&vec![LOUD; 5_509], 1, 22_050), p(0, 0.0));
+        assert_eq!(silence_profile(&vec![LOUD; 5_510], 1, 22_050), p(0, 0.5));
+        assert_eq!(
+            at(&[(0.0, 4_408), (LOUD, 2), (0.0, 1_100)], 22_050),
+            p(0, 0.0213)
+        );
+    }
+
+    #[test]
     fn the_silence_profile_of_a_capture() {
+        // The first PROFILE_SKIP_MS (4 samples at rate 20 mono, 8 stereo) are skipped.
         assert_eq!(
             silence_profile(&runs(&[(LOUD, 10), (SILENT, 30)]), 1, 20),
             SilenceProfile {
@@ -441,7 +474,7 @@ mod tests {
         assert_eq!(silence_profile(&[LOUD; 40], 0, 20), none, "no channels");
         assert_eq!(
             silence_profile(
-                &runs(&[(SILENT, 3), (LOUD, 1), (SILENT, 2), (LOUD, 1)]),
+                &runs(&[(LOUD, 8), (SILENT, 3), (LOUD, 1), (SILENT, 2), (LOUD, 1)]),
                 2,
                 20
             ),
@@ -452,13 +485,17 @@ mod tests {
             "stereo windows of 2; the partial window is ignored"
         );
         assert_eq!(
-            silence_profile(&[0.123_456, 0.123_456], 1, 20).quietest_rms,
+            silence_profile(&runs(&[(LOUD, 4), (0.123_456, 2)]), 1, 20).quietest_rms,
             0.1235,
             "rounded to 4 places"
         );
         assert_eq!(
-            silence_profile(&runs(&[(SILENT, 2), (LOUD, 1), (SILENT, 3)]), 1, 20)
-                .longest_silence_ms,
+            silence_profile(
+                &runs(&[(LOUD, 4), (SILENT, 2), (LOUD, 1), (SILENT, 3)]),
+                1,
+                20
+            )
+            .longest_silence_ms,
             150,
             "the longest run, not the first"
         );

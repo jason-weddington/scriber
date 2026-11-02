@@ -3638,6 +3638,23 @@ mod tests {
     }
 
     #[test]
+    fn the_segment_profile_skips_the_device_startup() {
+        let w = World::default();
+        w.recorder.captures.borrow_mut().push_back(Ok(Captured::new(
+            [vec![0.0; 3_200], vec![0.015; 16_000]].concat(),
+            1,
+            16_000,
+        )));
+        let _session = at(&w, Phase::Paused);
+        assert!(
+            log_lines(&w)[1]
+                .ends_with(r#","cause":"stop","longest_silence_ms":0,"quietest_rms":0.015}"#),
+            "{:?}",
+            log_lines(&w)
+        );
+    }
+
+    #[test]
     fn the_recorder_takes_a_split_notifier() {
         use scriber_core::ports::Recorder as _;
         let w = World::default();

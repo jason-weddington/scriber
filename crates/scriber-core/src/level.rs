@@ -22,6 +22,21 @@ use crate::sync::lock;
 /// window bounds the level event's rate at 1000 / 50 = 20 per second.
 pub const WINDOW_MS: u32 = 50;
 
+/// The silence profile leaves out the first 200 ms of every segment, because
+/// the first 200 ms after the input device opens (Record or Resume) are
+/// digital near-silence that would make the profile describe the device, not
+/// the room. A segment closed by the automatic split (cause "silence") is
+/// skipped the same way, since the skip is per segment.
+pub const PROFILE_SKIP_MS: u64 = 200;
+#[expect(
+    clippy::as_conversions,
+    reason = "`u64::from` is not const; u32 to u64 is lossless"
+)]
+const _: () = assert!(
+    PROFILE_SKIP_MS.is_multiple_of(WINDOW_MS as u64),
+    "the skip is a whole number of windows"
+);
+
 /// The level drawn as silence: an RMS at or below this many dBFS reads 0.0.
 pub const FLOOR_DBFS: f64 = -52.0;
 
@@ -191,7 +206,8 @@ impl Splitter {
     }
 }
 
-/// How silent a capture was, for the microphone log.
+/// How silent a capture was, for the microphone log. The first
+/// [`PROFILE_SKIP_MS`] (4 windows) of the capture are not counted.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SilenceProfile {
     /// The longest run of silent windows, in milliseconds.
@@ -202,15 +218,24 @@ pub struct SilenceProfile {
 }
 
 /// The [`SilenceProfile`] of `samples`, judged in [`Splitter`]'s windows
-/// from the first sample; a trailing partial window is ignored.
+/// counted from the first sample, after skipping the first
+/// [`PROFILE_SKIP_MS`] (4 windows); a trailing partial window is ignored.
 #[must_use]
 pub fn silence_profile(samples: &[f32], channels: u16, sample_rate: u32) -> SilenceProfile {
     let window = window_samples(channels, sample_rate);
     let mut longest = 0_u64;
     let mut run = 0_u64;
     let mut quietest: Option<f64> = None;
+    let skip = u64::from(window).saturating_mul(
+        PROFILE_SKIP_MS
+            .checked_div(u64::from(WINDOW_MS))
+            .unwrap_or(0),
+    );
+    let kept = samples
+        .get(usize::try_from(skip).unwrap_or(usize::MAX)..)
+        .unwrap_or(&[]);
     if window > 0 {
-        for chunk in samples.chunks_exact(usize::try_from(window).unwrap_or(usize::MAX)) {
+        for chunk in kept.chunks_exact(usize::try_from(window).unwrap_or(usize::MAX)) {
             let squares: f64 = chunk.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
             let rms = (squares / f64::from(window)).sqrt();
             quietest = Some(quietest.map_or(rms, |q| q.min(rms)));
