@@ -2,6 +2,23 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.4.0 - 2026-11-03
+#### Features
+- (**5b98ddd5**) extract example, round 2 for study 104: stage-2 pieces carry their own decode's full phrases, segment timeline offsets, and a repeat-decode determinism check; read afconvert's extensible float WAV - (87037d9) - claude-code-sonnet, *Claude Sonnet 5.5*
+- (**73fd283f**) scriber-engine example `extract` for applied-science study 104: decode features, Silero VAD spans and stage-2 transcripts from a recording folder - (6cfc0bf) - claude-code-sonnet, *Claude Sonnet 5.5*
+- (**c728650f**) Hidden setting keep_segments: a finished recording also keeps each part's exact WAV in its library folder - (f2ba655) - claude-code-sonnet, *Claude Sonnet 5.5*
+#### Bug Fixes
+- (**194eca60**) Silence profile skips the first 200 ms of each segment (device startup near-silence) - (582c71c) - claude-code-sonnet, *Claude Sonnet 5.5*
+#### Documentation
+- README screenshots of the ready, recording and settings screens - (4039cb4) - Jason Weddington, *Claude Opus 5.5*
+- build agents mutation-test their own diff before finishing a crates/ change - (27cbb0c) - Jason Weddington, *Claude Opus 5.5*
+#### Miscellaneous Chores
+- release.sh also pushes main and the new tag to the public github remote - (c1edb46) - Jason Weddington, *Claude Opus 5.5*
+- take LICENSE-MIT verbatim from the SPDX license list (only the copyright line filled in) - (0ba5e82) - Jason Weddington, *Claude Opus 5.5*
+- license Scriber as MIT OR Apache-2.0, with both license files and a README section - (0577bbe) - Jason Weddington, *Claude Opus 5.5*
+
+- - -
+
 ## v0.3.0 - 2026-10-31
 #### Features
 - (**23229a72**) Optional silence segmentation: close a segment after a sustained pause in speech so text fills in without pressing Pause - (1edb3d6) - claude-code-sonnet, *Claude Sonnet 5.5*
