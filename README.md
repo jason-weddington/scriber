@@ -125,3 +125,7 @@ The recording library is off by default in the engine; set `EngineConfig::librar
 - `docs/quality-gates.md`: what each gate catches and why it exists.
 - `docs/tauri-design-notes.md`: patterns for Tauri 2 apps on macOS.
 - `CLAUDE.md`: how an AI coding agent should work in this repository.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option. Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Scriber by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
