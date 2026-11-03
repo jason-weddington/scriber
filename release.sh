@@ -2,7 +2,8 @@
 # Release at a meaningful boundary, decoupled from every commit. Derives the
 # SemVer bump from conventional-commit history (cog), sets the version in
 # every manifest and refreshes both lockfiles (cog.toml pre_bump_hooks),
-# writes CHANGELOG.md, tags, and pushes to origin with the tag. The release
+# writes CHANGELOG.md, tags, and pushes main and the tag to origin and then to
+# github (the public repo, which only ever receives releases). The release
 # first runs the full gate plus mutation testing (`scripts/gate.sh release`)
 # and aborts on any failure.
 #
@@ -29,4 +30,7 @@ fi
 
 cog bump --auto
 # cog makes a lightweight tag, which --follow-tags skips, so name the new tag explicitly.
-git push origin main "$(git describe --tags --exact-match HEAD)"
+tag=$(git describe --tags --exact-match HEAD)
+git push origin main "$tag"
+# The public repo gets main and the tag only here, so its history reads as releases.
+git push github main "$tag"
