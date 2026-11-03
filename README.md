@@ -16,6 +16,10 @@ Recording: the live waveform and the red timer show the microphone is on. Space 
 
 Settings: the vocabulary file, automatic splitting at pauses, and the optional local-AI (Ollama) cleanup and library titles, each with its own model.
 
+![Dictation built into another app's message box](images/in-use.png)
+
+Here's an example of what you can build with Scriber's crates: dictation inside another app's message box, with its own level meter and timer.
+
 ## Prerequisites
 
 macOS with the Xcode command line tools (`xcode-select --install`), then:
