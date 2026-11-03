@@ -1,6 +1,20 @@
 # Scriber
 
-A macOS dictation app built with Rust, Tauri 2 and Svelte 5. Click New, Record, talk, Pause, think, Resume, talk more, then Done: the transcript appears in the window and is already on the clipboard. Transcription is local, with whisper.cpp (`large-v3-turbo`) on the GPU through Metal; nothing leaves the Mac. Every finished dictation is kept in a library, a drawer on the left of the window, titled by when it started, with a one-sentence summary and its audio as M4A. `docs/design.md` has the details.
+A macOS dictation app built with Rust, Tauri 2 and Svelte 5. Click New, Record, talk, Pause, think, Resume, talk more, then Done: the transcript appears in the window and is already on the clipboard. Transcription is local, with whisper.cpp (`large-v3-turbo`) on the GPU through Metal; nothing leaves the Mac. Every finished dictation is kept in a library, a drawer on the left of the window, titled by when it started, with a short title written by a local model and its audio as M4A. `docs/design.md` has the details.
+
+## Screenshots
+
+![Scriber ready to record](images/scriber-main-window.png)
+
+Ready to record: the active microphone shows under the prompt, and Space starts recording.
+
+![Scriber recording](images/scriber-recording.png)
+
+Recording: the live waveform and the red timer show the microphone is on. Space pauses, Return finishes.
+
+![Scriber settings](images/scriber-settings.png)
+
+Settings: the vocabulary file, automatic splitting at pauses, and the optional local-AI (Ollama) cleanup and library titles, each with its own model.
 
 ## Prerequisites
 
