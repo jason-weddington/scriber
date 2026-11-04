@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.5.0 - 2026-11-04
+#### Features
+- Menu-bar dictation: a Scriber icon in the macOS menu bar with New/Record, Pause, Done, Discard and Quit, background running, and a global toggle shortcut - (8e54598) - talos-deepseek
+- Settings: a custom location for the Whisper model, so several apps can share one download - (5ca81fa) - talos-deepseek
+- Settings: the learned-vocabulary file's location is configurable, like the vocabulary file's - (03a9fb3) - talos-deepseek
+#### Documentation
+- roadmap entry for menu-bar dictation with a global shortcut - (13b17fd) - Jason Weddington, *Claude Opus 5.5*
+- README example of dictation built into another app with Scriber's crates - (89a8165) - Jason Weddington, *Claude Opus 5.5*
+
+- - -
+
 ## v0.4.0 - 2026-11-03
 #### Features
 - (**5b98ddd5**) extract example, round 2 for study 104: stage-2 pieces carry their own decode's full phrases, segment timeline offsets, and a repeat-decode determinism check; read afconvert's extensible float WAV - (87037d9) - claude-code-sonnet, *Claude Sonnet 5.5*
