@@ -1,9 +1,11 @@
 <script lang="ts">
   // The settings: the vocabulary file (the glossary that steers
-  // transcription) and the learned vocabulary file (the terms learning
-  // remembers), each shown as its file name, the full path on hover, with
-  // Browse… (the native open panel)
-  // and Open in Text Editor (which creates it empty when missing); then the
+  // transcription), the learned vocabulary file (the terms learning
+  // remembers) and the speech model's folder (where the 1.6 GB model is
+  // downloaded and read, so apps can share one copy), each shown as its name,
+  // the full path as tooltip and accessible description, with
+  // Browse… on all three, Open in Text Editor on the two text files (which
+  // creates it empty when missing); then the
   // silence split, "Split into parts at a pause" (Off, 1.5 s, 2.5 s or 4 s; a
   // saved value outside those four is shown first, so it is never lost); then two
   // switches, each followed by its model: post-processing of each transcript
@@ -38,6 +40,7 @@
     onopenvocabulary: () => void;
     onbrowselearned: () => void;
     onopenlearned: () => void;
+    onbrowsemodel: () => void;
     onsilencesplit: (ms: number) => void;
     onclose: () => void;
   }
@@ -58,6 +61,7 @@
     onopenvocabulary,
     onbrowselearned,
     onopenlearned,
+    onbrowsemodel,
     onsilencesplit,
     onclose,
   }: Props = $props();
@@ -146,6 +150,13 @@
       <input readonly aria-label="Learned vocabulary file" value={fileName(settings.learnedVocabulary)} title={settings.learnedVocabulary} />
       <button type="button" onclick={onbrowselearned}>Browse…</button>
       <button type="button" onclick={onopenlearned}>Open in Text Editor</button>
+    </div>
+  </div>
+  <div class="vocabulary" role="group" aria-label="Speech model folder">
+    <span class="caption" aria-hidden="true">Speech model folder</span>
+    <div class="row">
+      <input readonly aria-label="Speech model folder" value={fileName(settings.modelFolder)} title={settings.modelFolder} />
+      <button type="button" onclick={onbrowsemodel}>Browse…</button>
     </div>
   </div>
   <label for="silence-split">Split into parts at a pause</label>

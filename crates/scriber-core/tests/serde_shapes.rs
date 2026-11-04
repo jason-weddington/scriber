@@ -155,6 +155,7 @@ mod tests {
                 silence_split_ms: 2_500,
                 keep_segments: true,
                 learned_vocabulary: "/data/learned.txt".to_string(),
+                model_folder: "/data/models".to_string(),
             },
         );
         let settings = Settings {
@@ -169,11 +170,12 @@ mod tests {
             silence_split_ms: 2_500,
             keep_segments: true,
             learned_vocabulary: "/data/learned.txt".to_string(),
+            model_folder: "/data/models".to_string(),
         };
         assert!(
             serde_json::to_string(&settings)
                 .unwrap()
-                .ends_with(r#""keepSegments":true,"learnedVocabulary":"/data/learned.txt"}"#),
+                .ends_with(r#""keepSegments":true,"learnedVocabulary":"/data/learned.txt","modelFolder":"/data/models"}"#),
             "camelCase, last key"
         );
     }

@@ -17,6 +17,9 @@ const DEFAULT_NAME = 'vocabulary.txt';
 const PICKED_NAME = 'terms.txt';
 const DEFAULT_LEARNED = '/mock/data/learned.txt';
 const DEFAULT_LEARNED_NAME = 'learned.txt';
+const DEFAULT_MODEL = '/mock/data/models';
+const DEFAULT_MODEL_NAME = 'models';
+const PICKED_MODEL = '/mock/Models';
 
 function vocabularyGroup(page: Page) {
   return page.getByRole('group', { name: 'Vocabulary file', exact: true });
@@ -48,6 +51,18 @@ function learnedBrowse(page: Page) {
 
 function learnedEditor(page: Page) {
   return learnedGroup(page).getByRole('button', { name: 'Open in Text Editor' });
+}
+
+function modelGroup(page: Page) {
+  return page.getByRole('group', { name: 'Speech model folder', exact: true });
+}
+
+function modelPath(page: Page) {
+  return modelGroup(page).getByRole('textbox', { name: 'Speech model folder', exact: true });
+}
+
+function modelBrowse(page: Page) {
+  return modelGroup(page).getByRole('button', { name: 'Browse…' });
 }
 
 function alert(page: Page) {
@@ -93,7 +108,7 @@ test('Browse picks another file and saves it', async ({ page }) => {
   await expect(path(page)).toHaveValue(PICKED_NAME);
   await expect(path(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current file').toEqual([DEFAULT]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -142,7 +157,7 @@ test('Browse picks another learned vocabulary file and saves it', async ({ page 
   await expect(learnedPath(page)).toHaveValue(PICKED_NAME);
   await expect(learnedPath(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current learned file').toEqual([DEFAULT_LEARNED]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: PICKED });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: PICKED, modelFolder: DEFAULT_MODEL });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -175,6 +190,54 @@ test('a picked learned file that cannot be saved stays on screen and says why', 
   await expect(learnedPath(page)).toHaveValue(PICKED_NAME);
 });
 
+test("the speech model folder shows the default folder's name at launch", async ({ page }) => {
+  await openSettings(page);
+  await expect(modelPath(page)).toHaveValue(DEFAULT_MODEL_NAME);
+  await expect(modelPath(page)).toHaveAttribute('readonly', '');
+  await expect(modelPath(page)).toHaveAttribute('title', DEFAULT_MODEL);
+  await expect(modelPath(page)).toHaveAccessibleDescription(DEFAULT_MODEL);
+  await expect(modelGroup(page)).toBeVisible();
+});
+
+test('Browse picks another model folder and saves it', async ({ page }) => {
+  await openSettings(page, { picked: PICKED_MODEL });
+  await modelBrowse(page).click();
+  await expect(modelPath(page)).toHaveValue('Models');
+  await expect(modelPath(page)).toHaveAttribute('title', PICKED_MODEL);
+  expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current folder').toEqual([DEFAULT_MODEL]);
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: PICKED_MODEL });
+  await expect(alert(page)).toHaveCount(0);
+});
+
+test('a cancelled model folder Browse changes nothing', async ({ page }) => {
+  await openSettings(page, { picked: 'cancel' });
+  await modelBrowse(page).click();
+  await expect(modelPath(page)).toHaveValue(DEFAULT_MODEL_NAME);
+  expect(await saved(page)).toEqual([]);
+});
+
+test('a model folder panel that fails says why and saves nothing', async ({ page }) => {
+  await openSettings(page, { fail: 'pick_model_folder' });
+  await modelBrowse(page).click();
+  await expect(alert(page)).toHaveText('Mock failure: pick_model_folder');
+  await expect(modelPath(page)).toHaveValue(DEFAULT_MODEL_NAME);
+  expect(await saved(page)).toEqual([]);
+});
+
+test('a picked model folder that cannot be saved stays on screen and says why', async ({ page }) => {
+  await openSettings(page, { fail: 'settings_set', picked: PICKED_MODEL });
+  await modelBrowse(page).click();
+  await expect(alert(page)).toHaveText('Mock failure: settings_set');
+  await expect(modelPath(page)).toHaveValue('Models');
+});
+
+test('a model folder saved when the session cannot be re-read says why', async ({ page }) => {
+  await openSettings(page, { fail: 'dictation_state', picked: PICKED_MODEL });
+  await modelBrowse(page).click();
+  await expect(alert(page)).toHaveText('Mock failure: dictation_state');
+  await expect(modelPath(page)).toHaveValue('Models');
+});
+
 test('a long path never scrolls the window sideways at the minimum size', async ({ page }) => {
   await page.setViewportSize({ width: 520, height: 380 });
   const long = `/${'a'.repeat(195)}.txt`;
@@ -200,7 +263,7 @@ test('post-processing starts off and turning it on saves it', async ({ page }) =
   await expect(cleanupSwitch(page)).toBeChecked();
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -258,11 +321,11 @@ test('choosing a model saves it', async ({ page }) => {
   await summaryModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL });
   await cleanupModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL });
   await expect(alert(page)).toHaveCount(0);
 });
 

@@ -78,6 +78,8 @@ export interface Settings {
   keepSegments: boolean;
   /** The learned list's absolute path; send '' when it is not known yet (the saved one is kept). */
   learnedVocabulary: string;
+  /** The speech model's folder, absolute; send '' when it is not known yet (the saved one is kept), and the engine answers the default `<data folder>/models`. */
+  modelFolder: string;
 }
 
 /** The input devices the microphone menu offers. */

@@ -19,6 +19,8 @@ mod tests {
     };
     use tempfile::TempDir;
 
+    use serde_json::{Value, json};
+
     use crate::common::{
         FakeCleaner, FakeDownloader, FakeSummarizer, FakeTranscriber, FakeWarmer, Fakes, PATIENCE,
         RecordingClipboard, closed_url, events, serve_once, until,
@@ -931,8 +933,22 @@ mod tests {
             .into_owned()
     }
 
+    /// The default model folder's absolute path in `dir`.
+    fn default_model(dir: &TempDir) -> String {
+        dir.path().join("models").to_string_lossy().into_owned()
+    }
+
     fn saved(dir: &TempDir) -> String {
         std::fs::read_to_string(dir.path().join("settings.json")).unwrap()
+    }
+
+    /// The model log's lines, parsed.
+    fn model_log(dir: &TempDir) -> Vec<Value> {
+        std::fs::read_to_string(dir.path().join("model-log.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
     }
 
     #[test]
@@ -952,6 +968,7 @@ mod tests {
             silence_split_ms: 0,
             keep_segments: false,
             learned_vocabulary: default_learned(&dir),
+            model_folder: default_model(&dir),
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -962,7 +979,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":""}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -989,7 +1006,8 @@ mod tests {
         assert!(engine.settings().keep_segments, "read back");
         assert!(!back.summaries, "the other keys are saved");
         assert!(
-            saved(&dir).ends_with(r#""keep_segments":true,"learned_vocabulary":""}"#),
+            saved(&dir)
+                .ends_with(r#""keep_segments":true,"learned_vocabulary":"","model_folder":""}"#),
             "on disk, before the learned list's default"
         );
     }
@@ -1005,7 +1023,8 @@ mod tests {
         assert!(!engine.set_settings(on).unwrap().keep_segments, "returned");
         assert!(!engine.settings().keep_segments, "read back");
         assert!(
-            saved(&dir).ends_with(r#""keep_segments":false,"learned_vocabulary":""}"#),
+            saved(&dir)
+                .ends_with(r#""keep_segments":false,"learned_vocabulary":"","model_folder":""}"#),
             "on disk, before the learned list's default"
         );
     }
@@ -1061,6 +1080,7 @@ mod tests {
             silence_split_ms: 0,
             keep_segments: false,
             learned_vocabulary: String::new(),
+            model_folder: String::new(),
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1094,6 +1114,7 @@ mod tests {
             silence_split_ms: 0,
             keep_segments: false,
             learned_vocabulary: default_learned(&dir),
+            model_folder: default_model(&dir),
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1117,6 +1138,7 @@ mod tests {
             silence_split_ms: 0,
             keep_segments: false,
             learned_vocabulary: String::new(),
+            model_folder: String::new(),
         };
         let kept = Settings {
             summaries: false,
@@ -1144,6 +1166,7 @@ mod tests {
                 silence_split_ms: 0,
                 keep_segments: false,
                 learned_vocabulary: String::new(),
+                model_folder: String::new(),
             })
             .unwrap();
         let back = engine
@@ -1159,6 +1182,7 @@ mod tests {
                 silence_split_ms: 0,
                 keep_segments: false,
                 learned_vocabulary: String::new(),
+                model_folder: String::new(),
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1194,6 +1218,7 @@ mod tests {
                 silence_split_ms: 0,
                 keep_segments: false,
                 learned_vocabulary: String::new(),
+                model_folder: String::new(),
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1340,6 +1365,191 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_model_folder_defaults_to_the_data_folder_and_is_absolute() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            engine.settings().model_folder,
+            default_model(&dir),
+            "no file"
+        );
+        assert!(engine.settings().model_folder.starts_with('/'), "absolute");
+    }
+
+    #[test]
+    fn the_model_folder_in_the_settings_is_answered() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"model_folder":"/x/models"}"#);
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(engine.settings().model_folder, "/x/models", "configured");
+    }
+
+    #[test]
+    fn a_relative_model_folder_is_the_default() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"model_folder":"models"}"#);
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            engine.settings().model_folder,
+            default_model(&dir),
+            "the default"
+        );
+    }
+
+    #[test]
+    fn a_model_folder_path_is_saved_and_an_empty_one_keeps_it() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let elsewhere = Settings {
+            model_folder: "/x/models".to_string(),
+            ..engine.settings()
+        };
+        assert_eq!(
+            engine.set_settings(elsewhere.clone()),
+            Ok(elsewhere),
+            "saved"
+        );
+        assert_eq!(engine.settings().model_folder, "/x/models", "read back");
+        assert!(
+            saved(&dir).contains(r#""model_folder":"/x/models""#),
+            "on disk"
+        );
+        let unknown = Settings {
+            model_folder: String::new(),
+            ..engine.settings()
+        };
+        let back = engine.set_settings(unknown).unwrap();
+        assert_eq!(back.model_folder, "/x/models", "'' keeps the saved path");
+        assert_eq!(engine.settings().model_folder, "/x/models");
+    }
+
+    #[test]
+    fn the_default_model_folder_is_saved_as_empty() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let back = engine
+            .set_settings(Settings {
+                model_folder: default_model(&dir),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert_eq!(back.model_folder, default_model(&dir), "answered");
+        assert!(saved(&dir).contains(r#""model_folder":"""#), "stored empty");
+        assert_eq!(
+            engine.settings().model_folder,
+            default_model(&dir),
+            "read back"
+        );
+        let _: Settings = engine
+            .set_settings(Settings {
+                model_folder: "models".to_string(),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert!(
+            saved(&dir).contains(r#""model_folder":"models""#),
+            "written verbatim"
+        );
+        assert_eq!(
+            engine.settings().model_folder,
+            default_model(&dir),
+            "read back as the default"
+        );
+    }
+
+    #[test]
+    fn an_empty_model_folder_with_nothing_saved_is_logged() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let _: Settings = engine
+            .set_settings(Settings {
+                model_folder: String::new(),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert_eq!(
+            model_log(&dir).last(),
+            Some(&json!({
+                "event": "settings",
+                "requested": "",
+                "stored": "",
+                "answered": default_model(&dir),
+                "dropped": false
+            })),
+            "the last line, exactly"
+        );
+    }
+
+    #[test]
+    fn a_shared_model_folder_is_logged_as_kept() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let _: Settings = engine
+            .set_settings(Settings {
+                model_folder: "/x/models".to_string(),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert_eq!(
+            model_log(&dir).last(),
+            Some(&json!({
+                "event": "settings",
+                "requested": "/x/models",
+                "stored": "/x/models",
+                "answered": "/x/models",
+                "dropped": false
+            })),
+            "the last line, exactly"
+        );
+    }
+
+    #[test]
+    fn the_default_model_folder_is_logged_as_stored_empty() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let _: Settings = engine
+            .set_settings(Settings {
+                model_folder: default_model(&dir),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert_eq!(
+            model_log(&dir).last(),
+            Some(&json!({
+                "event": "settings",
+                "requested": default_model(&dir),
+                "stored": "",
+                "answered": default_model(&dir),
+                "dropped": false
+            })),
+            "the last line, exactly"
+        );
+    }
+
+    #[test]
+    fn a_relative_model_folder_is_logged_as_dropped() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let _: Settings = engine
+            .set_settings(Settings {
+                model_folder: "models".to_string(),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert_eq!(
+            model_log(&dir).last(),
+            Some(&json!({
+                "event": "settings",
+                "requested": "models",
+                "stored": "models",
+                "answered": default_model(&dir),
+                "dropped": true
+            })),
+            "the last line, exactly"
+        );
+    }
+
     /// An editor stub in `dir` that writes its arguments, one per line, to
     /// `argv.txt` there, then exits with `status`.
     fn editor(dir: &TempDir, status: u8) -> (PathBuf, PathBuf) {
@@ -1407,6 +1617,7 @@ mod tests {
                 silence_split_ms: 0,
                 keep_segments: false,
                 learned_vocabulary: String::new(),
+                model_folder: String::new(),
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1536,6 +1747,7 @@ mod tests {
             silence_split_ms: 0,
             keep_segments: false,
             learned_vocabulary: default_learned(dir),
+            model_folder: default_model(dir),
         }
     }
 

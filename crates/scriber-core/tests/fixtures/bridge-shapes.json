@@ -86,7 +86,8 @@
     "inputDevice": "AirPods Pro",
     "silenceSplitMs": 2500,
     "keepSegments": true,
-    "learnedVocabulary": "/data/learned.txt"
+    "learnedVocabulary": "/data/learned.txt",
+    "modelFolder": "/data/models"
   },
   "inputDevices": {
     "defaultDevice": "Jabra Evolve 65",

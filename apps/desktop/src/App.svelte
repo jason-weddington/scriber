@@ -21,6 +21,7 @@
     ollamaModels,
     onFullscreenChanged,
     onLevel,
+    pickModelFolder,
     pickVocabularyFile,
     settingsGet,
     settingsSet,
@@ -79,7 +80,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: '' });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: '', modelFolder: '' });
   let settingsOpen = $state(false);
   let settingsButton = $state<HTMLButtonElement>();
   let settingsFromPointer = false;
@@ -346,6 +347,30 @@
     learnedVocabularyOpen().catch((e: unknown) => {
       settingsError = errorText(e);
     });
+  }
+
+  /** Browse…: the open panel picks another speech model folder, which is saved and re-read at once. */
+  function browseModelFolder(): void {
+    pickModelFolder(settings.modelFolder).then(
+      (path) => {
+        if (path === null) return;
+        settings = { ...settings, modelFolder: path };
+        settingsSet(settings).then(
+          () => {
+            settingsError = null;
+            dictationState().then(accept, (e: unknown) => {
+              settingsError = errorText(e);
+            });
+          },
+          (e: unknown) => {
+            settingsError = errorText(e);
+          },
+        );
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
+      },
+    );
   }
 
   /** Whether library entry `id` is the one shown (another may have been chosen meanwhile). */
@@ -728,6 +753,7 @@
     onopenvocabulary={openVocabulary}
     onbrowselearned={browseLearnedVocabulary}
     onopenlearned={openLearnedVocabulary}
+    onbrowsemodel={browseModelFolder}
     onsilencesplit={setSilenceSplit}
     onclose={settingsClosed}
   />

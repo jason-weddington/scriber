@@ -67,8 +67,9 @@ use scriber_core::dictation::{Dictation, Job, work};
 use scriber_core::library;
 use scriber_core::ports::{JobQueue, Library, Ports};
 use scriber_core::settings;
-use scriber_core::store::{LEARNED, MODEL, VOCABULARY};
+use scriber_core::store::{LEARNED, MODEL_FOLDER, VOCABULARY};
 use scriber_core::sync::lock;
+use serde::Serialize;
 
 pub use clock::LocalClock;
 pub use device::CpalRecorder;
@@ -101,9 +102,9 @@ pub enum ModelSource {
     /// [`Engine::download_model`] is refused with
     /// [`DictationError::LocalModel`].
     Local(PathBuf),
-    /// Downloaded into the data folder (`models/ggml-large-v3-turbo.bin`)
-    /// when it is missing, and verified against the source's size and
-    /// SHA-256; a mirror only needs its own URL.
+    /// Downloaded into `settings.json`'s `model_folder` (the data folder's
+    /// `models` when unset) when it is missing, and verified against the
+    /// source's size and SHA-256; a mirror only needs its own URL.
     Download(Source),
 }
 
@@ -124,7 +125,8 @@ pub const DEFAULT_SUMMARY_MODEL: &str = "qwen3.8:27b-mlx";
 pub struct EngineConfig {
     /// The data folder: the session's audio, its transcript, the default
     /// glossary (`vocabulary.txt`) and, for [`ModelSource::Download`], the
-    /// model.
+    /// model unless `settings.json`'s `model_folder` names another absolute
+    /// folder.
     pub data_dir: PathBuf,
     /// Where the speech model comes from.
     pub model: ModelSource,
@@ -370,6 +372,16 @@ impl Inner {
     }
 }
 
+/// A `model-log.jsonl` line for one settings write.
+#[derive(Serialize)]
+struct SettingsLine<'a> {
+    event: &'static str,
+    requested: &'a str,
+    stored: &'a str,
+    answered: &'a str,
+    dropped: bool,
+}
+
 /// One dictation session over the real (or given) adapters. Clones share
 /// the session; dropping the last one while no job runs drops the adapters.
 #[derive(Clone)]
@@ -401,9 +413,9 @@ impl Engine {
     /// # drop(engine);
     /// ```
     pub fn open(config: EngineConfig, events: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
-        let path = match &config.model {
-            ModelSource::Local(path) => path.clone(),
-            ModelSource::Download(_) => config.data_dir.join(MODEL),
+        let transcriber = match &config.model {
+            ModelSource::Local(path) => Whisper::new(path.clone()),
+            ModelSource::Download(_) => Whisper::in_data_dir(config.data_dir.clone()),
         };
         let data_dir = config.data_dir.clone();
         let ollama_url = config.ollama_url.clone();
@@ -412,7 +424,7 @@ impl Engine {
             config,
             move |level| Adapters {
                 recorder: Box::new(CpalRecorder::new(level)),
-                transcriber: Box::new(Whisper::new(path)),
+                transcriber: Box::new(transcriber),
                 downloader: Box::new(HttpDownloader::default()),
                 clock: Box::new(LocalClock),
                 encoder: Box::new(Afconvert::new(PathBuf::from(AFCONVERT), data_dir)),
@@ -769,9 +781,20 @@ impl Engine {
             .into_owned()
     }
 
+    /// The default model folder's absolute path: `models` in the data folder.
+    fn default_model_folder(&self) -> String {
+        self.0
+            .files
+            .root()
+            .join(MODEL_FOLDER)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// The user's settings (the defaults where none are saved), with the
-    /// glossary and the learned list always absolute paths and both models
-    /// always named ([`EngineConfig::summary_model`] where none is saved).
+    /// glossary, the learned list and the model folder always absolute paths
+    /// and both models always named ([`EngineConfig::summary_model`] where
+    /// none is saved).
     #[must_use]
     pub fn settings(&self) -> Settings {
         let mut s = settings::load(&self.0.files);
@@ -780,6 +803,9 @@ impl Engine {
         }
         if s.learned_vocabulary.is_empty() {
             s.learned_vocabulary = self.default_learned_vocabulary();
+        }
+        if s.model_folder.is_empty() {
+            s.model_folder = self.default_model_folder();
         }
         for model in [&mut s.summary_model, &mut s.cleanup_model] {
             if model.is_empty() {
@@ -794,7 +820,11 @@ impl Engine {
     /// `vocabulary` keeps the saved one, and the default glossary's absolute
     /// path is saved as `""` (the default, wherever the data folder is).
     /// Likewise for `learned_vocabulary`: empty keeps the saved one, and its
-    /// default absolute path is saved as `""`. Likewise for each of
+    /// default absolute path is saved as `""`. Likewise for `model_folder`:
+    /// empty keeps the saved one, and its default absolute path is saved as
+    /// `""`; a relative path is stored verbatim and dropped by
+    /// [`settings::load`] on read. Each write is logged to
+    /// `model-log.jsonl`. Likewise for each of
     /// `summary_model` and `cleanup_model`: empty keeps
     /// the saved one, and [`EngineConfig::summary_model`] is saved as `""`.
     /// `input_device` is saved verbatim: `""` means the Mac's default input
@@ -808,6 +838,7 @@ impl Engine {
         if self.0.shut.load(Ordering::SeqCst) {
             return Err(EngineError::ShutDown);
         }
+        let requested = s.model_folder.clone();
         if s.vocabulary.is_empty() {
             s.vocabulary = settings::load(&self.0.files).vocabulary;
         } else if s.vocabulary == self.default_vocabulary() {
@@ -817,6 +848,11 @@ impl Engine {
             s.learned_vocabulary = settings::load(&self.0.files).learned_vocabulary;
         } else if s.learned_vocabulary == self.default_learned_vocabulary() {
             s.learned_vocabulary = String::new();
+        }
+        if s.model_folder.is_empty() {
+            s.model_folder = settings::load(&self.0.files).model_folder;
+        } else if s.model_folder == self.default_model_folder() {
+            s.model_folder = String::new();
         }
         let saved = settings::load(&self.0.files);
         s.keep_segments = saved.keep_segments;
@@ -831,8 +867,19 @@ impl Engine {
             }
         }
         settings::save(&self.0.files, &s).map_err(|e| EngineError::Settings(e.to_string()))?;
+        let answered = self.settings();
+        let line = SettingsLine {
+            event: "settings",
+            requested: &requested,
+            stored: &s.model_folder,
+            answered: &answered.model_folder,
+            dropped: !s.model_folder.is_empty() && answered.model_folder != s.model_folder,
+        };
+        if let Ok(text) = serde_json::to_string(&line) {
+            scriber_core::store::log_model(&self.0.files, &text);
+        }
         self.0.keep_warm.refresh(|| self.settings());
-        Ok(self.settings())
+        Ok(answered)
     }
 
     /// The names of the text-generating models installed on the Ollama server

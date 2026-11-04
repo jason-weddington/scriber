@@ -7,6 +7,7 @@ import { LEGAL } from '../../src/lib/format';
 import {
   COPIED,
   DEFAULT_LEARNED_VOCABULARY,
+  DEFAULT_MODEL_FOLDER,
   DOWNLOAD_REASON,
   DOWNLOAD_STEP_MS,
   DOWNLOAD_STEPS,
@@ -442,8 +443,8 @@ test('summaries off, or Ollama down, keep the excerpt; nothing is archived from 
 
 test('settings round-trip, and the library calls fail on request', async () => {
   const mock = new Mock('?libraryOpen=0&summaries=off');
-  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY });
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY })).toEqual({
+  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER });
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: '/x/terms.txt',
@@ -455,8 +456,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
     silenceSplitMs: 0,
     keepSegments: false,
     learnedVocabulary: DEFAULT_LEARNED_VOCABULARY,
+    modelFolder: DEFAULT_MODEL_FOLDER,
   });
-  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY });
+  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER });
   await expect(mock.libraryGet('../segments')).rejects.toThrow(NOT_IN_LIBRARY);
   for (const call of ['library_list', 'library_get', 'library_copy', 'settings_get', 'settings_set'] as const) {
     const failing = new Mock(`?fail=${call}&library=1`);
@@ -465,7 +467,7 @@ test('settings round-trip, and the library calls fail on request', async () => {
       library_get: () => failing.libraryGet('20261026-090000'),
       library_copy: () => failing.libraryCopy('20261026-090000'),
       settings_get: () => failing.settingsGet(),
-      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY }),
+      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER }),
     }[call];
     await expect(attempt(), call).rejects.toThrow(`Mock failure: ${call}`);
   }
@@ -480,9 +482,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
 test('the vocabulary file is kept like the engine keeps it', async () => {
   const mock = new Mock('');
   expect((await mock.settingsGet()).vocabulary, 'the default, as a path').toBe(MOCK_VOCABULARY);
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY });
-  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY })).toEqual({
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER });
+  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: MOCK_VOCABULARY,
@@ -494,9 +496,10 @@ test('the vocabulary file is kept like the engine keeps it', async () => {
     silenceSplitMs: 0,
     keepSegments: false,
     learnedVocabulary: DEFAULT_LEARNED_VOCABULARY,
+    modelFolder: DEFAULT_MODEL_FOLDER,
   });
   // Stored as '': a later '' keeps the default rather than an old path.
-  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY })).vocabulary).toBe(MOCK_VOCABULARY);
+  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER })).vocabulary).toBe(MOCK_VOCABULARY);
   expect(mock.handle.saved.map((s) => s.vocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', MOCK_VOCABULARY, '']);
 });
 
@@ -506,7 +509,7 @@ test('the learned vocabulary file is kept like the engine keeps it', async () =>
   expect((await new Mock('?learnedVocabulary=/x/learned.txt').settingsGet()).learnedVocabulary).toBe('/x/learned.txt');
   await mock.settingsSet({ ...(await mock.settingsGet()), vocabulary: '/x/terms.txt', learnedVocabulary: '/x/terms.txt' });
   expect((await mock.settingsSet({ ...(await mock.settingsGet()), learnedVocabulary: '' })).learnedVocabulary, "'' keeps it").toBe('/x/terms.txt');
-  expect((await mock.settingsSet({ ...(await mock.settingsGet()), learnedVocabulary: DEFAULT_LEARNED_VOCABULARY })).learnedVocabulary).toBe(DEFAULT_LEARNED_VOCABULARY);
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER })).learnedVocabulary).toBe(DEFAULT_LEARNED_VOCABULARY);
   // Stored as '': a later '' keeps the default rather than an old path.
   expect((await mock.settingsSet({ ...(await mock.settingsGet()), learnedVocabulary: '' })).learnedVocabulary).toBe(DEFAULT_LEARNED_VOCABULARY);
   expect(mock.handle.saved.map((s) => s.learnedVocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', DEFAULT_LEARNED_VOCABULARY, '']);
@@ -557,10 +560,57 @@ test('the open panel picks ?pick=, a default, or nothing, and fails on request',
   );
 });
 
+test('the model folder starts at ?modelFolder= or the default, and an empty one resolves to the default', async () => {
+  expect((await new Mock('').settingsGet()).modelFolder).toBe(DEFAULT_MODEL_FOLDER);
+  expect((await new Mock('?modelFolder=/x/models').settingsGet()).modelFolder).toBe('/x/models');
+  expect((await new Mock('?modelFolder=').settingsGet()).modelFolder, "'' answers the default").toBe(DEFAULT_MODEL_FOLDER);
+});
+
+test('the model folder is kept like the engine keeps it', async () => {
+  const mock = new Mock('');
+  await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '/x/models' });
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '' })).modelFolder, "'' keeps it").toBe('/x/models');
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: DEFAULT_MODEL_FOLDER })).modelFolder).toBe(DEFAULT_MODEL_FOLDER);
+  // Stored as '': a later '' keeps the default rather than an old path.
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '' })).modelFolder).toBe(DEFAULT_MODEL_FOLDER);
+  expect(mock.handle.saved.map((s) => s.modelFolder), 'saved as sent').toEqual(['/x/models', '', DEFAULT_MODEL_FOLDER, '']);
+});
+
+type ModelInternals = {
+  modelPresent: boolean;
+  received: number | null;
+  modelError(): string | null;
+};
+
+test('the missing-model sentence names the resolved model folder, and follows a change', async () => {
+  const mock = new Mock('?model=download');
+  const internals = mock as unknown as ModelInternals;
+  internals.modelPresent = false;
+  internals.received = null;
+  expect(internals.modelError()).toBe(modelMissing(`${DEFAULT_MODEL_FOLDER}/ggml-large-v3-turbo.bin`));
+  await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '/x/models' });
+  expect(internals.modelError()).toBe(modelMissing('/x/models/ggml-large-v3-turbo.bin'));
+});
+
+test('the model folder panel picks ?picked=, a default, or nothing, and fails on request', async () => {
+  const mock = new Mock('');
+  expect(await mock.pickModelFolder('/data/models')).toBe('/mock/Models');
+  expect(mock.handle.browsed, 'where the panel started').toEqual(['/data/models']);
+  const picked = new Mock('?picked=/a/models');
+  expect(await picked.pickModelFolder('/data/models')).toBe('/a/models');
+  expect(picked.handle.browsed).toEqual(['/data/models']);
+  const cancelled = new Mock('?picked=cancel');
+  expect(await cancelled.pickModelFolder('/data/models')).toBeNull();
+  expect(cancelled.handle.browsed).toEqual(['/data/models']);
+  const failing = new Mock('?fail=pick_model_folder');
+  await expect(failing.pickModelFolder('/data/models')).rejects.toThrow('Mock failure: pick_model_folder');
+  expect(failing.handle.browsed).toEqual(['/data/models']);
+});
+
 test('opening the vocabulary file records the resolved path, or fails like the engine', async () => {
   const mock = new Mock('');
   await mock.vocabularyOpen();
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY });
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER });
   await mock.vocabularyOpen();
   expect(mock.handle.opened).toEqual([MOCK_VOCABULARY, '/x/terms.txt']);
   const failing = new Mock('?fail=vocabulary_open');
@@ -574,7 +624,7 @@ test('the models are kept like the engine keeps them', async () => {
   expect([got.summaryModel, got.cleanupModel], 'the defaults, by name').toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   expect((await new Mock('?summaryModel=llama3:70b').settingsGet()).summaryModel).toBe('llama3:70b');
   expect((await new Mock('?cleanupModel=llama3:70b').settingsGet()).cleanupModel).toBe('llama3:70b');
-  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY };
+  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER };
   await mock.settingsSet({ ...base, summaryModel: 'gemma3:4b', cleanupModel: 'llama3:8b' });
   const kept = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '' });
   expect([kept.summaryModel, kept.cleanupModel], "'' keeps them").toEqual(['gemma3:4b', 'llama3:8b']);

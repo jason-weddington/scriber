@@ -21,7 +21,27 @@ pub(crate) const LANGUAGE: &str = "en";
 
 /// whisper.cpp, on Metal on macOS and on the CPU elsewhere; the model loads
 /// once (warm-up or first use) and stays until `unload`.
-pub struct Whisper(PathBuf, LoadOnce<WhisperContext>);
+pub struct Whisper(Source, LoadOnce<WhisperContext>);
+
+/// Where [`Whisper`] looks for its model.
+enum Source {
+    /// A fixed file.
+    Fixed(PathBuf),
+    /// `store::model_path` under this data folder.
+    DataDir(PathBuf),
+}
+
+impl Source {
+    /// The model file.
+    fn resolve(&self) -> PathBuf {
+        match self {
+            Self::Fixed(path) => path.clone(),
+            Self::DataDir(data_dir) => data_dir.join(scriber_core::store::model_path(
+                &crate::DataDir::new(data_dir.clone()),
+            )),
+        }
+    }
+}
 
 /// One Whisper segment with everything the decoder reports about it, for
 /// measurement (the study-104 extractor); the app uses only [`Phrase`].
@@ -57,12 +77,26 @@ impl Whisper {
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
         whisper_rs::install_logging_hooks();
-        Self(path, LoadOnce::default())
+        Self(Source::Fixed(path), LoadOnce::default())
+    }
+
+    /// A transcriber for the model in `data_dir`, found through
+    /// `scriber_core::store::model_path`. `store::model_path` answers an
+    /// absolute path when `settings.json`'s `model_folder` is set, and
+    /// `Path::join` replaces the base with an absolute argument, so the
+    /// configured folder wins; when it is unset the relative
+    /// `models/ggml-large-v3-turbo.bin` is joined onto the data folder — the
+    /// same file `download::fetch` writes, because `DataDir::write` also does
+    /// `root.join(path)` (`src/files.rs:34-38`).
+    #[must_use]
+    pub fn in_data_dir(data_dir: PathBuf) -> Self {
+        whisper_rs::install_logging_hooks();
+        Self(Source::DataDir(data_dir), LoadOnce::default())
     }
 
     fn load(&self) -> Result<WhisperContext, PortError> {
         let params = WhisperContextParameters::default();
-        WhisperContext::new_with_params(&self.0, params).map_err(fail)
+        WhisperContext::new_with_params(self.0.resolve(), params).map_err(fail)
     }
 
     /// Transcribes `samples` with the same parameters as
@@ -85,7 +119,8 @@ impl Whisper {
 
 impl Transcriber for Whisper {
     fn missing_model(&self) -> Option<String> {
-        (!self.0.is_file()).then(|| self.0.display().to_string())
+        let path = self.0.resolve();
+        (!path.is_file()).then(|| path.display().to_string())
     }
 
     fn warm(&self) -> Result<(), PortError> {

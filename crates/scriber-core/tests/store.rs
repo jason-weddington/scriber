@@ -7,13 +7,13 @@ mod common;
 mod tests {
     use scriber_core::ports::PortError;
     use scriber_core::store::{
-        LEARNED, LEARNING_LOG, LEARNING_LOG_LINES, learned, learned_path, log_learning,
-        save_learned,
+        LEARNED, LEARNING_LOG, LEARNING_LOG_LINES, MODEL_LOG, MODEL_LOG_LINES, learned,
+        learned_path, log_learning, log_model, save_learned,
     };
     use scriber_core::store::{
-        MODEL, SEGMENTS, STARTED, TRANSCRIPT, VOCABULARY, clear, load, remove_segments, save,
-        save_transcript, segment_index, segment_path, stored, transcript, vocabulary,
-        vocabulary_path,
+        MODEL, MODEL_FILE, MODEL_FOLDER, SEGMENTS, STARTED, TRANSCRIPT, VOCABULARY, clear, load,
+        model_folder, model_path, remove_segments, save, save_transcript, segment_index,
+        segment_path, stored, transcript, vocabulary, vocabulary_path,
     };
 
     use scriber_core::ports::Files as _;
@@ -25,6 +25,8 @@ mod tests {
         assert_eq!(SEGMENTS, "segments", "folder");
         assert_eq!(VOCABULARY, "vocabulary.txt", "glossary");
         assert_eq!(MODEL, "models/ggml-large-v3-turbo.bin", "model");
+        assert_eq!(MODEL_FOLDER, "models", "model folder");
+        assert_eq!(MODEL_FILE, "ggml-large-v3-turbo.bin", "model file");
         assert_eq!(TRANSCRIPT, "segments/transcript.txt", "transcript");
         assert_eq!(STARTED, "segments/started.txt", "session start");
         assert_eq!(segment_path(7), "segments/segment-0007.wav", "zero-padded");
@@ -393,6 +395,68 @@ mod tests {
         files.write(LEARNING_LOG, old.as_bytes()).unwrap();
         log_learning(&files, "new");
         let text = String::from_utf8(files.read(LEARNING_LOG).unwrap()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 200, "keeps 200");
+        assert_eq!(lines.first().copied(), Some("line 1"), "the oldest dropped");
+        assert_eq!(lines.last().copied(), Some("new"), "the newest last");
+    }
+
+    #[test]
+    fn the_model_folder_and_path_default_to_the_data_folder() {
+        let files = FakeFiles::default();
+        assert_eq!(model_folder(&files), "models", "no file");
+        assert_eq!(
+            model_path(&files),
+            "models/ggml-large-v3-turbo.bin",
+            "no file"
+        );
+    }
+
+    #[test]
+    fn the_model_folder_and_path_follow_the_settings() {
+        let files = FakeFiles::default();
+        files
+            .write("settings.json", br#"{"model_folder":"/x/models"}"#)
+            .unwrap();
+        assert_eq!(model_folder(&files), "/x/models", "configured");
+        assert_eq!(
+            model_path(&files),
+            "/x/models/ggml-large-v3-turbo.bin",
+            "configured"
+        );
+        files
+            .write("settings.json", br#"{"model_folder":"/x/models/"}"#)
+            .unwrap();
+        assert_eq!(
+            model_path(&files),
+            "/x/models/ggml-large-v3-turbo.bin",
+            "one slash"
+        );
+        files
+            .write("settings.json", br#"{"model_folder":"models"}"#)
+            .unwrap();
+        assert_eq!(model_folder(&files), "models", "relative is the default");
+        assert_eq!(
+            model_path(&files),
+            "models/ggml-large-v3-turbo.bin",
+            "relative is the default"
+        );
+    }
+
+    #[test]
+    fn the_model_log_keeps_the_newest_lines() {
+        assert_eq!(MODEL_LOG, "model-log.jsonl", "log path");
+        assert_eq!(MODEL_LOG_LINES, 200, "log length");
+        let files = FakeFiles::default();
+        log_model(&files, "first");
+        assert_eq!(files.read(MODEL_LOG).unwrap(), b"first\n", "one line");
+        let old: String = (0..200)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        files.write(MODEL_LOG, old.as_bytes()).unwrap();
+        log_model(&files, "new");
+        let text = String::from_utf8(files.read(MODEL_LOG).unwrap()).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 200, "keeps 200");
         assert_eq!(lines.first().copied(), Some("line 1"), "the oldest dropped");

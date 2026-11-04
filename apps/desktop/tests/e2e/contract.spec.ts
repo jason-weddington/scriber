@@ -87,9 +87,9 @@ const CALLS: Call[] = [
   { fn: 'settingsGet', args: [], command: 'settings_get', sent: {} },
   {
     fn: 'settingsSet',
-    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300, inputDevice: 'AirPods Pro', silenceSplitMs: 2500, keepSegments: true, learnedVocabulary: '/data/learned.txt' }],
+    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300, inputDevice: 'AirPods Pro', silenceSplitMs: 2500, keepSegments: true, learnedVocabulary: '/data/learned.txt', modelFolder: '/data/models' }],
     command: 'settings_set',
-    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300, inputDevice: 'AirPods Pro', silenceSplitMs: 2500, keepSegments: true, learnedVocabulary: '/data/learned.txt' } },
+    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300, inputDevice: 'AirPods Pro', silenceSplitMs: 2500, keepSegments: true, learnedVocabulary: '/data/learned.txt', modelFolder: '/data/models' } },
   },
   { fn: 'vocabularyOpen', args: [], command: 'vocabulary_open', sent: {} },
   { fn: 'learnedVocabularyOpen', args: [], command: 'learned_vocabulary_open', sent: {} },
@@ -154,6 +154,11 @@ test.describe('bridge.ts against the Rust command signatures', () => {
         picked = null;
         const cancelled = await bridge.pickVocabularyFile?.('/data/vocabulary.txt');
         log.push({ command: 'picked', args: { chosen, cancelled } });
+        picked = '/picked/Models';
+        const folderChosen = await bridge.pickModelFolder?.('/data/models');
+        picked = null;
+        const folderCancelled = await bridge.pickModelFolder?.('/data/models');
+        log.push({ command: 'foldered', args: { chosen: folderChosen, cancelled: folderCancelled } });
         const received: unknown[] = [];
         await bridge.onDictationChanged?.((p: unknown) => received.push(p));
         await bridge.onLevel?.((p: unknown) => received.push(p));
@@ -193,7 +198,7 @@ test.describe('bridge.ts against the Rust command signatures', () => {
       return log;
     }, [CALLS, SNAPSHOT] as const);
 
-    const commandCalls = sent.filter((c) => !c.command.startsWith('plugin:') && !['version', 'received', 'picked', 'fullscreen'].includes(c.command));
+    const commandCalls = sent.filter((c) => !c.command.startsWith('plugin:') && !['version', 'received', 'picked', 'foldered', 'fullscreen'].includes(c.command));
     expect(commandCalls.map((c) => c.command)).toEqual(CALLS.map((c) => c.command));
 
     for (const [i, call] of CALLS.entries()) {
@@ -223,11 +228,13 @@ test.describe('bridge.ts against the Rust command signatures', () => {
 
     // The vocabulary file's open panel goes through the dialog plugin, a file or null back.
     const panels = sent.filter((c) => c.command === 'plugin:dialog|open');
-    expect(panels).toHaveLength(2);
+    expect(panels).toHaveLength(4);
     expect(panels[0]?.args).toEqual({
       options: { multiple: false, directory: false, defaultPath: '/data/vocabulary.txt', filters: [{ name: 'Text', extensions: ['txt'] }] },
     });
     expect(sent.find((c) => c.command === 'picked')?.args).toEqual({ chosen: '/picked/terms.txt', cancelled: null });
+    expect(sent.find((c) => c.command === 'foldered')?.args).toEqual({ chosen: '/picked/Models', cancelled: null });
+    expect(panels[2]?.args).toEqual({ options: { multiple: false, directory: true, defaultPath: '/data/models' } });
 
     // The version comes from Tauri's own app plugin, passed through.
     expect(sent.some((c) => c.command === 'plugin:app|version')).toBe(true);

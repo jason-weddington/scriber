@@ -16,7 +16,9 @@ mod tests {
     };
     use scriber_core::download::{MODEL_BYTES, MODEL_SHA256, MODEL_URL, PARTIAL, Source};
     use scriber_core::model::{Action, Download, Phase};
-    use scriber_core::store::MODEL;
+    use scriber_core::ports::Files as _;
+    use scriber_core::store::{MODEL, MODEL_LOG};
+    use serde_json::{Value, json};
 
     use crate::common::World;
 
@@ -54,6 +56,19 @@ mod tests {
 
     fn file(w: &World, path: &str) -> Option<Vec<u8>> {
         w.files.files.borrow().get(path).cloned()
+    }
+
+    /// The model log's lines, parsed.
+    fn model_log(w: &World) -> Vec<Value> {
+        file(w, MODEL_LOG)
+            .map(|bytes| {
+                String::from_utf8(bytes)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     #[test]
@@ -497,6 +512,191 @@ mod tests {
             DictationError::LocalModel.to_string(),
             "The speech model is a local file, so there is nothing to download.",
             "sentence"
+        );
+    }
+
+    #[test]
+    fn a_configured_model_folder_receives_the_download() {
+        let blocks: &[&[u8]] = &[b"hello", b" ", b"world"];
+        let body = blocks.concat();
+        let w = missing(blocks);
+        w.files
+            .write("settings.json", br#"{"model_folder":"/x/models"}"#)
+            .unwrap();
+        let _d = launch_and_download(&w, source(blocks));
+        assert_eq!(
+            file(&w, "/x/models/ggml-large-v3-turbo.bin").as_deref(),
+            Some(body.as_slice()),
+            "the model is in the configured folder"
+        );
+        assert_eq!(
+            file(&w, "/x/models/ggml-large-v3-turbo.bin.part"),
+            None,
+            "no partial file in the configured folder"
+        );
+        assert_eq!(file(&w, MODEL), None, "the default model is untouched");
+        assert_eq!(
+            file(&w, PARTIAL),
+            None,
+            "the default partial file is untouched"
+        );
+    }
+
+    #[test]
+    fn a_successful_download_removes_a_stale_partial_at_the_model_path() {
+        let blocks: &[&[u8]] = &[b"hello world"];
+        let body = blocks.concat();
+        let w = missing(blocks);
+        w.files.write(PARTIAL, b"stale").unwrap();
+        let _d = launch_and_download(&w, source(blocks));
+        assert_eq!(
+            file(&w, MODEL).as_deref(),
+            Some(body.as_slice()),
+            "the model is in place"
+        );
+        assert_eq!(
+            file(&w, PARTIAL),
+            None,
+            "the stale partial at the model's .part path was truncated and renamed away"
+        );
+    }
+
+    #[test]
+    fn a_successful_download_removes_a_stale_partial_in_a_configured_folder() {
+        let blocks: &[&[u8]] = &[b"hello world"];
+        let body = blocks.concat();
+        let w = missing(blocks);
+        w.files
+            .write("settings.json", br#"{"model_folder":"/x/models"}"#)
+            .unwrap();
+        w.files
+            .write("/x/models/ggml-large-v3-turbo.bin.part", b"stale")
+            .unwrap();
+        let _d = launch_and_download(&w, source(blocks));
+        assert_eq!(
+            file(&w, "/x/models/ggml-large-v3-turbo.bin").as_deref(),
+            Some(body.as_slice()),
+            "the model is in the configured folder"
+        );
+        assert_eq!(
+            file(&w, "/x/models/ggml-large-v3-turbo.bin.part"),
+            None,
+            "the stale partial at the model's .part path was truncated and renamed away"
+        );
+    }
+
+    #[test]
+    fn a_failed_download_in_a_configured_folder_touches_nothing() {
+        let blocks: &[&[u8]] = &[b"hello world"];
+        let w = missing(blocks);
+        w.files
+            .write("settings.json", br#"{"model_folder":"/x/models"}"#)
+            .unwrap();
+        w.files.fail_write.set(true);
+        let _d = launch_and_download(&w, source(blocks));
+        assert_eq!(file(&w, "/x/models/ggml-large-v3-turbo.bin"), None);
+        assert_eq!(file(&w, "/x/models/ggml-large-v3-turbo.bin.part"), None);
+        assert_eq!(file(&w, MODEL), None);
+        assert_eq!(file(&w, PARTIAL), None);
+    }
+
+    #[test]
+    fn the_model_log_records_a_successful_download_of_the_default() {
+        let blocks: &[&[u8]] = &[b"hello world"];
+        let w = missing(blocks);
+        let _d = launch_and_download(&w, source(blocks));
+        assert_eq!(
+            model_log(&w),
+            vec![
+                json!({
+                    "event": "launch",
+                    "configured": "",
+                    "target": "models/ggml-large-v3-turbo.bin",
+                    "partial": "models/ggml-large-v3-turbo.bin.part",
+                    "outcome": "download"
+                }),
+                json!({
+                    "event": "download",
+                    "configured": "",
+                    "target": "models/ggml-large-v3-turbo.bin",
+                    "partial": "models/ggml-large-v3-turbo.bin.part",
+                    "outcome": "downloaded",
+                    "error": null
+                }),
+            ],
+            "both lines, exactly"
+        );
+    }
+
+    #[test]
+    fn the_model_log_records_a_failed_checksum() {
+        let blocks: &[&[u8]] = &[b"hello world"];
+        let other = Source {
+            sha256: "0".repeat(64),
+            ..source(blocks)
+        };
+        let w = missing(blocks);
+        let _d = launch_and_download(&w, other);
+        assert_eq!(
+            model_log(&w),
+            vec![
+                json!({
+                    "event": "launch",
+                    "configured": "",
+                    "target": "models/ggml-large-v3-turbo.bin",
+                    "partial": "models/ggml-large-v3-turbo.bin.part",
+                    "outcome": "download"
+                }),
+                json!({
+                    "event": "download",
+                    "configured": "",
+                    "target": "models/ggml-large-v3-turbo.bin",
+                    "partial": "models/ggml-large-v3-turbo.bin.part",
+                    "outcome": "failed",
+                    "error": "its checksum does not match"
+                }),
+            ],
+            "both lines, exactly"
+        );
+    }
+
+    #[test]
+    fn the_model_log_records_a_configured_folder() {
+        let blocks: &[&[u8]] = &[b"hello world"];
+        let w = missing(blocks);
+        w.files
+            .write("settings.json", br#"{"model_folder":"/x/models"}"#)
+            .unwrap();
+        let _d = launch_and_download(&w, source(blocks));
+        let lines = model_log(&w);
+        assert_eq!(
+            lines.first(),
+            Some(&json!({
+                "event": "launch",
+                "configured": "/x/models",
+                "target": "/x/models/ggml-large-v3-turbo.bin",
+                "partial": "/x/models/ggml-large-v3-turbo.bin.part",
+                "outcome": "download"
+            })),
+            "the launch line names the shared folder"
+        );
+    }
+
+    #[test]
+    fn the_model_log_records_an_already_installed_model() {
+        let w = World::default();
+        let p = w.ports();
+        let _d = Dictation::launch(&p);
+        assert_eq!(
+            model_log(&w),
+            vec![json!({
+                "event": "launch",
+                "configured": "",
+                "target": "models/ggml-large-v3-turbo.bin",
+                "partial": "models/ggml-large-v3-turbo.bin.part",
+                "outcome": "already_installed"
+            })],
+            "one line, and no download"
         );
     }
 }

@@ -198,6 +198,10 @@ pub struct Settings {
     /// (`learned.txt` in the data folder). Over the bridge the engine
     /// always answers an absolute path.
     pub learned_vocabulary: String,
+    /// The folder that holds the speech model, or `""` for the default
+    /// (`models` in the data folder). Over the bridge the engine always
+    /// answers an absolute path.
+    pub model_folder: String,
 }
 
 /// The input devices the microphone menu offers.

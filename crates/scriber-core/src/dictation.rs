@@ -205,7 +205,26 @@ impl Job {
                 .map(|()| None)
                 .map_err(|e| e.to_string()),
             Work::Download(source) => {
-                download::fetch(source, ports.files, ports.downloader, progress).map(|()| None)
+                let result = download::fetch(source, ports.files, ports.downloader, progress);
+                let configured = settings::load(ports.files).model_folder;
+                let target = store::model_path(ports.files);
+                let partial = format!("{target}.part");
+                log_model(
+                    ports,
+                    &DownloadLine {
+                        event: "download",
+                        configured: &configured,
+                        target: &target,
+                        partial: &partial,
+                        outcome: if result.is_ok() {
+                            "downloaded"
+                        } else {
+                            "failed"
+                        },
+                        error: result.as_ref().err().cloned(),
+                    },
+                );
+                result.map(|()| None)
             }
             Work::Segment { samples, .. } if is_silent(samples) => Ok(None),
             Work::Segment {
@@ -391,6 +410,34 @@ fn log_learning(ports: &Ports<'_>, line: &impl Serialize) {
     }
 }
 
+/// A [`store::MODEL_LOG`] line for one launch's model decision.
+#[derive(Serialize)]
+struct LaunchLine<'a> {
+    event: &'static str,
+    configured: &'a str,
+    target: &'a str,
+    partial: &'a str,
+    outcome: &'static str,
+}
+
+/// A [`store::MODEL_LOG`] line for one download's outcome.
+#[derive(Serialize)]
+struct DownloadLine<'a> {
+    event: &'static str,
+    configured: &'a str,
+    target: &'a str,
+    partial: &'a str,
+    outcome: &'static str,
+    error: Option<String>,
+}
+
+/// Writes `line` to [`store::MODEL_LOG`], best effort.
+fn log_model(ports: &Ports<'_>, line: &impl Serialize) {
+    if let Ok(text) = serde_json::to_string(line) {
+        store::log_model(ports.files, &text);
+    }
+}
+
 /// The glossary's terms: the learned ones first, then the vocabulary's
 /// ([`vocabulary::glossary`]).
 fn glossary(ports: &Ports<'_>) -> Vec<String> {
@@ -533,8 +580,34 @@ impl Dictation {
         };
         let job = if ports.transcriber.missing_model().is_some() {
             this.fetch = Fetch::Running(0);
+            let configured = settings::load(ports.files).model_folder;
+            let target = store::model_path(ports.files);
+            let partial = format!("{target}.part");
+            log_model(
+                ports,
+                &LaunchLine {
+                    event: "launch",
+                    configured: &configured,
+                    target: &target,
+                    partial: &partial,
+                    outcome: "download",
+                },
+            );
             Job(Work::Download(source))
         } else {
+            let configured = settings::load(ports.files).model_folder;
+            let target = store::model_path(ports.files);
+            let partial = format!("{target}.part");
+            log_model(
+                ports,
+                &LaunchLine {
+                    event: "launch",
+                    configured: &configured,
+                    target: &target,
+                    partial: &partial,
+                    outcome: "already_installed",
+                },
+            );
             Job(Work::Warm)
         };
         this.queue(vec![job], ports);

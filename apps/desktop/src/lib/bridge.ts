@@ -131,6 +131,13 @@ export async function pickVocabularyFile(current: string): Promise<string | null
   return typeof r === 'string' ? r : null;
 }
 
+/** The native open panel for the speech model's folder, starting at `current`; null when cancelled. */
+export async function pickModelFolder(current: string): Promise<string | null> {
+  if (!underTauri()) return mock().pickModelFolder(current);
+  const r = await open({ multiple: false, directory: true, defaultPath: current });
+  return typeof r === 'string' ? r : null;
+}
+
 /** Subscribes to background changes (a segment transcribed, the model's download). Resolves to the unsubscribe function. */
 export async function onDictationChanged(cb: (snapshot: Snapshot) => void): Promise<() => void> {
   if (!underTauri()) return mock().onChange(cb);

@@ -9,11 +9,12 @@
 //! library/<id>/entry.json        a recording in the library (crate::library): its title and summary
 //! library/<id>/transcript.txt    its transcript
 //! library/<id>/audio.m4a         its audio (audio.wav until encoded, or when encoding fails)
-//! models/ggml-large-v3-turbo.bin the speech model (read by the transcriber, not here)
+//! models/ggml-large-v3-turbo.bin the speech model (read by the transcriber, not here); the default, overridable in settings.json as model_folder
 //! microphone-log.jsonl           which microphone each Record or Resume opened, and each segment's format (newest 200 lines)
 //! learned.txt                    terms learned from the user's corrections, newest first (crate::learn); the default, overridable in settings.json as learned_vocabulary
 //! <learned path>.partial         the learned list while it is being written, before the rename
 //! learning-log.jsonl             each learning Copy and each Undo: what was found and added, and why (newest 200 lines)
+//! model-log.jsonl            how the model's location was decided: each launch, each download outcome, each settings write (newest 200 lines)
 //! ```
 
 use crate::ports::{Files, PortError};
@@ -53,8 +54,21 @@ pub const LEARNING_LOG: &str = "learning-log.jsonl";
 /// How many lines [`LEARNING_LOG`] keeps, the newest.
 pub const LEARNING_LOG_LINES: usize = 200;
 
+/// The model-folder decision log: one JSON line per launch and each
+/// download outcome (the core) and each settings write (the engine).
+pub const MODEL_LOG: &str = "model-log.jsonl";
+
+/// How many lines [`MODEL_LOG`] keeps, the newest.
+pub const MODEL_LOG_LINES: usize = 200;
+
 /// The default glossary file.
 pub const VOCABULARY: &str = "vocabulary.txt";
+
+/// The default model folder, in the data folder.
+pub const MODEL_FOLDER: &str = "models";
+
+/// The speech model's file name, inside [`MODEL_FOLDER`].
+pub const MODEL_FILE: &str = "ggml-large-v3-turbo.bin";
 
 /// The speech model: ggml `large-v3-turbo` from the `ggerganov/whisper.cpp`
 /// Hugging Face repository (`scripts/fetch-model.sh` downloads it).
@@ -183,6 +197,31 @@ pub fn learned_path(files: &dyn Files) -> String {
     }
 }
 
+/// The model's folder: the one in the settings when there is one (an
+/// absolute path), else [`MODEL_FOLDER`] (`models`) in the data folder.
+#[must_use]
+pub fn model_folder(files: &dyn Files) -> String {
+    let configured = crate::settings::load(files).model_folder;
+    if configured.is_empty() {
+        MODEL_FOLDER.to_string()
+    } else {
+        configured
+    }
+}
+
+/// The speech model's path: [`MODEL`] (`models/ggml-large-v3-turbo.bin`) in
+/// the data folder, or `model_folder`'s [`MODEL_FILE`] when the settings name
+/// another (absolute) folder.
+#[must_use]
+pub fn model_path(files: &dyn Files) -> String {
+    let configured = crate::settings::load(files).model_folder;
+    if configured.is_empty() {
+        MODEL.to_string()
+    } else {
+        format!("{}/{MODEL_FILE}", configured.trim_end_matches('/'))
+    }
+}
+
 /// The glossary's text, read from [`vocabulary_path`], or `None` when it is
 /// missing, unreadable or not UTF-8.
 #[must_use]
@@ -203,6 +242,12 @@ pub fn log_microphone(files: &dyn Files, line: &str) {
 /// [`log_microphone`].
 pub fn log_learning(files: &dyn Files, line: &str) {
     log_line(files, LEARNING_LOG, LEARNING_LOG_LINES, line);
+}
+
+/// Adds `line` (one JSON object, no newline) to [`MODEL_LOG`], keeping the
+/// newest [`MODEL_LOG_LINES`] lines, best effort like [`log_microphone`].
+pub fn log_model(files: &dyn Files, line: &str) {
+    log_line(files, MODEL_LOG, MODEL_LOG_LINES, line);
 }
 
 /// Appends `line` to the log at `path`, keeping its newest `keep` lines.

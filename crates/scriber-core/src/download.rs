@@ -1,8 +1,8 @@
 //! Downloading the speech model when it is missing.
 //!
-//! The model streams into [`PARTIAL`] beside where it belongs, one block at
-//! a time through the [`Downloader`] port, and is renamed to
-//! [`store::MODEL`] only once its size and SHA-256 match [`Source`]. A
+//! The model streams into `<the model path>.part` beside where it belongs,
+//! one block at a time through the [`Downloader`] port, and is renamed to
+//! the model path only once its size and SHA-256 match [`Source`]. A
 //! download that fails, or that does not match, deletes the partial file:
 //! the transcriber never sees a half-written model.
 
@@ -23,7 +23,9 @@ pub const MODEL_BYTES: u64 = 1_624_555_275;
 /// The model's SHA-256, in lowercase hex.
 pub const MODEL_SHA256: &str = "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69";
 
-/// Where a download in progress is written, until it is verified.
+/// `models/ggml-large-v3-turbo.bin.part`: the default model's partial path,
+/// equal to `<store::model_path(files)>.part` only when `model_folder` is
+/// unset; kept public so existing callers and docs compile.
 pub const PARTIAL: &str = "models/ggml-large-v3-turbo.bin.part";
 
 /// A file to download and what it must turn out to be.
@@ -48,8 +50,10 @@ impl Default for Source {
     }
 }
 
-/// Downloads `source` to [`store::MODEL`], calling `progress` with the bytes
-/// received each time another whole percent has arrived.
+/// Downloads `source` to the model's path ([`store::model_path`]), calling
+/// `progress` with the bytes received each time another whole percent has
+/// arrived. The body streams into `<the model path>.part` beside where it
+/// belongs and is renamed to the model path once it verifies.
 ///
 /// # Errors
 ///
@@ -61,10 +65,12 @@ pub fn fetch(
     downloader: &dyn Downloader,
     progress: &dyn Fn(u64),
 ) -> Result<(), String> {
+    let target = store::model_path(files);
+    let partial = format!("{target}.part");
     // Writing it empty starts over any partial file a crash left.
     let verified = files
-        .write(PARTIAL, &[])
-        .and_then(|()| stream(source, files, downloader, progress))
+        .write(&partial, &[])
+        .and_then(|()| stream(source, &partial, files, downloader, progress))
         .map_err(|e| e.to_string())
         .and_then(|(received, sha256)| {
             if received != source.bytes {
@@ -75,13 +81,11 @@ pub fn fetch(
             } else if sha256 != source.sha256 {
                 Err("its checksum does not match".to_string())
             } else {
-                files
-                    .rename(PARTIAL, store::MODEL)
-                    .map_err(|e| e.to_string())
+                files.rename(&partial, &target).map_err(|e| e.to_string())
             }
         });
     if verified.is_err() {
-        let _removed = files.remove(PARTIAL);
+        let _removed = files.remove(&partial);
     }
     verified
 }
@@ -89,10 +93,11 @@ pub fn fetch(
 /// How much of the body is read at a time.
 const BLOCK: usize = 1 << 16;
 
-/// Streams `source` onto the end of [`PARTIAL`]. Returns the bytes received
+/// Streams `source` onto the end of `path`. Returns the bytes received
 /// and their SHA-256 in lowercase hex.
 fn stream(
     source: &Source,
+    path: &str,
     files: &dyn Files,
     downloader: &dyn Downloader,
     progress: &dyn Fn(u64),
@@ -117,7 +122,7 @@ fn stream(
             return Err(PortError("it is larger than expected".to_string()));
         }
         hasher.update(bytes);
-        files.append(PARTIAL, bytes)?;
+        files.append(path, bytes)?;
         let now = received.saturating_mul(100).checked_div(source.bytes);
         if now != Some(percent) {
             percent = now.unwrap_or(percent);

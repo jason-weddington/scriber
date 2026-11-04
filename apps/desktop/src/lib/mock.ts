@@ -14,7 +14,7 @@
 //   ?long=1               each segment is heard as a long paragraph
 //   ?fail=<call>          that call rejects: "dictation_state", "app_version", an action,
 //                         "library_list", "library_get", "library_copy", "settings_get", "settings_set",
-//                         "window_fullscreen" or "pick_vocabulary_file" (with "Mock failure: <call>"); ?fail=vocabulary_open
+//                         "window_fullscreen", "pick_vocabulary_file" or "pick_model_folder" (with "Mock failure: <call>"); ?fail=vocabulary_open
 //                         and ?fail=learned_vocabulary_open reject with the engine's
 //                         "Could not open the vocabulary file: no text editor."
 //   ?fullscreen=1         the window starts in full screen
@@ -37,9 +37,12 @@
 //   ?silenceSplitMs=<n>   the silence split starts as n ms in the settings (else 0, off)
 //   ?keepSegments=1       the hidden keep_segments setting starts true (else false)
 //   ?learnedVocabulary=<path>  the learned list starts at that absolute path (else DEFAULT_LEARNED_VOCABULARY)
+//   ?modelFolder=<path>   the model folder starts at that absolute path (else DEFAULT_MODEL_FOLDER)
+//   ?picked=<path>        the model folder panel picks that folder (default /mock/Models); ?picked=cancel cancels it
 // window.__mockBridge.split() is the fake microphone closing the running part at a silence: with the
 // split read at the last Record or Resume non-zero and the session recording, it closes the part
 // (queued for transcription like a Pause) while recording goes on; otherwise it does nothing.
+// `pick_vocabulary_file` and `pick_model_folder` are gated the same way, so `?hold=pick_vocabulary_file` / `?hold=pick_model_folder` work though the list above does not name either picker.
 // A test can hold a call so the UI is seen mid-call, and release it:
 //   window.__mockBridge.hold('dictation_act' | 'transcribe' | 'download' | 'summarize' | 'cleanup' | 'ollama_models' | 'input_devices' | 'window_fullscreen') ... release(...)
 // window.__mockBridge.setFullscreen(on) changes the full-screen state and tells the listeners.
@@ -58,7 +61,8 @@
 // windows. The settings' vocabulary is kept like the engine keeps it: '' for
 // the default (answered as MOCK_VOCABULARY), and settings_set's '' keeps the
 // saved path while MOCK_VOCABULARY is saved as ''. The learned list is kept
-// the same way, answered as DEFAULT_LEARNED_VOCABULARY. Open in Text Editor appends
+// the same way, answered as DEFAULT_LEARNED_VOCABULARY, and the model folder
+// the same way too, answered as DEFAULT_MODEL_FOLDER. Open in Text Editor appends
 // the resolved path to window.__mockBridge.opened, and Browse… the path its
 // open panel starts at to window.__mockBridge.browsed. The models are kept
 // like the engine keeps them: '' for the default (answered as
@@ -78,9 +82,6 @@ import type { Action, Download, InputDevices, LibraryEntry, Phase, Settings, Sna
 
 /** The version the mock reports, so a mock can never pass for the real app. */
 export const MOCK_VERSION = '0.0.0-mock';
-
-/** Where the mock says the model belongs. */
-export const MOCK_MODEL_PATH = '/Users/me/Library/Application Support/com.jasonweddington.scriber/models/ggml-large-v3-turbo.bin';
 
 /** The model's size, as the core pins it (crates/scriber-core/src/download.rs). */
 export const MODEL_BYTES = 1_624_555_275;
@@ -136,6 +137,9 @@ export const MOCK_VOCABULARY = '/mock/data/vocabulary.txt';
 
 /** The default learned list's absolute path, as the engine answers it. */
 export const DEFAULT_LEARNED_VOCABULARY = '/mock/data/learned.txt';
+
+/** The default speech-model folder, as the engine answers it. */
+export const DEFAULT_MODEL_FOLDER = '/mock/data/models';
 
 /** What the mock open panel picks without ?pick=. */
 export const MOCK_PICK = '/mock/Documents/terms.txt';
@@ -535,6 +539,7 @@ export class Mock {
   private readonly opened: string[] = [];
   private readonly browsed: string[] = [];
   private readonly pick: string | null;
+  private readonly picked: string | null;
   private readonly attempts = new Map<number, number>();
   private readonly ollamaDown: boolean;
   private entries: (LibraryEntry & { transcript: string })[] = [];
@@ -603,6 +608,7 @@ export class Mock {
       silenceSplitMs: Number(params.get('silenceSplitMs') ?? '0'),
       keepSegments: params.get('keepSegments') === '1',
       learnedVocabulary: params.get('learnedVocabulary') ?? DEFAULT_LEARNED_VOCABULARY,
+      modelFolder: params.get('modelFolder') ?? DEFAULT_MODEL_FOLDER,
     };
     const inputs = params.get('inputs');
     this.inputs =
@@ -619,6 +625,7 @@ export class Mock {
           };
     const pick = params.get('pick') ?? MOCK_PICK;
     this.pick = pick === 'cancel' ? null : pick;
+    this.picked = params.get('picked') ?? null;
     this.entries = Array.from({ length: Number(params.get('library') ?? '0') }, (_, k) => preloaded(k));
     const left = Number(params.get('leftover') ?? '0');
     if (left > 0) {
@@ -698,7 +705,7 @@ export class Mock {
   /** The core's model_error: why the model is missing, unless it is downloading. */
   private modelError(): string | null {
     if (this.modelPresent || this.received !== null) return null;
-    return this.downloadError === null ? modelMissing(MOCK_MODEL_PATH) : downloadFailed(this.downloadError);
+    return this.downloadError === null ? modelMissing(`${this.resolved().modelFolder}/ggml-large-v3-turbo.bin`) : downloadFailed(this.downloadError);
   }
 
   private async gate(name: string): Promise<void> {
@@ -753,6 +760,7 @@ export class Mock {
       libraryWidth: storedWidth(this.settings.libraryWidth),
       silenceSplitMs: storedSplit(this.settings.silenceSplitMs),
       learnedVocabulary: this.settings.learnedVocabulary || DEFAULT_LEARNED_VOCABULARY,
+      modelFolder: this.settings.modelFolder || DEFAULT_MODEL_FOLDER,
     };
   }
 
@@ -765,10 +773,13 @@ export class Mock {
       settings.vocabulary === '' ? this.settings.vocabulary : settings.vocabulary === MOCK_VOCABULARY ? '' : settings.vocabulary;
     const learnedVocabulary =
       settings.learnedVocabulary === '' ? this.settings.learnedVocabulary : settings.learnedVocabulary === DEFAULT_LEARNED_VOCABULARY ? '' : settings.learnedVocabulary;
+    const modelFolder =
+      settings.modelFolder === '' ? this.settings.modelFolder : settings.modelFolder === DEFAULT_MODEL_FOLDER ? '' : settings.modelFolder;
     this.settings = {
       ...settings,
       vocabulary,
       learnedVocabulary,
+      modelFolder,
       summaryModel: stored(settings.summaryModel, this.settings.summaryModel),
       cleanupModel: stored(settings.cleanupModel, this.settings.cleanupModel),
       // settings.json owns the hidden key: a change made in the app never touches it.
@@ -808,6 +819,14 @@ export class Mock {
     this.browsed.push(current);
     this.check('pick_vocabulary_file');
     return this.pick;
+  }
+
+  /** The open panel for the model's folder: the ?picked= path, else /mock/Models; null when cancelled. */
+  async pickModelFolder(current: string): Promise<string | null> {
+    await this.gate('pick_model_folder');
+    this.browsed.push(current);
+    this.check('pick_model_folder');
+    return this.picked === 'cancel' ? null : this.picked ?? '/mock/Models';
   }
 
   /** Opens the glossary in the text editor (the engine creates it first). */
