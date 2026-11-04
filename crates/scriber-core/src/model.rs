@@ -202,6 +202,10 @@ pub struct Settings {
     /// (`models` in the data folder). Over the bridge the engine always
     /// answers an absolute path.
     pub model_folder: String,
+    /// The global shortcut that starts and finishes a dictation, in Scriber's
+    /// canonical form (`Opt+Cmd+D`); the core answers the default when the
+    /// stored value cannot be parsed (see [`crate::menubar`]).
+    pub toggle_shortcut: String,
 }
 
 /// The input devices the microphone menu offers.

@@ -21,7 +21,7 @@
   // that fails leaves Whisper's text, and a summary simply replaces the
   // excerpt when it lands. The modal ends with the app's version when it can
   // be read.
-  import { fileName } from './format';
+  import { captureShortcut, fileName, shortcutAria, shortcutGlyphs } from './format';
   import type { Settings } from './types';
 
   interface Props {
@@ -42,6 +42,7 @@
     onopenlearned: () => void;
     onbrowsemodel: () => void;
     onsilencesplit: (ms: number) => void;
+    onshortcut: (value: string) => void;
     onclose: () => void;
   }
 
@@ -63,11 +64,18 @@
     onopenlearned,
     onbrowsemodel,
     onsilencesplit,
+    onshortcut,
     onclose,
   }: Props = $props();
 
   let dialog = $state<HTMLDialogElement>();
   let path = $state<HTMLInputElement>();
+  // Whether the shortcut button is capturing the next key press, and why the
+  // last press was refused.
+  let armed = $state(false);
+  let refusal = $state<string | null>(null);
+  // What the button shows: the saved shortcut as glyphs, or the capture's prompt.
+  const shown = $derived(armed ? 'Press a shortcut…' : shortcutGlyphs(settings.toggleShortcut));
   // Whether the press that led to a click began on the overlay, so that a
   // drag from inside the modal released on the overlay does not close it.
   let pressedBackdrop = false;
@@ -171,6 +179,43 @@
       <option {...{ value }} selected={ms === settings.silenceSplitMs}>{text}</option>
     {/each}
   </select>
+  <div class="vocabulary" role="group" aria-label="Toggle dictation shortcut">
+    <span class="caption" aria-hidden="true">Toggle dictation shortcut</span>
+    <div class="row">
+      <button
+        type="button"
+        aria-label={`Toggle dictation shortcut: ${shown}`}
+        aria-keyshortcuts={shortcutAria(settings.toggleShortcut)}
+        title={shortcutAria(settings.toggleShortcut)}
+        onclick={() => {
+          armed = true;
+          refusal = null;
+        }}
+        onkeydown={(e) => {
+          if (!armed) return;
+          // Every key belongs to the capture: the modal must not see the
+          // Escape that would close it, nor Space or Return that would click
+          // the button again.
+          e.preventDefault();
+          const capture = captureShortcut(e);
+          if (capture.kind === 'cancel') {
+            armed = false;
+            refusal = null;
+          } else if (capture.kind === 'needsModifier') {
+            refusal = 'A shortcut needs ⌥ or ⌘.';
+          } else if (capture.kind === 'badKey') {
+            refusal = 'That key cannot be a shortcut.';
+          } else {
+            armed = false;
+            refusal = null;
+            onshortcut(capture.value);
+          }
+        }}
+      >
+        {shown}
+      </button>
+    </div>
+  </div>
   <label class="switch">
     <input
       type="checkbox"
@@ -219,8 +264,8 @@
   </select>
   <div class="status-row">
     <p class="note" class:visually-hidden={error !== null} title={ollamaDown ? ollamaReason : undefined}>{ollamaDown ? 'Local AI needs Ollama. Start Ollama, then reopen Settings.' : ''}</p>
-    {#if error !== null}
-      <p class="error" role="alert" title={error}>{error}</p>
+    {#if error !== null || refusal !== null}
+      <p class="error" role="alert" title={error ?? refusal}>{error ?? refusal}</p>
     {/if}
   </div>
   {#if version !== ''}

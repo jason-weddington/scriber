@@ -87,7 +87,8 @@
     "silenceSplitMs": 2500,
     "keepSegments": true,
     "learnedVocabulary": "/data/learned.txt",
-    "modelFolder": "/data/models"
+    "modelFolder": "/data/models",
+    "toggleShortcut": "Opt+Cmd+D"
   },
   "inputDevices": {
     "defaultDevice": "Jabra Evolve 65",

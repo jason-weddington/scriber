@@ -7,8 +7,8 @@ mod common;
 mod tests {
     use scriber_core::ports::PortError;
     use scriber_core::store::{
-        LEARNED, LEARNING_LOG, LEARNING_LOG_LINES, MODEL_LOG, MODEL_LOG_LINES, learned,
-        learned_path, log_learning, log_model, save_learned,
+        LEARNED, LEARNING_LOG, LEARNING_LOG_LINES, MENUBAR_LOG, MENUBAR_LOG_LINES, MODEL_LOG,
+        MODEL_LOG_LINES, learned, learned_path, log_learning, log_menubar, log_model, save_learned,
     };
     use scriber_core::store::{
         MODEL, MODEL_FILE, MODEL_FOLDER, SEGMENTS, STARTED, TRANSCRIPT, VOCABULARY, clear, load,
@@ -457,6 +457,26 @@ mod tests {
         files.write(MODEL_LOG, old.as_bytes()).unwrap();
         log_model(&files, "new");
         let text = String::from_utf8(files.read(MODEL_LOG).unwrap()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 200, "keeps 200");
+        assert_eq!(lines.first().copied(), Some("line 1"), "the oldest dropped");
+        assert_eq!(lines.last().copied(), Some("new"), "the newest last");
+    }
+
+    #[test]
+    fn the_menubar_log_keeps_the_newest_lines() {
+        assert_eq!(MENUBAR_LOG, "menubar-log.jsonl", "log path");
+        assert_eq!(MENUBAR_LOG_LINES, 200, "log length");
+        let files = FakeFiles::default();
+        log_menubar(&files, "first");
+        assert_eq!(files.read(MENUBAR_LOG).unwrap(), b"first\n", "one line");
+        let old: String = (0..200)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        files.write(MENUBAR_LOG, old.as_bytes()).unwrap();
+        log_menubar(&files, "new");
+        let text = String::from_utf8(files.read(MENUBAR_LOG).unwrap()).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 200, "keeps 200");
         assert_eq!(lines.first().copied(), Some("line 1"), "the oldest dropped");

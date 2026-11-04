@@ -45,11 +45,13 @@ fi
 
 # 3. src-tauri is a thin adapter: the library and the main shim only, the
 #    library small enough to read in one sitting, and no tests (logic that
-#    needs a test belongs in the core).
+#    needs a test belongs in the core). The shell now has a second client
+#    surface, the tray, but still holds no decision logic: every rule lives in
+#    scriber-core/src/menubar.rs.
 extra=$(find "$app/src" -name '*.rs' ! -path "$app/src/lib.rs" ! -path "$app/src/main.rs")
 [ -z "$extra" ] || bad "src-tauri holds more than lib.rs and main.rs (move logic to the core): $extra"
 lines=$(wc -l < "$app/src/lib.rs")
-[ "$lines" -le 250 ] || bad "$app/src/lib.rs is $lines lines (limit 250): move logic to the core"
+[ "$lines" -le 400 ] || bad "$app/src/lib.rs is $lines lines (limit 400): move logic to the core"
 if hits=$(rust_code '#\[(cfg\(test\)|test)\]' "$app/src"); then
   bad "tests in src-tauri (test the logic in the core instead): $hits"
 fi

@@ -77,8 +77,8 @@ expect_fail "a test in src-tauri" "$arch" \
   "printf '#[cfg(test)]\nmod tests {}\n' >> $app/src/lib.rs" \
   'tests in src-tauri'
 expect_fail "src-tauri grows past the limit" "$arch" \
-  "for i in \$(seq 1 260); do echo '// filler' >> $app/src/lib.rs; done" \
-  'limit 250'
+  "for i in \$(seq 1 410); do echo '// filler' >> $app/src/lib.rs; done" \
+  'limit 400'
 expect_fail "a component imports Tauri" "$arch" \
   "printf \"import { invoke } from '@tauri-apps/api/core';\\n\" >> apps/desktop/src/lib/format.ts" \
   'only src/lib/bridge.ts may import'

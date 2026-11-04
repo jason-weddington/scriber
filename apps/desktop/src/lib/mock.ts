@@ -38,6 +38,7 @@
 //   ?keepSegments=1       the hidden keep_segments setting starts true (else false)
 //   ?learnedVocabulary=<path>  the learned list starts at that absolute path (else DEFAULT_LEARNED_VOCABULARY)
 //   ?modelFolder=<path>   the model folder starts at that absolute path (else DEFAULT_MODEL_FOLDER)
+//   ?toggleShortcut=<value>   the toggle shortcut starts as that Scriber form (else DEFAULT_TOGGLE_SHORTCUT)
 //   ?picked=<path>        the model folder panel picks that folder (default /mock/Models); ?picked=cancel cancels it
 // window.__mockBridge.split() is the fake microphone closing the running part at a silence: with the
 // split read at the last Record or Resume non-zero and the session recording, it closes the part
@@ -77,7 +78,14 @@
 // snapshot's learned and an undo list like the core (no log); finish enforces the learned spellings;
 // Accept learns the same way but writes no clipboard and sets no notice; undoLearn restores the list as it was before the last learning Copy or Accept; New and Discard clear learned.
 
-import { clampLibraryWidth, LIBRARY_WIDTH_DEFAULT, SILENCE_SPLIT_MAX_MS, SILENCE_SPLIT_MIN_MS } from './format';
+import {
+  clampLibraryWidth,
+  DEFAULT_TOGGLE_SHORTCUT,
+  isShortcut,
+  LIBRARY_WIDTH_DEFAULT,
+  SILENCE_SPLIT_MAX_MS,
+  SILENCE_SPLIT_MIN_MS,
+} from './format';
 import type { Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot } from './types';
 
 /** The version the mock reports, so a mock can never pass for the real app. */
@@ -278,6 +286,11 @@ export function storedWidth(n: number): number {
 /** The silence split the core's `load` reads from `settings.json`: 0, or a whole number of ms in range, else 0. */
 export function storedSplit(n: number): number {
   return n === 0 || (Number.isInteger(n) && n >= SILENCE_SPLIT_MIN_MS && n <= SILENCE_SPLIT_MAX_MS) ? n : 0;
+}
+
+/** The core's read rule for the toggle shortcut (crates/scriber-core/src/settings.rs). */
+export function storedShortcut(value: string): string {
+  return isShortcut(value) ? value : DEFAULT_TOGGLE_SHORTCUT;
 }
 
 /** The engine's write rule for a model: '' keeps the saved one, the default is saved as ''. */
@@ -609,6 +622,8 @@ export class Mock {
       keepSegments: params.get('keepSegments') === '1',
       learnedVocabulary: params.get('learnedVocabulary') ?? DEFAULT_LEARNED_VOCABULARY,
       modelFolder: params.get('modelFolder') ?? DEFAULT_MODEL_FOLDER,
+      // A URL query decodes '+' as a space; a shortcut never holds one.
+      toggleShortcut: storedShortcut((params.get('toggleShortcut') ?? '').replaceAll(' ', '+')),
     };
     const inputs = params.get('inputs');
     this.inputs =
@@ -761,6 +776,7 @@ export class Mock {
       silenceSplitMs: storedSplit(this.settings.silenceSplitMs),
       learnedVocabulary: this.settings.learnedVocabulary || DEFAULT_LEARNED_VOCABULARY,
       modelFolder: this.settings.modelFolder || DEFAULT_MODEL_FOLDER,
+      toggleShortcut: storedShortcut(this.settings.toggleShortcut),
     };
   }
 

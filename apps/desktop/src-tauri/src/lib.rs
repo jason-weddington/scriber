@@ -1,15 +1,20 @@
-//! Scriber's Tauri 2 shell: a thin client over `scriber-engine`, with the
-//! clipboard adapter and the bridge's commands (see `docs/design.md`).
+//! Scriber's Tauri 2 shell: a thin client over `scriber-engine`, with the clipboard adapter, the bridge's commands, the tray and the global shortcut (see `docs/design.md`).
 #![forbid(unsafe_code)]
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use scriber_engine::{
-    Action, Clipboard, Engine, EngineConfig, Event, InputDevices, LibraryEntry, PortError,
-    Settings, Snapshot, fail,
+    Action, Clipboard, Engine, EngineConfig, EngineError, Event, InputDevices, LibraryEntry, Phase,
+    PortError, Settings, Snapshot, fail, menubar,
 };
+use tauri::image::Image;
+use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutEvent, ShortcutState};
+use tauri_plugin_notification::NotificationExt;
 
 /// Event name for a snapshot that changed in the background.
 pub const DICTATION_EVENT: &str = "dictation-changed";
@@ -17,6 +22,9 @@ pub const DICTATION_EVENT: &str = "dictation-changed";
 /// Event name for the input level while recording (`scriber_core::level`).
 pub const LEVEL_EVENT: &str = "dictation-level";
 
+/// The menu bar's template and recording icons (`image-png` decodes them).
+const TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-template.png");
+const RECORDING_PNG: &[u8] = include_bytes!("../icons/tray-recording.png");
 /// The system clipboard, through Tauri's clipboard plugin.
 struct SystemClipboard(AppHandle);
 
@@ -29,7 +37,7 @@ impl Clipboard for SystemClipboard {
 /// The bridge's commands, in a module: `#[tauri::command]` code trips a lint.
 #[expect(clippy::unreachable, reason = "macro expansion")]
 mod commands {
-    use super::{Action, Engine, InputDevices, LibraryEntry, Settings, Snapshot, State};
+    use super::{Action, AppHandle, Engine, InputDevices, LibraryEntry, Settings, Snapshot, State};
 
     /// `dictation_state`: the session as it stands (never an error).
     #[tauri::command]
@@ -76,28 +84,31 @@ mod commands {
         Ok(engine.settings())
     }
 
-    /// `settings_set`: saves the user's settings and answers with them.
+    /// `settings_set`: saves the settings, moves the global shortcut to the saved one.
     #[tauri::command]
     pub(crate) async fn settings_set(
+        app: AppHandle,
         engine: State<'_, Engine>,
         settings: Settings,
     ) -> Result<Settings, String> {
-        engine.set_settings(settings).map_err(|e| e.to_string())
+        let saved = engine.set_settings(settings).map_err(|e| e.to_string())?;
+        super::register_toggle(&app, engine.inner(), "settings");
+        Ok(saved)
     }
 
-    /// `vocabulary_open`: opens the glossary in the default text editor, creating it empty first.
+    /// `vocabulary_open`: opens the glossary in the default text editor.
     #[tauri::command]
     pub(crate) async fn vocabulary_open(engine: State<'_, Engine>) -> Result<(), String> {
         engine.open_vocabulary().map_err(|e| e.to_string())
     }
 
-    /// `learned_vocabulary_open`: opens the learned list in the default text editor, creating it empty first.
+    /// `learned_vocabulary_open`: opens the learned list in the default text editor.
     #[tauri::command]
     pub(crate) async fn learned_vocabulary_open(engine: State<'_, Engine>) -> Result<(), String> {
         engine.open_learned_vocabulary().map_err(|e| e.to_string())
     }
 
-    /// `ollama_models`: the installed Ollama models' names that can generate text (embedding models hidden), sorted.
+    /// `ollama_models`: the installed text models, sorted.
     #[tauri::command]
     pub(crate) async fn ollama_models(engine: State<'_, Engine>) -> Result<Vec<String>, String> {
         engine.ollama_models().map_err(|e| e.to_string())
@@ -110,6 +121,212 @@ mod commands {
     }
 }
 
+/// The window's visibility (for the notification rule) and the phase the tray last showed.
+struct Shown {
+    visible: AtomicBool,
+    phase: Mutex<Phase>,
+}
+/// The tray's image for `icon`, decoded from the two checked-in images.
+fn tray_image(icon: menubar::Icon) -> Option<Image<'static>> {
+    let bytes = match icon {
+        menubar::Icon::Template => TEMPLATE_PNG,
+        menubar::Icon::Recording => RECORDING_PNG,
+    };
+    Image::from_bytes(bytes).ok()
+}
+
+/// The tray menu for `phase`: [`menubar::items`] in order, a separator after Show Scriber.
+fn tray_menu(app: &AppHandle, phase: Phase) -> tauri::Result<Menu<tauri::Wry>> {
+    let made = menubar::items(phase)
+        .iter()
+        .map(|item| MenuItem::with_id(app, item.id, item.label, item.enabled, None::<&str>))
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let mut ordered: Vec<&dyn IsMenuItem<tauri::Wry>> = Vec::new();
+    if let Some(first) = made.first() {
+        ordered.push(first);
+    }
+    ordered.push(&separator);
+    for item in made.iter().skip(1) {
+        ordered.push(item);
+    }
+    Menu::with_items(app, &ordered)
+}
+
+/// Runs engine work on a `scriber-tray` thread: every engine method takes the session lock and Record opens the microphone, so never the main thread.
+fn on_tray_thread(work: impl FnOnce() + Send + 'static) {
+    let _spawned = std::thread::Builder::new()
+        .name("scriber-tray".to_string())
+        .spawn(work);
+}
+
+/// Registers the saved toggle shortcut, logging the attempt; after a settings save the old chord goes first, so a change works without a relaunch.
+fn register_toggle(app: &AppHandle, engine: &Engine, trigger: &'static str) {
+    let accel = engine.toggle_accelerator();
+    let shortcuts = app.global_shortcut();
+    if trigger == "settings" {
+        match shortcuts.unregister_all() {
+            Ok(()) => log_shortcut(engine, trigger, &accel, "unregistered", None),
+            Err(e) => log_shortcut(engine, trigger, &accel, "failed", Some(&e.to_string())),
+        }
+    }
+    match shortcuts.register(accel.as_str()) {
+        Ok(()) => log_shortcut(engine, trigger, &accel, "registered", None),
+        Err(e) => log_shortcut(engine, trigger, &accel, "failed", Some(&e.to_string())),
+    }
+}
+
+/// Writes one `shortcut` line, with the plugin's error text verbatim.
+fn log_shortcut(e: &Engine, t: &str, accel: &str, outcome: &str, error: Option<&str>) {
+    #[rustfmt::skip]
+    e.log_menubar(&menubar::Log::Shortcut { trigger: t, accelerator: accel, outcome, error });
+}
+
+/// The global shortcut's handler: a press toggles (the plugin reports Released too, so one press would otherwise toggle twice), on a `scriber-tray` thread.
+fn on_shortcut(app: &AppHandle, event: ShortcutEvent) {
+    if event.state != ShortcutState::Pressed {
+        return;
+    }
+    let Some(engine) = app.try_state::<Engine>() else {
+        return;
+    };
+    let engine = engine.inner().clone();
+    on_tray_thread(move || {
+        let _result = engine.toggle();
+    });
+}
+
+/// Builds the menu bar icon and its menu, once, at launch.
+fn install_tray(app: &AppHandle) -> tauri::Result<()> {
+    let menu = tray_menu(app, app.state::<Engine>().state().phase)?;
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("Scriber")
+        .menu(&menu)
+        .on_menu_event(|handle: &AppHandle, event| on_menu_event(handle, &event));
+    if let Some(image) = tray_image(menubar::Icon::Template) {
+        builder = builder.icon(image);
+    }
+    #[cfg(target_os = "macos")]
+    let builder = builder.icon_as_template(true);
+    let _tray = builder.build(app)?;
+    Ok(())
+}
+
+/// The only writer of tray state: on the main thread for every snapshot, so it takes no session lock.
+fn refresh(app: &AppHandle, snapshot: &Snapshot) {
+    let Some(shown) = app.try_state::<Shown>() else {
+        return;
+    };
+    let previous = std::mem::replace(
+        &mut *shown.phase.lock().unwrap_or_else(PoisonError::into_inner),
+        snapshot.phase,
+    );
+    if let Some(tray) = app.tray_by_id("main") {
+        if previous != snapshot.phase
+            && let Ok(menu) = tray_menu(app, snapshot.phase)
+        {
+            let _set = tray.set_menu(Some(menu));
+        }
+        if menubar::icon(previous) != menubar::icon(snapshot.phase) {
+            if let Some(image) = tray_image(menubar::icon(snapshot.phase)) {
+                let _icon = tray.set_icon(Some(image));
+            }
+            #[cfg(target_os = "macos")]
+            let _flag =
+                tray.set_icon_as_template(menubar::icon(snapshot.phase) == menubar::Icon::Template);
+        }
+    }
+    let Some(notice) = menubar::notice(previous, snapshot) else {
+        return;
+    };
+    let visible = shown.visible.load(Ordering::SeqCst);
+    let (outcome, error) = if visible {
+        ("skipped", None)
+    } else {
+        match app
+            .notification()
+            .builder()
+            .title("Scriber")
+            .body(notice)
+            .show()
+        {
+            Ok(()) => ("shown", None),
+            Err(e) => ("failed", Some(e.to_string())),
+        }
+    };
+    if let Some(engine) = app.try_state::<Engine>() {
+        #[rustfmt::skip]
+        engine.log_menubar(&menubar::Log::Notify { phase: &snapshot.phase.to_string(), visible, notice: Some(notice), outcome, error: error.as_deref() });
+    }
+}
+
+/// Shows and focuses the window, brings the Dock icon and app menu back, and marks it visible: the one path the second launch, Reopen and Show Scriber take.
+fn reveal(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _policy = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .unminimize()
+            .and_then(|()| window.show())
+            .and_then(|()| window.set_focus())
+            .unwrap_or_default();
+    }
+    if let Some(shown) = app.try_state::<Shown>() {
+        shown.visible.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Closing the window hides it: Scriber keeps running in the menu bar, with no Dock icon once the window is gone.
+fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+        return;
+    };
+    api.prevent_close();
+    window.hide().unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let _policy = window
+        .app_handle()
+        .set_activation_policy(tauri::ActivationPolicy::Accessory);
+    if let Some(shown) = window.app_handle().try_state::<Shown>() {
+        shown.visible.store(false, Ordering::SeqCst);
+    }
+}
+
+/// The tray's clicks: no decisions of its own, every engine call off the main thread, one `menubar-log.jsonl` line about it.
+fn on_menu_event(app: &AppHandle, event: &MenuEvent) {
+    let id = event.id().as_ref().to_string();
+    if id == "quit" {
+        app.exit(0);
+        return;
+    }
+    if id == "show" {
+        reveal(app);
+        return;
+    }
+    let Some(engine) = app.try_state::<Engine>() else {
+        return;
+    };
+    let engine = engine.inner().clone();
+    on_tray_thread(move || {
+        let phase = engine.state().phase;
+        let result = match id.as_str() {
+            "record" => Some(engine.record()),
+            "pause" => Some(engine.act(Action::Pause, "")),
+            "done" => Some(engine.act(Action::Done, "")),
+            "discard" => Some(engine.act(Action::Discard, "")),
+            _ => None,
+        };
+        let (outcome, error) = match result {
+            None => ("unknown", None),
+            Some(Ok(_)) => ("ok", None),
+            Some(Err(e @ EngineError::Refused(_))) => ("refused", Some(e.to_string())),
+            Some(Err(e)) => ("failed", Some(e.to_string())),
+        };
+        #[rustfmt::skip]
+        engine.log_menubar(&menubar::Log::Menu { id: &id, phase: &phase.to_string(), outcome, error: error.as_deref() });
+    });
+}
+
 /// Builds and runs the app.
 ///
 /// # Errors
@@ -120,55 +337,64 @@ mod commands {
     reason = "tauri::generate_context! expands to code that calls std::process::exit"
 )]
 pub fn run() -> Result<(), tauri::Error> {
+    #[rustfmt::skip]
+    let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![commands::dictation_state, commands::dictation_act, commands::library_list, commands::library_get, commands::library_copy, commands::settings_get, commands::settings_set, commands::vocabulary_open, commands::learned_vocabulary_open, commands::ollama_models, commands::input_devices];
     let app = tauri::Builder::default()
         // First, so a second launch focuses the open window and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                // Best effort: a window that cannot be raised is still there.
-                let shown = w.unminimize().and_then(|()| w.show());
-                shown.and_then(|()| w.set_focus()).unwrap_or_default();
-            }
+            reveal(app);
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| on_shortcut(app, event))
+                .build(),
+        )
         .setup(|app| {
             let handle = app.handle().clone();
             // An emit fails only once the webview is gone: no one hears.
             let events = Arc::new(move |e: Event| match e {
                 Event::Level(l) => handle.emit(LEVEL_EVENT, l).unwrap_or_default(),
-                Event::State(s) => handle.emit(DICTATION_EVENT, s).unwrap_or_default(),
+                Event::State(s) => {
+                    handle.emit(DICTATION_EVENT, &s).unwrap_or_default();
+                    // The tray and the notification are main-thread work.
+                    let main = handle.clone();
+                    let posted = main.clone();
+                    let _posted = main.run_on_main_thread(move || refresh(&posted, &s));
+                }
             });
             let config = EngineConfig {
                 library: true,
                 clipboard: Some(Arc::new(SystemClipboard(app.handle().clone()))),
                 ..EngineConfig::new(app.path().app_data_dir()?)
             };
-            let _first = app.manage(Engine::open(config, events));
+            let engine = Engine::open(config, events);
+            let phase = engine.state().phase;
+            let _first = app.manage(engine.clone());
+            let _shown = app.manage(Shown {
+                visible: AtomicBool::new(true),
+                phase: Mutex::new(phase),
+            });
+            install_tray(app.handle())?;
+            register_toggle(app.handle(), &engine, "launch");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::dictation_state,
-            commands::dictation_act,
-            commands::library_list,
-            commands::library_get,
-            commands::library_copy,
-            commands::settings_get,
-            commands::settings_set,
-            commands::vocabulary_open,
-            commands::learned_vocabulary_open,
-            commands::ollama_models,
-            commands::input_devices,
-        ])
+        .on_window_event(on_window_event)
+        .invoke_handler(handler)
         .build(tauri::generate_context!())?;
-    // The engine is shut down on Exit (Cmd-Q, the menu Quit, the last window
-    // closed), which runs before AppKit's exit(), so the Whisper Metal
-    // context is freed first; freed at exit, it aborts (design.md).
-    app.run(|handle, event| {
-        if let tauri::RunEvent::Exit = event
-            && let Some(engine) = handle.try_state::<Engine>()
-        {
-            let _report = engine.shutdown();
+    // The engine is shut down on Exit (Cmd-Q, the menu Quit), which runs before
+    // AppKit's exit(), so the Whisper Metal context is freed first (design.md).
+    app.run(|handle, event| match event {
+        tauri::RunEvent::Exit => {
+            if let Some(engine) = handle.try_state::<Engine>() {
+                let _report = engine.shutdown();
+            }
         }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => reveal(handle),
+        _ => {}
     });
     Ok(())
 }

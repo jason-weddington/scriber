@@ -16,7 +16,9 @@ import {
   timeLabel,
   downloadText,
   fileName,
+  captureShortcut,
   controlsFor,
+  DEFAULT_TOGGLE_SHORTCUT,
   formatBytes,
   formatElapsed,
   type KeyPress,
@@ -28,6 +30,9 @@ import {
   shortcut,
   SETTINGS_SHORTCUT,
   SHORTCUTS,
+  isShortcut,
+  shortcutAria,
+  shortcutGlyphs,
   statusText,
   statusLine,
   statusAlert,
@@ -169,6 +174,7 @@ test('the bars are the newest count levels right-aligned, the empty slots at 0',
 
 const press = (key: string, mods: Partial<KeyPress> = {}): KeyPress => ({
   key,
+  code: '',
   metaKey: false,
   ctrlKey: false,
   altKey: false,
@@ -384,4 +390,83 @@ test('the status alert: action error, then failure, then model error', () => {
   expect(statusAlert({ ...failed, phase: 'ready' }, null)).toBe('no model');
   expect(statusAlert({ ...base, modelError: 'no model' }, 'act')).toBe('act');
   expect(statusAlert(base, null)).toBeNull();
+});
+
+test('the default toggle shortcut is the core\'s Opt+Cmd+D', () => {
+  expect(DEFAULT_TOGGLE_SHORTCUT).toBe('Opt+Cmd+D');
+});
+
+test('a toggle shortcut shows as Mac glyphs in the fixed order', () => {
+  const cases: [string, string][] = [
+    ['Opt+Cmd+D', '⌥⌘D'],
+    ['Ctrl+Opt+Shift+Cmd+F13', '⌃⌥⇧⌘F13'],
+    ['Opt+Cmd+Space', '⌥⌘Space'],
+    ['Opt+Shift+Cmd+Tab', '⌥⇧⌘⇥'],
+    ['Opt+Cmd+Return', '⌥⌘↩'],
+    ['Opt+Cmd+Escape', '⌥⌘⎋'],
+    ['nonsense', ''],
+    ['Meta+D', ''],
+  ];
+  for (const [value, glyphs] of cases) {
+    expect(shortcutGlyphs(value), value).toBe(glyphs);
+  }
+});
+
+test('a toggle shortcut is named for assistive tech', () => {
+  const cases: [string, string][] = [
+    ['Opt+Cmd+D', 'Alt+Meta+D'],
+    ['Ctrl+Opt+Shift+Cmd+F13', 'Control+Alt+Shift+Meta+F13'],
+    ['Opt+Cmd+Space', 'Alt+Meta+Space'],
+  ];
+  for (const [value, aria] of cases) {
+    expect(shortcutAria(value), value).toBe(aria);
+  }
+});
+
+test('the toggle shortcut accept rule matches the core\'s accelerator', () => {
+  for (const value of [
+    'Opt+Cmd+D',
+    'Opt+Cmd+K',
+    'Ctrl+Opt+Shift+Cmd+F13',
+    'Opt+Cmd+Space',
+    'Opt+Shift+Cmd+Tab',
+    'Opt+Cmd+Return',
+    'Opt+F19',
+    'Cmd+Escape',
+  ]) {
+    expect(isShortcut(value), value).toBe(true);
+  }
+  for (const value of [
+    '',
+    'D',
+    'Cmd+Opt',
+    'Cmd+Cmd+D',
+    'Meta+D',
+    'Opt+Cmd+X+',
+    'Opt+Cmd+1',
+    'Opt+Cmd+F20',
+    'opt+cmd+d',
+    'Opt+Cmd+KeyD',
+    'Opt+Cmd+F0',
+    'Shift+D',
+    'Ctrl+D',
+  ]) {
+    expect(isShortcut(value), value).toBe(false);
+  }
+});
+
+test('capturing a shortcut reads the key code, not the character', () => {
+  const capture = (mods: Partial<KeyPress>, code: string) => captureShortcut({ ...press('', mods), code });
+  expect(capture({ altKey: true }, 'KeyD')).toEqual({ kind: 'shortcut', value: 'Opt+D' });
+  expect(capture({ altKey: true, metaKey: true }, 'KeyK')).toEqual({ kind: 'shortcut', value: 'Opt+Cmd+K' });
+  expect(capture({ ctrlKey: true, altKey: true, shiftKey: true, metaKey: true }, 'F13')).toEqual({
+    kind: 'shortcut',
+    value: 'Ctrl+Opt+Shift+Cmd+F13',
+  });
+  expect(capture({ metaKey: true }, 'Enter')).toEqual({ kind: 'shortcut', value: 'Cmd+Return' });
+  expect(capture({}, 'KeyD')).toEqual({ kind: 'needsModifier' });
+  expect(capture({ altKey: true, metaKey: true }, 'Digit1')).toEqual({ kind: 'badKey' });
+  expect(capture({ altKey: true, metaKey: true }, 'Escape')).toEqual({ kind: 'cancel' });
+  expect(capture({}, '')).toEqual({ kind: 'badKey' });
+  expect(capture({ altKey: true }, 'ArrowLeft')).toEqual({ kind: 'badKey' });
 });

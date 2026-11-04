@@ -14,6 +14,9 @@
 //! [`store`] lays out the data folder, [`level`] meters the microphone for
 //! the window's waveform, [`download`] fetches and verifies a missing speech
 //! model, and [`sync`] holds the model that loads once for every caller.
+//! [`menubar`] decides the menu bar's six items and the phase each enables,
+//! what a press of the global shortcut does, the two icons, the finished
+//! session's notification and the menu bar's log lines.
 //! With the library on, [`library`] keeps every finished session (titled by
 //! its start, summarized by a local model or an excerpt, its audio
 //! compressed) and [`settings`] holds the user's settings. [`cleanup`] is
@@ -28,6 +31,7 @@ pub mod download;
 pub mod learn;
 pub mod level;
 pub mod library;
+pub mod menubar;
 pub mod model;
 pub mod ports;
 pub mod settings;

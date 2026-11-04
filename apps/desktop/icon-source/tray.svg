@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <!-- The menu bar's template icon (:tray-template.png): black and alpha only,
+       so macOS draws it dark or light as the menu bar needs. -->
+  <g fill="#000000">
+    <rect x="7" y="2.5" width="8" height="11" rx="4" />
+    <path d="M4 11a7 7 0 0 0 6 6.93V20h2v-2.07A7 7 0 0 0 18 11h-1.7a5.3 5.3 0 0 1-10.6 0z" />
+    <rect x="7" y="19" width="8" height="1.7" rx="0.85" />
+  </g>
+</svg>

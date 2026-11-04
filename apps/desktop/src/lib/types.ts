@@ -80,6 +80,8 @@ export interface Settings {
   learnedVocabulary: string;
   /** The speech model's folder, absolute; send '' when it is not known yet (the saved one is kept), and the engine answers the default `<data folder>/models`. */
   modelFolder: string;
+  /** The global shortcut that starts and finishes a dictation, in Scriber's form (`Opt+Cmd+D`); the engine answers the default when the stored value cannot be used. */
+  toggleShortcut: string;
 }
 
 /** The input devices the microphone menu offers. */

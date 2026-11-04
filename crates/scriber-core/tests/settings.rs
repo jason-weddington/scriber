@@ -5,6 +5,7 @@ mod common;
 
 #[cfg(test)]
 mod tests {
+    use scriber_core::menubar::DEFAULT_SHORTCUT;
     use scriber_core::model::Settings;
     use scriber_core::ports::Files as _;
     use scriber_core::settings::{
@@ -15,20 +16,25 @@ mod tests {
 
     use crate::common::FakeFiles;
 
-    const DEFAULTS: Settings = Settings {
-        summaries: true,
-        library_open: true,
-        vocabulary: String::new(),
-        cleanup: false,
-        summary_model: String::new(),
-        cleanup_model: String::new(),
-        library_width: 220,
-        input_device: String::new(),
-        silence_split_ms: 0,
-        keep_segments: false,
-        learned_vocabulary: String::new(),
-        model_folder: String::new(),
-    };
+    /// The defaults: a `const` cannot hold a non-empty `String`, so this is a
+    /// function.
+    fn defaults() -> Settings {
+        Settings {
+            summaries: true,
+            library_open: true,
+            vocabulary: String::new(),
+            cleanup: false,
+            summary_model: String::new(),
+            cleanup_model: String::new(),
+            library_width: 220,
+            input_device: String::new(),
+            silence_split_ms: 0,
+            keep_segments: false,
+            learned_vocabulary: String::new(),
+            model_folder: String::new(),
+            toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
+        }
+    }
 
     fn with(bytes: &[u8]) -> FakeFiles {
         let files = FakeFiles::default();
@@ -43,16 +49,16 @@ mod tests {
 
     #[test]
     fn no_file_means_the_defaults() {
-        assert_eq!(load(&FakeFiles::default()), DEFAULTS, "missing");
+        assert_eq!(load(&FakeFiles::default()), defaults(), "missing");
         let files = with(br#"{"summaries":false,"library_open":false}"#);
         files.fail_read.set(true);
-        assert_eq!(load(&files), DEFAULTS, "unreadable");
+        assert_eq!(load(&files), defaults(), "unreadable");
     }
 
     #[test]
     fn an_invalid_file_means_the_defaults() {
         for bytes in [&b"not json"[..], b"[false]", b"false", b"", &[0xff, 0xfe]] {
-            assert_eq!(load(&with(bytes)), DEFAULTS, "{bytes:?}");
+            assert_eq!(load(&with(bytes)), defaults(), "{bytes:?}");
         }
     }
 
@@ -74,6 +80,7 @@ mod tests {
                     keep_segments: false,
                     learned_vocabulary: String::new(),
                     model_folder: String::new(),
+                    toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
                 },
             ),
             (
@@ -91,6 +98,7 @@ mod tests {
                     keep_segments: false,
                     learned_vocabulary: String::new(),
                     model_folder: String::new(),
+                    toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
                 },
             ),
             (
@@ -108,6 +116,7 @@ mod tests {
                     keep_segments: false,
                     learned_vocabulary: String::new(),
                     model_folder: String::new(),
+                    toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
                 },
             ),
             (
@@ -125,9 +134,10 @@ mod tests {
                     keep_segments: false,
                     learned_vocabulary: String::new(),
                     model_folder: String::new(),
+                    toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
                 },
             ),
-            (br#"{"libraryOpen":false}"#, DEFAULTS),
+            (br#"{"libraryOpen":false}"#, defaults()),
         ] {
             assert_eq!(
                 load(&with(bytes)),
@@ -154,6 +164,7 @@ mod tests {
             keep_segments: false,
             learned_vocabulary: String::new(),
             model_folder: String::new(),
+            toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
@@ -172,21 +183,22 @@ mod tests {
                 "silence_split_ms": 0,
                 "keep_segments": false,
                 "learned_vocabulary": "",
-                "model_folder": ""
+                "model_folder": "",
+                "toggle_shortcut": "Opt+Cmd+D"
             }),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
             "compact"
         );
         assert!(
             files.read("settings.json.partial").is_err(),
             "no partial file left"
         );
-        save(&files, &DEFAULTS).unwrap();
-        assert_eq!(load(&files), DEFAULTS, "overwritten");
+        save(&files, &defaults()).unwrap();
+        assert_eq!(load(&files), defaults(), "overwritten");
     }
 
     #[test]
@@ -238,12 +250,12 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             learned_vocabulary: "/x/learned.txt".to_string(),
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"/x/learned.txt","model_folder":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"/x/learned.txt","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -276,13 +288,73 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             model_folder: "/x/models".to_string(),
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"/x/models"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"/x/models","toggle_shortcut":"Opt+Cmd+D"}"#,
             "bytes"
+        );
+        assert_eq!(load(&files), s, "read back");
+    }
+
+    #[test]
+    fn the_toggle_shortcut_defaults_to_opt_cmd_d() {
+        assert_eq!(
+            load(&FakeFiles::default()).toggle_shortcut,
+            "Opt+Cmd+D",
+            "no file"
+        );
+        assert_eq!(
+            load(&with(b"{}")).toggle_shortcut,
+            "Opt+Cmd+D",
+            "a file without the key"
+        );
+        assert_eq!(DEFAULT_SHORTCUT, "Opt+Cmd+D", "the pinned default");
+        for bytes in [
+            &br#"{"toggle_shortcut":"nonsense"}"#[..],
+            br#"{"toggle_shortcut":""}"#,
+            br#"{"toggle_shortcut":"D"}"#,
+            br#"{"toggle_shortcut":42}"#,
+            br#"{"toggle_shortcut":[]}"#,
+            br#"{"toggle_shortcut":null}"#,
+        ] {
+            assert_eq!(
+                load(&with(bytes)).toggle_shortcut,
+                "Opt+Cmd+D",
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_toggle_shortcut_is_kept_verbatim() {
+        for value in ["Opt+Cmd+K", "Opt+Shift+Cmd+K", "Ctrl+Opt+Shift+Cmd+F13"] {
+            let bytes = format!(r#"{{"toggle_shortcut":"{value}"}}"#);
+            assert_eq!(
+                load(&with(bytes.as_bytes())).toggle_shortcut,
+                value,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_toggle_shortcut_round_trips_and_is_saved_last() {
+        let files = FakeFiles::default();
+        let s = Settings {
+            toggle_shortcut: "Opt+Shift+Cmd+K".to_string(),
+            ..defaults()
+        };
+        save(&files, &s).unwrap();
+        assert!(
+            files
+                .read(SETTINGS)
+                .unwrap()
+                .ends_with(br#"","toggle_shortcut":"Opt+Shift+Cmd+K"}"#),
+            "the last key"
         );
         assert_eq!(load(&files), s, "read back");
     }
@@ -292,12 +364,12 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             vocabulary: "/x/terms.txt".to_string(),
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -307,11 +379,11 @@ mod tests {
     fn a_failed_save_is_an_error_and_keeps_the_old_file() {
         let files = with(br#"{"summaries":false}"#);
         files.fail_rename.set(true);
-        assert!(save(&files, &DEFAULTS).is_err(), "the rename failed");
+        assert!(save(&files, &defaults()).is_err(), "the rename failed");
         assert!(!load(&files).summaries, "the old file stays");
         files.fail_rename.set(false);
         files.fail_write.set(true);
-        assert!(save(&files, &DEFAULTS).is_err(), "the write failed");
+        assert!(save(&files, &defaults()).is_err(), "the write failed");
     }
 
     #[test]
@@ -330,12 +402,12 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             cleanup: true,
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -368,18 +440,18 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             summary_model: "gemma3:4b".to_string(),
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
         let other = Settings {
             cleanup_model: "llama3:8b".to_string(),
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &other).unwrap();
         assert_eq!(load(&files), other, "cleanup model read back");
@@ -419,12 +491,12 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             library_width: 300,
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         let bytes = files.read(SETTINGS).unwrap();
         assert!(
-            bytes.ends_with(br#","library_width":300,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#),
+            bytes.ends_with(br#","library_width":300,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#),
             "{}",
             String::from_utf8_lossy(&bytes)
         );
@@ -435,7 +507,7 @@ mod tests {
     fn the_input_device_is_kept_only_when_it_is_a_string() {
         assert_eq!(
             load(&with(
-                br#"{"input_device":"AirPods Pro","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#
+                br#"{"input_device":"AirPods Pro","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#
             ))
             .input_device,
             "AirPods Pro",
@@ -462,12 +534,12 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             input_device: "AirPods Pro".to_string(),
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -506,14 +578,14 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             silence_split_ms: 2_500,
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         assert!(
             files
                 .read(SETTINGS)
                 .unwrap()
-                .ends_with(br#","input_device":"","silence_split_ms":2500,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#),
+                .ends_with(br#","input_device":"","silence_split_ms":2500,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#),
             "saved before the learned vocabulary"
         );
         assert_eq!(load(&files), s, "read back");
@@ -544,12 +616,12 @@ mod tests {
         let files = FakeFiles::default();
         let s = Settings {
             keep_segments: true,
-            ..DEFAULTS
+            ..defaults()
         };
         save(&files, &s).unwrap();
         assert!(
             files.read(SETTINGS).unwrap().ends_with(
-                br#","silence_split_ms":0,"keep_segments":true,"learned_vocabulary":"","model_folder":""}"#
+                br#","silence_split_ms":0,"keep_segments":true,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#
             ),
             "saved before the learned vocabulary"
         );
@@ -558,7 +630,7 @@ mod tests {
             load(&with(br#"{"keep_segments":true}"#)),
             Settings {
                 keep_segments: true,
-                ..DEFAULTS
+                ..defaults()
             },
             "no other key is affected"
         );

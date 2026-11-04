@@ -83,6 +83,7 @@ pub use ollama::{
 };
 pub use scriber_core::dictation::DictationError;
 pub use scriber_core::download::Source;
+pub use scriber_core::menubar;
 pub use scriber_core::model::{
     Action, Download, InputDevices, LibraryEntry, Phase, Settings, Snapshot,
 };
@@ -181,10 +182,9 @@ pub enum Event {
     /// The input level while recording, between 0 and 1, on the audio
     /// thread.
     Level(f64),
-    /// The session changed off the caller's thread: a download's progress,
-    /// a segment transcribed, the session finished or failed, a segment
-    /// closed at a silence (on a scriber-split thread). Delivered on a job
-    /// (or split) thread while the session lock is held.
+    /// The session changed: on the caller's thread with the session lock held
+    /// when a method answers a snapshot, or on a job (or scriber-split) thread
+    /// with the lock held. The callback must never call an engine method.
     State(Snapshot),
 }
 
@@ -382,6 +382,19 @@ struct SettingsLine<'a> {
     dropped: bool,
 }
 
+/// A phase's [`Phase::Display`] name, as `menubar-log.jsonl` carries it.
+fn phase_name(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Idle => "idle",
+        Phase::Ready => "ready",
+        Phase::Recording => "recording",
+        Phase::Paused => "paused",
+        Phase::Transcribing => "transcribing",
+        Phase::Finished => "finished",
+        Phase::Failed => "failed",
+    }
+}
+
 /// One dictation session over the real (or given) adapters. Clones share
 /// the session; dropping the last one while no job runs drops the adapters.
 #[derive(Clone)]
@@ -396,11 +409,12 @@ impl Engine {
     /// [`ModelSource::Download`] downloads first when missing, on a job
     /// thread; neither waits for the other or for this call.
     ///
-    /// Threading: [`Event::State`] is delivered on a job thread WHILE THE
-    /// SESSION LOCK IS HELD, so `events` must not call any `Engine` method
-    /// (it would deadlock); forward the event to a channel instead.
-    /// [`Event::Level`] is delivered on the audio thread and must return
-    /// quickly.
+    /// Threading: [`Event::State`] is delivered on the caller's thread with
+    /// the session lock held when a method answers a snapshot, and on a job
+    /// (or scriber-split) thread with the lock held otherwise, so `events`
+    /// must not call any `Engine` method (it would deadlock); forward the
+    /// event to a channel instead. [`Event::Level`] is delivered on the audio
+    /// thread and must return quickly.
     ///
     /// ```rust,no_run
     /// use std::sync::Arc;
@@ -540,7 +554,9 @@ impl Engine {
         let ports = self.0.ports();
         let mut dictation = lock(&self.0.dictation);
         self.refuse_if_shut()?;
-        Ok(dictation.apply(action, text, &ports)?)
+        let snapshot = dictation.apply(action, text, &ports)?;
+        (self.0.events)(Event::State(snapshot.clone()));
+        Ok(snapshot)
     }
 
     /// [`EngineError::ShutDown`] once [`Self::shutdown`] has run; call with
@@ -566,9 +582,20 @@ impl Engine {
         let ports = self.0.ports();
         let mut dictation = lock(&self.0.dictation);
         self.refuse_if_shut()?;
-        match dictation.snapshot(&ports).phase {
+        self.record_locked(&mut dictation, &ports)
+    }
+
+    /// [`Self::record`]'s body with the session lock already held: from
+    /// `idle` or `finished`, a new session first (which deletes the last
+    /// one), then Record. Shared with [`Self::toggle`].
+    fn record_locked(
+        &self,
+        dictation: &mut Dictation,
+        ports: &Ports<'_>,
+    ) -> Result<Snapshot, EngineError> {
+        match dictation.snapshot(ports).phase {
             Phase::Idle | Phase::Finished => {
-                let _ready = dictation.apply(Action::New, "", &ports)?;
+                let _ready = dictation.apply(Action::New, "", ports)?;
             }
             Phase::Ready
             | Phase::Recording
@@ -576,7 +603,97 @@ impl Engine {
             | Phase::Transcribing
             | Phase::Failed => {}
         }
-        Ok(dictation.apply(Action::Record, "", &ports)?)
+        let snapshot = dictation.apply(Action::Record, "", ports)?;
+        (self.0.events)(Event::State(snapshot.clone()));
+        Ok(snapshot)
+    }
+
+    /// The menu bar's toggle: one press of the global shortcut, decided by
+    /// [`menubar::toggle`] from the phase the session lock shows.
+    ///
+    /// A `record` press calls [`Self::record_locked`]; an `act` press sends
+    /// its action (`done` or `resume`); `nothing` answers the snapshot
+    /// unchanged. Every press writes one `menubar-log.jsonl` line, and a
+    /// successful one is delivered as [`Event::State`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever the session answers ([`EngineError::Refused`] included);
+    /// [`EngineError::ShutDown`] once [`Self::shutdown`] has run, in every
+    /// phase, because the check comes before the phase is read.
+    pub fn toggle(&self) -> Result<Snapshot, EngineError> {
+        let ports = self.0.ports();
+        let mut dictation = lock(&self.0.dictation);
+        let shut = self.refuse_if_shut();
+        let phase = dictation.snapshot(&ports).phase;
+        let toggle = menubar::toggle(phase);
+        // A press after shutdown still logs its failure: the check comes
+        // before the phase is read, in every phase, `nothing` included.
+        let result = match shut {
+            Err(e) => Err(e),
+            Ok(()) => match toggle {
+                menubar::Toggle::Record => self.record_locked(&mut dictation, &ports),
+                menubar::Toggle::Act(action) => dictation
+                    .apply(action, "", &ports)
+                    .map_err(EngineError::from),
+                menubar::Toggle::Nothing => Ok(dictation.snapshot(&ports)),
+            },
+        };
+        let error: Option<String> = match &result {
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        let (outcome, success) = match &result {
+            Ok(snapshot) => (
+                if toggle == menubar::Toggle::Nothing {
+                    "nothing"
+                } else {
+                    "ok"
+                },
+                Some(snapshot.phase),
+            ),
+            Err(EngineError::Refused(_)) => ("refused", None),
+            Err(_) => ("failed", None),
+        };
+        let action = match toggle {
+            menubar::Toggle::Act(Action::Done) => Some("done"),
+            menubar::Toggle::Act(Action::Resume) => Some("resume"),
+            menubar::Toggle::Act(_) | menubar::Toggle::Record | menubar::Toggle::Nothing => None,
+        };
+        self.log_menubar(&menubar::Log::Toggle {
+            phase: phase_name(phase),
+            toggle: match toggle {
+                menubar::Toggle::Record => "record",
+                menubar::Toggle::Act(_) => "act",
+                menubar::Toggle::Nothing => "nothing",
+            },
+            action,
+            outcome,
+            error: error.as_deref(),
+            phase_after: phase_name(success.unwrap_or(phase)),
+        });
+        if let Ok(snapshot) = &result {
+            (self.0.events)(Event::State(snapshot.clone()));
+        }
+        result
+    }
+
+    /// The accelerator the global-shortcut plugin takes, from the saved
+    /// `toggle_shortcut`: `Alt+Super+KeyD` for the default. Never `None`,
+    /// because [`settings::load`] keeps only a value `menubar::accelerator`
+    /// accepts. Takes the session lock (with `settings`), so it is never
+    /// called from the events callback.
+    #[must_use]
+    pub fn toggle_accelerator(&self) -> String {
+        menubar::accelerator_or_default(&self.settings().toggle_shortcut)
+    }
+
+    /// Writes one `menubar-log.jsonl` line, best effort, in the shape of the
+    /// `model-log.jsonl` write. Takes no lock.
+    pub fn log_menubar(&self, event: &menubar::Log<'_>) {
+        if let Ok(text) = serde_json::to_string(event) {
+            scriber_core::store::log_menubar(&self.0.files, &text);
+        }
     }
 
     /// Pauses: the segment so far starts transcribing.

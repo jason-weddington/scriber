@@ -951,6 +951,167 @@ mod tests {
             .collect()
     }
 
+    /// The menu bar log's lines, parsed.
+    fn menubar_log(dir: &TempDir) -> Vec<Value> {
+        std::fs::read_to_string(dir.path().join("menubar-log.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn toggle_starts_recording_from_idle_ready_and_finished() {
+        let dir = TempDir::new().unwrap();
+        let (engine, rx) = Fakes::default().open(config(&dir));
+        let idle = engine.state();
+        assert_eq!(idle.phase, Phase::Idle, "idle");
+        let recording = engine.toggle().unwrap();
+        assert_eq!(recording.phase, Phase::Recording, "idle -> recording");
+        assert!(recording.revision > idle.revision, "revision grew");
+
+        // A second press is Done: the session transcribes, then finishes.
+        let transcribing = engine.toggle().unwrap();
+        assert_eq!(transcribing.phase, Phase::Transcribing, "recording -> done");
+        assert!(transcribing.revision > recording.revision, "revision grew");
+        let finished = until(&rx, |s| s.phase == Phase::Finished).unwrap();
+        assert_eq!(finished.phase, Phase::Finished, "finished after the job");
+
+        let again = engine.toggle().unwrap();
+        assert_eq!(
+            (again.phase, again.recorded_ms),
+            (Phase::Recording, 0),
+            "finished -> a new recording session"
+        );
+        assert!(again.revision > finished.revision, "revision grew");
+
+        // Discard from recording is Ready; the toggle records at once.
+        let ready = engine.act(Action::Discard, "").unwrap();
+        assert_eq!(ready.phase, Phase::Ready, "ready");
+        let started = engine.toggle().unwrap();
+        assert_eq!(started.phase, Phase::Recording, "ready -> recording");
+        assert!(started.revision > ready.revision, "revision grew");
+    }
+
+    #[test]
+    fn toggle_resumes_a_paused_session() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let _recording = engine.record().unwrap();
+        let paused = engine.act(Action::Pause, "").unwrap();
+        assert_eq!(paused.phase, Phase::Paused, "paused");
+        let resumed = engine.toggle().unwrap();
+        assert_eq!(
+            resumed.phase,
+            Phase::Recording,
+            "paused -> recording (resume)"
+        );
+        assert!(resumed.revision > paused.revision, "revision grew");
+    }
+
+    #[test]
+    fn toggle_does_nothing_while_transcribing() {
+        let dir = TempDir::new().unwrap();
+        let (transcriber, gate) = FakeTranscriber::default().gated();
+        let fakes = Fakes::with(transcriber);
+        let (engine, _rx) = fakes.open(config(&dir));
+        let _recording = engine.record().unwrap();
+        let done = engine.act(Action::Done, "").unwrap();
+        assert_eq!(done.phase, Phase::Transcribing, "transcribing");
+        let before = engine.state();
+        assert_eq!(before.phase, Phase::Transcribing, "still transcribing");
+        let after = engine.toggle().unwrap();
+        assert_eq!(after.phase, Phase::Transcribing, "nothing");
+        assert_eq!(after.revision, before.revision, "revision unchanged");
+        let line = menubar_log(&dir).pop().unwrap();
+        assert_eq!(line["toggle"], "nothing", "logged");
+        assert_eq!(line["outcome"], "nothing", "logged");
+        assert_eq!(line["phase"], "transcribing", "logged");
+        assert_eq!(line["action"], Value::Null, "no action");
+        let _opened = gate.send(());
+    }
+
+    #[test]
+    fn toggle_does_nothing_on_a_failed_session() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "segments/segment-0000.wav", b"RIFF");
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let before = engine.state();
+        assert_eq!(before.phase, Phase::Failed, "failed");
+        let after = engine.toggle().unwrap();
+        assert_eq!(after.phase, Phase::Failed, "nothing");
+        assert_eq!(after.revision, before.revision, "revision unchanged");
+        assert!(engine.retry().is_ok(), "the failed slot is still retryable");
+    }
+
+    #[test]
+    fn a_refused_toggle_is_logged_with_the_engine_sentence() {
+        let dir = TempDir::new().unwrap();
+        let model = dir.path().join("missing.bin");
+        let fakes = Fakes::with(FakeTranscriber {
+            model: Some(model),
+            ..FakeTranscriber::default()
+        });
+        let (engine, _rx) = fakes.open(config(&dir));
+        let err = engine.toggle().unwrap_err();
+        assert!(
+            matches!(err, EngineError::Refused(DictationError::ModelMissing(_))),
+            "refused: {err}"
+        );
+        let line = menubar_log(&dir).pop().unwrap();
+        assert_eq!(line["toggle"], "record", "logged");
+        assert_eq!(line["outcome"], "refused", "logged");
+        assert_eq!(line["error"], err.to_string(), "the engine's sentence");
+        assert_eq!(line["phase_after"], "idle", "the phase before, unchanged");
+    }
+
+    #[test]
+    fn toggle_after_shutdown_fails_in_every_phase() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "segments/segment-0000.wav", b"RIFF");
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(engine.state().phase, Phase::Failed, "failed");
+        let _report = engine.shutdown();
+        assert_eq!(engine.toggle(), Err(EngineError::ShutDown), "refused");
+        let line = menubar_log(&dir).pop().unwrap();
+        assert_eq!(line["outcome"], "failed", "logged");
+        assert_eq!(line["error"], "The engine has shut down.", "the sentence");
+    }
+
+    #[test]
+    fn a_commands_snapshot_is_delivered_as_an_event() {
+        let dir = TempDir::new().unwrap();
+        let (engine, rx) = Fakes::default().open(config(&dir));
+        let _recording = engine.record().unwrap();
+        while rx.try_recv().is_ok() {}
+        let answered = engine.act(Action::Pause, "").unwrap();
+        assert_eq!(answered.phase, Phase::Paused, "paused");
+        let delivered = until(&rx, |s| s.phase == Phase::Paused).unwrap();
+        assert_eq!(
+            delivered, answered,
+            "the same snapshot, on the caller's thread"
+        );
+    }
+
+    #[test]
+    fn the_toggle_accelerator_follows_the_saved_shortcut() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(engine.toggle_accelerator(), "Alt+Super+KeyD", "the default");
+        let saved = engine
+            .set_settings(Settings {
+                toggle_shortcut: "Opt+Cmd+K".to_string(),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert_eq!(saved.toggle_shortcut, "Opt+Cmd+K", "saved");
+        assert_eq!(
+            engine.toggle_accelerator(),
+            "Alt+Super+KeyK",
+            "after the save"
+        );
+    }
+
     #[test]
     fn settings_round_trip_through_the_data_folder() {
         let dir = TempDir::new().unwrap();
@@ -969,6 +1130,7 @@ mod tests {
             keep_segments: false,
             learned_vocabulary: default_learned(&dir),
             model_folder: default_model(&dir),
+            toggle_shortcut: "Opt+Cmd+D".to_string(),
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -979,7 +1141,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":""}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -1007,7 +1169,7 @@ mod tests {
         assert!(!back.summaries, "the other keys are saved");
         assert!(
             saved(&dir)
-                .ends_with(r#""keep_segments":true,"learned_vocabulary":"","model_folder":""}"#),
+                .ends_with(r#""keep_segments":true,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#),
             "on disk, before the learned list's default"
         );
     }
@@ -1024,7 +1186,7 @@ mod tests {
         assert!(!engine.settings().keep_segments, "read back");
         assert!(
             saved(&dir)
-                .ends_with(r#""keep_segments":false,"learned_vocabulary":"","model_folder":""}"#),
+                .ends_with(r#""keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#),
             "on disk, before the learned list's default"
         );
     }
@@ -1081,6 +1243,7 @@ mod tests {
             keep_segments: false,
             learned_vocabulary: String::new(),
             model_folder: String::new(),
+            toggle_shortcut: "Opt+Cmd+D".to_string(),
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1115,6 +1278,7 @@ mod tests {
             keep_segments: false,
             learned_vocabulary: default_learned(&dir),
             model_folder: default_model(&dir),
+            toggle_shortcut: "Opt+Cmd+D".to_string(),
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1139,6 +1303,7 @@ mod tests {
             keep_segments: false,
             learned_vocabulary: String::new(),
             model_folder: String::new(),
+            toggle_shortcut: "Opt+Cmd+D".to_string(),
         };
         let kept = Settings {
             summaries: false,
@@ -1167,6 +1332,7 @@ mod tests {
                 keep_segments: false,
                 learned_vocabulary: String::new(),
                 model_folder: String::new(),
+                toggle_shortcut: "Opt+Cmd+D".to_string(),
             })
             .unwrap();
         let back = engine
@@ -1183,6 +1349,7 @@ mod tests {
                 keep_segments: false,
                 learned_vocabulary: String::new(),
                 model_folder: String::new(),
+                toggle_shortcut: "Opt+Cmd+D".to_string(),
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1219,6 +1386,7 @@ mod tests {
                 keep_segments: false,
                 learned_vocabulary: String::new(),
                 model_folder: String::new(),
+                toggle_shortcut: "Opt+Cmd+D".to_string(),
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1618,6 +1786,7 @@ mod tests {
                 keep_segments: false,
                 learned_vocabulary: String::new(),
                 model_folder: String::new(),
+                toggle_shortcut: "Opt+Cmd+D".to_string(),
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1748,6 +1917,7 @@ mod tests {
             keep_segments: false,
             learned_vocabulary: default_learned(dir),
             model_folder: default_model(dir),
+            toggle_shortcut: "Opt+Cmd+D".to_string(),
         }
     }
 

@@ -156,6 +156,7 @@ mod tests {
                 keep_segments: true,
                 learned_vocabulary: "/data/learned.txt".to_string(),
                 model_folder: "/data/models".to_string(),
+                toggle_shortcut: "Opt+Cmd+D".to_string(),
             },
         );
         let settings = Settings {
@@ -171,11 +172,12 @@ mod tests {
             keep_segments: true,
             learned_vocabulary: "/data/learned.txt".to_string(),
             model_folder: "/data/models".to_string(),
+            toggle_shortcut: "Opt+Cmd+D".to_string(),
         };
         assert!(
             serde_json::to_string(&settings)
                 .unwrap()
-                .ends_with(r#""keepSegments":true,"learnedVocabulary":"/data/learned.txt","modelFolder":"/data/models"}"#),
+                .ends_with(r#""keepSegments":true,"learnedVocabulary":"/data/learned.txt","modelFolder":"/data/models","toggleShortcut":"Opt+Cmd+D"}"#),
             "camelCase, last key"
         );
     }

@@ -15,6 +15,7 @@
 //! <learned path>.partial         the learned list while it is being written, before the rename
 //! learning-log.jsonl             each learning Copy and each Undo: what was found and added, and why (newest 200 lines)
 //! model-log.jsonl            how the model's location was decided: each launch, each download outcome, each settings write (newest 200 lines)
+//! menubar-log.jsonl              the menu bar's decisions: each toggle, menu item, shortcut registration and notification (newest 200 lines)
 //! ```
 
 use crate::ports::{Files, PortError};
@@ -60,6 +61,14 @@ pub const MODEL_LOG: &str = "model-log.jsonl";
 
 /// How many lines [`MODEL_LOG`] keeps, the newest.
 pub const MODEL_LOG_LINES: usize = 200;
+
+/// The menu bar's decision log: one JSON line per global-shortcut press, per
+/// tray menu item, per shortcut registration and per notification decision.
+/// Phase names and error texts only, never transcript text.
+pub const MENUBAR_LOG: &str = "menubar-log.jsonl";
+
+/// How many lines [`MENUBAR_LOG`] keeps, the newest.
+pub const MENUBAR_LOG_LINES: usize = 200;
 
 /// The default glossary file.
 pub const VOCABULARY: &str = "vocabulary.txt";
@@ -248,6 +257,13 @@ pub fn log_learning(files: &dyn Files, line: &str) {
 /// newest [`MODEL_LOG_LINES`] lines, best effort like [`log_microphone`].
 pub fn log_model(files: &dyn Files, line: &str) {
     log_line(files, MODEL_LOG, MODEL_LOG_LINES, line);
+}
+
+/// Adds `line` (one JSON object, no newline) to [`MENUBAR_LOG`], keeping the
+/// newest [`MENUBAR_LOG_LINES`] lines. Best effort, like [`log_microphone`]:
+/// the menu bar must never fail because its log could not be written.
+pub fn log_menubar(files: &dyn Files, line: &str) {
+    log_line(files, MENUBAR_LOG, MENUBAR_LOG_LINES, line);
 }
 
 /// Appends `line` to the log at `path`, keeping its newest `keep` lines.

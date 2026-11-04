@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures';
 
-import { button, expectNoShift, expectSameBox, hold, open, press, release, status } from './helpers';
+import { button, expectNoShift, expectSameBox, hold, nextFrame, open, press, release, status } from './helpers';
 
 // No layout shift within a screen state (CLAUDE.md). Left alone, with reasons:
 // CopyButton is position: absolute and 28x28, and its check swaps one 16x16 svg
@@ -190,6 +190,33 @@ for (const colorScheme of ['light', 'dark'] as const) {
           await expectNoShift(page, dialog, async () => {
             await dialog.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' }).click();
             await expect(dialog.getByRole('alert')).toHaveText('Mock failure: settings_set');
+          });
+          await rowHeight(page);
+        });
+
+        test('setting the toggle shortcut', async ({ page }) => {
+          await page.setViewportSize(size);
+          await open(page);
+          await button(page, 'Settings').click();
+          const dialog = page.getByRole('dialog');
+          const shortcut = dialog.getByRole('button', { name: 'Toggle dictation shortcut' });
+          // The modal scrolls at this size: bring the button in first, so the
+          // click does not scroll the controls below it.
+          await shortcut.scrollIntoViewIfNeeded();
+          await nextFrame(page);
+          await expectNoShift(page, page.locator('#summary-model'), async () => {
+            await expectNoShift(page, dialog.getByText('Enable post-processing with local AI (Ollama)', { exact: true }), async () => {
+              await expectNoShift(page, dialog.getByText('Generate library titles with local AI (Ollama)', { exact: true }), async () => {
+                await shortcut.click();
+                await expect(shortcut).toHaveText('Press a shortcut…');
+                await page.keyboard.press('Meta+Alt+KeyK');
+                await expect(shortcut).toHaveText('⌥⌘K');
+                await shortcut.click();
+                await expect(shortcut).toHaveText('Press a shortcut…');
+                await page.keyboard.press('Escape');
+                await expect(shortcut).toHaveText('⌥⌘K');
+              });
+            });
           });
           await rowHeight(page);
         });

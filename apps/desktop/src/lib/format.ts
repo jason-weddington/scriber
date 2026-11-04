@@ -151,7 +151,7 @@ export function bars(levels: readonly number[], count: number): number[] {
 // ---- keyboard shortcuts --------------------------------------------------------
 
 /** The parts of a KeyboardEvent a shortcut depends on. */
-export type KeyPress = Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>;
+export type KeyPress = Pick<KeyboardEvent, 'key' | 'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>;
 
 /** Each action's shortcut, as `aria-keyshortcuts` names it and as the button shows it. */
 export const SHORTCUTS: Readonly<Partial<Record<Action, { aria: string; hint: string }>>> = {
@@ -184,6 +184,132 @@ export function shortcut(press: KeyPress, phase: Phase, inText: boolean): Action
   else if (press.key === ' ') action = phase === 'ready' ? 'record' : phase === 'recording' ? 'pause' : 'resume';
   else if (press.key === 'Enter') action = 'done';
   return action !== null && allowed(phase, action) ? action : null;
+}
+
+// ---- the global toggle shortcut ---------------------------------------------------
+
+/**
+ * The shortcut a fresh install uses (crates/scriber-core/src/menubar.rs): ⌥⌘D,
+ * which is also macOS's own Dock hide/show chord, so Settings can change it.
+ */
+export const DEFAULT_TOGGLE_SHORTCUT = 'Opt+Cmd+D';
+
+/** Scriber's modifiers, in the order the core and the glyphs list them. */
+const MODIFIERS = ['Ctrl', 'Opt', 'Shift', 'Cmd'] as const;
+type Modifier = (typeof MODIFIERS)[number];
+
+/** Each modifier as the Mac's glyph. */
+const GLYPHS: Readonly<Record<Modifier, string>> = { Ctrl: '⌃', Opt: '⌥', Shift: '⇧', Cmd: '⌘' };
+
+/** Each modifier as an `aria-keyshortcuts` name. */
+const ARIA: Readonly<Record<Modifier, string>> = { Ctrl: 'Control', Opt: 'Alt', Shift: 'Shift', Cmd: 'Meta' };
+
+/** The keys after the modifiers, as the Mac writes them. */
+const KEY_GLYPHS: Readonly<Record<string, string>> = { Tab: '⇥', Return: '↩', Escape: '⎋', Space: 'Space' };
+
+/** A shortcut in Scriber's canonical form, split into its parts. */
+interface ParsedShortcut {
+  /** The modifiers, in the order they were written. */
+  mods: Modifier[];
+  /** The key token. */
+  key: string;
+}
+
+/** Whether `token` is one of the keys Scriber's form accepts. */
+function isKeyToken(token: string): boolean {
+  return (
+    /^[A-Z]$/.test(token) ||
+    /^F([1-9]|1[0-9])$/.test(token) ||
+    ['Space', 'Tab', 'Return', 'Escape'].includes(token)
+  );
+}
+
+/**
+ * Scriber's canonical shortcut, parsed exactly as `menubar::accelerator`
+ * accepts it (crates/scriber-core/src/menubar.rs): `+`-joined tokens, zero to
+ * four modifiers out of Ctrl, Opt, Shift and Cmd (no repeats), then one key
+ * (A..Z, F1..F19, Space, Tab, Return, Escape), with ⌥ or ⌘ required; null
+ * otherwise.
+ */
+function parseShortcut(value: string): ParsedShortcut | null {
+  const tokens = value.split('+');
+  if (tokens.length < 2 || tokens.length > 5) return null;
+  const key = tokens.at(-1) ?? '';
+  if (!isKeyToken(key)) return null;
+  const mods: Modifier[] = [];
+  for (const token of tokens.slice(0, -1)) {
+    const mod = MODIFIERS.find((name) => name === token);
+    if (mod === undefined || mods.includes(mod)) return null;
+    mods.push(mod);
+  }
+  if (!mods.includes('Opt') && !mods.includes('Cmd')) return null;
+  return { mods, key };
+}
+
+/** Whether `value` is a shortcut in Scriber's canonical form (the core's accept rule). */
+export function isShortcut(value: string): boolean {
+  return parseShortcut(value) !== null;
+}
+
+/**
+ * The shortcut as the button shows it: modifiers in the fixed order Ctrl, Opt,
+ * Shift, Cmd as ⌃⌥⇧⌘, then the key (`⇥`, `↩`, `⎋`, `Space`, or a bare letter or
+ * `F<n>`); '' when it is not in Scriber's form.
+ */
+export function shortcutGlyphs(value: string): string {
+  const parsed = parseShortcut(value);
+  if (parsed === null) return '';
+  return (
+    MODIFIERS.filter((mod) => parsed.mods.includes(mod))
+      .map((mod) => GLYPHS[mod])
+      .join('') + (KEY_GLYPHS[parsed.key] ?? parsed.key)
+  );
+}
+
+/**
+ * The shortcut as `aria-keyshortcuts` names it: `Control`, `Alt`, `Shift` and
+ * `Meta` in the fixed order Ctrl, Opt, Shift, Cmd, then the key unchanged;
+ * '' when it is not in Scriber's form.
+ */
+export function shortcutAria(value: string): string {
+  const parsed = parseShortcut(value);
+  if (parsed === null) return '';
+  return [...MODIFIERS.filter((mod) => parsed.mods.includes(mod)).map((mod) => ARIA[mod]), parsed.key].join('+');
+}
+
+/** What a key press means while the settings capture a new toggle shortcut. */
+export type Capture =
+  | { kind: 'shortcut'; value: string }
+  | { kind: 'cancel' }
+  | { kind: 'needsModifier' }
+  | { kind: 'badKey' };
+
+/** The key `code` stands for, or null when it cannot be a shortcut's key. */
+function keyFromCode(code: string): string | null {
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter !== null) return letter[1] ?? null;
+  if (/^F([1-9]|1[0-9])$/.test(code)) return code;
+  return { Space: 'Space', Tab: 'Tab', Enter: 'Return' }[code] ?? null;
+}
+
+/**
+ * The shortcut a key press captures. It reads `press.code`, never `press.key`,
+ * so macOS's Option-chord characters cannot leak in: Escape cancels whatever
+ * is held, a letter, F1..F19, Space, Tab or Return is the key (with ⌥ or ⌘
+ * held), and anything else is refused.
+ */
+export function captureShortcut(press: KeyPress): Capture {
+  if (press.code === 'Escape') return { kind: 'cancel' };
+  const key = keyFromCode(press.code);
+  if (key === null) return { kind: 'badKey' };
+  if (!press.altKey && !press.metaKey) return { kind: 'needsModifier' };
+  const held: [boolean, Modifier][] = [
+    [press.ctrlKey, 'Ctrl'],
+    [press.altKey, 'Opt'],
+    [press.shiftKey, 'Shift'],
+    [press.metaKey, 'Cmd'],
+  ];
+  return { kind: 'shortcut', value: [...held.filter(([on]) => on).map(([, mod]) => mod), key].join('+') };
 }
 
 // ---- the speech model's download --------------------------------------------------
