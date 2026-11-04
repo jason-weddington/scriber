@@ -7,7 +7,8 @@ mod common;
 mod tests {
     use scriber_core::ports::PortError;
     use scriber_core::store::{
-        LEARNED, LEARNING_LOG, LEARNING_LOG_LINES, learned, log_learning, save_learned,
+        LEARNED, LEARNING_LOG, LEARNING_LOG_LINES, learned, learned_path, log_learning,
+        save_learned,
     };
     use scriber_core::store::{
         MODEL, SEGMENTS, STARTED, TRANSCRIPT, VOCABULARY, clear, load, remove_segments, save,
@@ -233,6 +234,101 @@ mod tests {
 
     fn strings(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn the_learned_path_is_learned_txt_by_default() {
+        let files = FakeFiles::default();
+        assert_eq!(learned_path(&files), "learned.txt", "default");
+        files.write("settings.json", b"{}").unwrap();
+        assert_eq!(learned_path(&files), "learned.txt", "empty settings");
+        files
+            .write(
+                "settings.json",
+                br#"{"learned_vocabulary":"/x/learned.txt"}"#,
+            )
+            .unwrap();
+        assert_eq!(learned_path(&files), "/x/learned.txt", "configured");
+        files
+            .write("settings.json", br#"{"learned_vocabulary":"learned.txt"}"#)
+            .unwrap();
+        assert_eq!(
+            learned_path(&files),
+            "learned.txt",
+            "a relative value was dropped by settings::load"
+        );
+    }
+
+    #[test]
+    fn the_learned_path_in_the_settings_wins() {
+        let files = FakeFiles::default();
+        files.write(LEARNED, b"default\n").unwrap();
+        files
+            .write(
+                "settings.json",
+                br#"{"learned_vocabulary":"/x/learned.txt"}"#,
+            )
+            .unwrap();
+        files.write("/x/learned.txt", b"configured\n").unwrap();
+        assert_eq!(
+            learned(&files),
+            Some(strings(&["configured"])),
+            "the configured file, not learned.txt"
+        );
+        files
+            .write("settings.json", br#"{"learned_vocabulary":""}"#)
+            .unwrap();
+        assert_eq!(
+            learned(&files),
+            Some(strings(&["default"])),
+            "back to the default"
+        );
+    }
+
+    #[test]
+    fn the_learned_list_is_written_where_the_settings_say() {
+        let files = FakeFiles::default();
+        files
+            .write(
+                "settings.json",
+                br#"{"learned_vocabulary":"/x/learned.txt"}"#,
+            )
+            .unwrap();
+        files.write("/x/learned.txt", b"old\n").unwrap();
+        files.fail_rename.set(true);
+        assert!(
+            save_learned(&files, &strings(&["new"])).is_err(),
+            "the rename failed"
+        );
+        assert_eq!(
+            files.read("/x/learned.txt").unwrap(),
+            b"old\n",
+            "the old file is untouched"
+        );
+        assert_eq!(
+            files.read("/x/learned.txt.partial").unwrap(),
+            b"new\n",
+            "written beside the configured path"
+        );
+        assert!(
+            files.read(LEARNED).is_err(),
+            "no learned.txt at the default path"
+        );
+        files.fail_rename.set(false);
+        save_learned(&files, &strings(&["new"])).unwrap();
+        assert_eq!(
+            files.read("/x/learned.txt").unwrap(),
+            b"new\n",
+            "renamed into place"
+        );
+        assert!(
+            files.read("/x/learned.txt.partial").is_err(),
+            "no partial file left"
+        );
+        assert!(
+            files.read(LEARNED).is_err(),
+            "still no learned.txt at the default path"
+        );
     }
 
     #[test]

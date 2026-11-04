@@ -87,11 +87,12 @@ const CALLS: Call[] = [
   { fn: 'settingsGet', args: [], command: 'settings_get', sent: {} },
   {
     fn: 'settingsSet',
-    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300, inputDevice: 'AirPods Pro', silenceSplitMs: 2500, keepSegments: true }],
+    args: [{ summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300, inputDevice: 'AirPods Pro', silenceSplitMs: 2500, keepSegments: true, learnedVocabulary: '/data/learned.txt' }],
     command: 'settings_set',
-    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300, inputDevice: 'AirPods Pro', silenceSplitMs: 2500, keepSegments: true } },
+    sent: { settings: { summaries: false, libraryOpen: true, vocabulary: '/data/vocabulary.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 300, inputDevice: 'AirPods Pro', silenceSplitMs: 2500, keepSegments: true, learnedVocabulary: '/data/learned.txt' } },
   },
   { fn: 'vocabularyOpen', args: [], command: 'vocabulary_open', sent: {} },
+  { fn: 'learnedVocabularyOpen', args: [], command: 'learned_vocabulary_open', sent: {} },
   { fn: 'ollamaModels', args: [], command: 'ollama_models', sent: {} },
   { fn: 'inputDevices', args: [], command: 'input_devices', sent: {} },
 ];

@@ -76,6 +76,8 @@ export interface Settings {
   silenceSplitMs: number;
   /** A hidden setting: no UI, set by editing settings.json. Keeps each part's exact WAV in the library entry. */
   keepSegments: boolean;
+  /** The learned list's absolute path; send '' when it is not known yet (the saved one is kept). */
+  learnedVocabulary: string;
 }
 
 /** The input devices the microphone menu offers. */

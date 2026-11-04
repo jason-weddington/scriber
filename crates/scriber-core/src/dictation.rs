@@ -23,7 +23,8 @@
 //! when [`cleanup::accept`] keeps it, and Whisper's text otherwise, which then
 //! goes through [`crate::shortcuts::to_glyphs`] and the learned spellings
 //! ([`learn::enforce`]). Copy and Accept learn the user's corrections to the
-//! transcript into [`store::LEARNED`]; Undo learning forgets them. An illegal
+//! transcript into the learned list ([`store::learned_path`]); Undo learning
+//! forgets them. An illegal
 //! action returns [`DictationError::Illegal`] and changes nothing.
 
 use std::collections::BTreeMap;
@@ -365,6 +366,7 @@ struct SegmentLine<'a> {
 struct LearnLine<'a> {
     event: &'static str,
     started: Option<&'a str>,
+    path: &'a str,
     found: &'a [String],
     added: &'a [String],
     outcome: &'static str,
@@ -376,6 +378,7 @@ struct LearnLine<'a> {
 struct UndoLine<'a> {
     event: &'static str,
     started: Option<&'a str>,
+    path: &'a str,
     removed: &'a [String],
     outcome: &'static str,
     error: Option<String>,
@@ -460,10 +463,11 @@ pub struct Dictation {
     cleaning: Option<(String, Vec<String>)>,
     /// The input device opened for the session's latest segment.
     microphone: Option<String>,
-    /// The terms the last learning Copy added to [`store::LEARNED`].
+    /// The terms the last learning Copy added to the learned list
+    /// ([`store::learned_path`]).
     learned: Vec<String>,
-    /// [`store::LEARNED`]'s list as it was before the last learning write,
-    /// for Undo.
+    /// The learned list ([`store::learned_path`]) as it was before the last
+    /// learning write, for Undo.
     undo: Option<Vec<String>>,
 }
 
@@ -1226,9 +1230,9 @@ impl Dictation {
     }
 
     /// Learns the corrections from the transcript shown to `edited` into
-    /// [`store::LEARNED`] and logs what happened. Nothing happens when there
-    /// is no correction; the learned terms and the undo list change only
-    /// when the list is saved.
+    /// the learned list ([`store::learned_path`]) and logs what happened.
+    /// Nothing happens when there is no correction; the learned terms and
+    /// the undo list change only when the list is saved.
     fn learn_from(&mut self, edited: &str, ports: &Ports<'_>) {
         let found = learn::candidates(&self.text, edited);
         if found.is_empty() {
@@ -1255,11 +1259,13 @@ impl Dictation {
         } else {
             "unreadable"
         };
+        let path = store::learned_path(ports.files);
         log_learning(
             ports,
             &LearnLine {
                 event: "learn",
                 started: self.started.as_deref(),
+                path: &path,
                 found: &found,
                 added: &added,
                 outcome,
@@ -1268,9 +1274,9 @@ impl Dictation {
         );
     }
 
-    /// Undo learning: restores [`store::LEARNED`] as it was before the last
-    /// learning Copy and forgets the terms it learned; with nothing to undo
-    /// it changes nothing.
+    /// Undo learning: restores the learned list ([`store::learned_path`]) as
+    /// it was before the last learning Copy and forgets the terms it learned;
+    /// with nothing to undo it changes nothing.
     ///
     /// # Errors
     ///
@@ -1281,11 +1287,13 @@ impl Dictation {
             return Ok(());
         };
         let saved = store::save_learned(ports.files, prior);
+        let path = store::learned_path(ports.files);
         log_learning(
             ports,
             &UndoLine {
                 event: "undo",
                 started: self.started.as_deref(),
+                path: &path,
                 removed: &self.learned,
                 outcome: if saved.is_ok() {
                     "restored"

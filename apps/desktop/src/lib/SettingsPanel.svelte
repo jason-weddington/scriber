@@ -1,6 +1,8 @@
 <script lang="ts">
   // The settings: the vocabulary file (the glossary that steers
-  // transcription), shown as its file name, the full path on hover, with Browse… (the native open panel)
+  // transcription) and the learned vocabulary file (the terms learning
+  // remembers), each shown as its file name, the full path on hover, with
+  // Browse… (the native open panel)
   // and Open in Text Editor (which creates it empty when missing); then the
   // silence split, "Split into parts at a pause" (Off, 1.5 s, 2.5 s or 4 s; a
   // saved value outside those four is shown first, so it is never lost); then two
@@ -34,6 +36,8 @@
     oncleanupmodel: (name: string) => void;
     onbrowse: () => void;
     onopenvocabulary: () => void;
+    onbrowselearned: () => void;
+    onopenlearned: () => void;
     onsilencesplit: (ms: number) => void;
     onclose: () => void;
   }
@@ -52,6 +56,8 @@
     oncleanupmodel,
     onbrowse,
     onopenvocabulary,
+    onbrowselearned,
+    onopenlearned,
     onsilencesplit,
     onclose,
   }: Props = $props();
@@ -132,6 +138,14 @@
       <input readonly bind:this={path} aria-label="Vocabulary file" value={fileName(settings.vocabulary)} title={settings.vocabulary} />
       <button type="button" onclick={onbrowse}>Browse…</button>
       <button type="button" onclick={onopenvocabulary}>Open in Text Editor</button>
+    </div>
+  </div>
+  <div class="vocabulary" role="group" aria-label="Learned vocabulary file">
+    <span class="caption" aria-hidden="true">Learned vocabulary file</span>
+    <div class="row">
+      <input readonly aria-label="Learned vocabulary file" value={fileName(settings.learnedVocabulary)} title={settings.learnedVocabulary} />
+      <button type="button" onclick={onbrowselearned}>Browse…</button>
+      <button type="button" onclick={onopenlearned}>Open in Text Editor</button>
     </div>
   </div>
   <label for="silence-split">Split into parts at a pause</label>

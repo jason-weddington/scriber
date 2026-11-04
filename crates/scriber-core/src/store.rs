@@ -11,8 +11,8 @@
 //! library/<id>/audio.m4a         its audio (audio.wav until encoded, or when encoding fails)
 //! models/ggml-large-v3-turbo.bin the speech model (read by the transcriber, not here)
 //! microphone-log.jsonl           which microphone each Record or Resume opened, and each segment's format (newest 200 lines)
-//! learned.txt                    terms learned from the user's corrections, newest first (crate::learn); never vocabulary.txt
-//! learned.txt.partial            learned.txt while it is being written, before the rename
+//! learned.txt                    terms learned from the user's corrections, newest first (crate::learn); the default, overridable in settings.json as learned_vocabulary
+//! <learned path>.partial         the learned list while it is being written, before the rename
 //! learning-log.jsonl             each learning Copy and each Undo: what was found and added, and why (newest 200 lines)
 //! ```
 
@@ -42,12 +42,9 @@ pub const MICROPHONE_LOG: &str = "microphone-log.jsonl";
 const MICROPHONE_LOG_LINES: usize = 200;
 
 /// The terms learned from the user's corrections ([`crate::learn`]): one
-/// per line, newest first. Always in the data folder, never the configured
-/// glossary path; written only by the app.
+/// per line, newest first. Written at [`learned_path`]; written only by the
+/// app.
 pub const LEARNED: &str = "learned.txt";
-
-/// Where [`LEARNED`] is written before it is renamed into place.
-const LEARNED_PARTIAL: &str = "learned.txt.partial";
 
 /// The learning log: one JSON line per Copy that found a correction (what
 /// was found and added, and the outcome) and one per Undo of learning.
@@ -174,6 +171,18 @@ pub fn vocabulary_path(files: &dyn Files) -> String {
     }
 }
 
+/// The learned list's path: the one in the settings when there is one (an
+/// absolute path), else [`LEARNED`] (`learned.txt`) in the data folder.
+#[must_use]
+pub fn learned_path(files: &dyn Files) -> String {
+    let configured = crate::settings::load(files).learned_vocabulary;
+    if configured.is_empty() {
+        LEARNED.to_string()
+    } else {
+        configured
+    }
+}
+
 /// The glossary's text, read from [`vocabulary_path`], or `None` when it is
 /// missing, unreadable or not UTF-8.
 #[must_use]
@@ -212,13 +221,13 @@ fn log_line(files: &dyn Files, path: &str, keep: usize, line: &str) {
     let _kept = files.write(path, text.as_bytes());
 }
 
-/// The learned terms ([`LEARNED`]), in file order, read like the glossary
-/// ([`crate::vocabulary::terms`]). A file that cannot be read counts as
-/// empty, because the [`Files`] port cannot tell missing from unreadable;
+/// The learned terms ([`learned_path`]), in file order, read like the
+/// glossary ([`crate::vocabulary::terms`]). A file that cannot be read counts
+/// as empty, because the [`Files`] port cannot tell missing from unreadable;
 /// `None` when it is not UTF-8, so it is never overwritten.
 #[must_use]
 pub fn learned(files: &dyn Files) -> Option<Vec<String>> {
-    let Ok(bytes) = files.read(LEARNED) else {
+    let Ok(bytes) = files.read(&learned_path(files)) else {
         return Some(Vec::new());
     };
     String::from_utf8(bytes)
@@ -226,18 +235,20 @@ pub fn learned(files: &dyn Files) -> Option<Vec<String>> {
         .map(|text| crate::vocabulary::terms(&text))
 }
 
-/// Writes the learned terms, one per line, atomically like
-/// [`save_transcript`].
+/// Writes the learned terms to [`learned_path`], one per line, atomically
+/// like [`save_transcript`].
 ///
 /// # Errors
 ///
 /// The file cannot be written or renamed into place.
 pub fn save_learned(files: &dyn Files, terms: &[String]) -> Result<(), PortError> {
+    let path = learned_path(files);
+    let partial = format!("{path}.partial");
     let mut text = String::new();
     for term in terms {
         text.push_str(term);
         text.push('\n');
     }
-    files.write(LEARNED_PARTIAL, text.as_bytes())?;
-    files.rename(LEARNED_PARTIAL, LEARNED)
+    files.write(&partial, text.as_bytes())?;
+    files.rename(&partial, &path)
 }

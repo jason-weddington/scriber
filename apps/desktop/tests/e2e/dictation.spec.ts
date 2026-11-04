@@ -208,7 +208,7 @@ test('the window still works when the version cannot be read', async ({ page }) 
   await press(page, 'New');
   await expect(status(page)).toHaveText('Click Record and start talking.');
   await button(page, 'Settings').click();
-  await expect(page.getByRole('textbox', { name: 'Vocabulary file' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Vocabulary file', exact: true })).toBeVisible();
   await expect(page.getByText(/^Version/)).toHaveCount(0);
 });
 

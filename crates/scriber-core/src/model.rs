@@ -194,6 +194,10 @@ pub struct Settings {
     pub silence_split_ms: u64,
     /// A hidden setting (no UI; edited in settings.json): when true, a finished recording also keeps each part's exact WAV in its library entry. Read leniently from disk; see [`crate::settings`].
     pub keep_segments: bool,
+    /// The learned list's absolute path, or `""` for the default
+    /// (`learned.txt` in the data folder). Over the bridge the engine
+    /// always answers an absolute path.
+    pub learned_vocabulary: String,
 }
 
 /// The input devices the microphone menu offers.

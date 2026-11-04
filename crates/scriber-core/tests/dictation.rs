@@ -2716,6 +2716,7 @@ mod tests {
             [json!({
                 "event": "learn",
                 "started": null,
+                "path": "learned.txt",
                 "found": ["tightbeam"],
                 "added": ["tightbeam"],
                 "outcome": "saved",
@@ -2729,6 +2730,34 @@ mod tests {
         let fresh = d.apply(Action::New, "", &p).unwrap();
         assert!(fresh.learned.is_empty(), "New forgets it");
         assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "the file stays");
+    }
+
+    #[test]
+    fn learning_reads_and_writes_the_configured_learned_path_and_logs_it() {
+        let w = World::default();
+        w.files
+            .write(SETTINGS, br#"{"learned_vocabulary":"/x/learned.txt"}"#)
+            .unwrap();
+        let p = w.ports();
+        let (mut d, _) = heard_with(&w, &p, TIGHTBEAM_HEARD);
+        let s = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
+        assert_eq!(s.learned, strings(&["tightbeam"]), "learned");
+        assert_eq!(
+            w.files.files.borrow().get("/x/learned.txt").cloned(),
+            Some(b"tightbeam\n".to_vec()),
+            "terms at the configured path"
+        );
+        assert!(learned_file(&w).is_none(), "no learned.txt at the default");
+        let log = learning_log(&w);
+        assert_eq!(log.len(), 1, "one learn line");
+        assert_eq!(log[0]["path"], "/x/learned.txt", "the path is logged");
+        assert_eq!(log[0]["outcome"], "saved", "outcome");
+        let _: Snapshot = d.apply(Action::UndoLearn, "", &p).unwrap();
+        let after = learning_log(&w);
+        let undo = after.last().unwrap();
+        assert_eq!(undo["event"], "undo", "the undo line");
+        assert_eq!(undo["path"], "/x/learned.txt", "the same path");
+        assert_eq!(undo["outcome"], "restored", "restored");
     }
 
     #[test]
@@ -2941,6 +2970,7 @@ mod tests {
             Some(&json!({
                 "event": "undo",
                 "started": null,
+                "path": "learned.txt",
                 "removed": ["tightbeam"],
                 "outcome": "restored",
                 "error": null,

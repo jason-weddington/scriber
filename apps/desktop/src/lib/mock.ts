@@ -15,7 +15,8 @@
 //   ?fail=<call>          that call rejects: "dictation_state", "app_version", an action,
 //                         "library_list", "library_get", "library_copy", "settings_get", "settings_set",
 //                         "window_fullscreen" or "pick_vocabulary_file" (with "Mock failure: <call>"); ?fail=vocabulary_open
-//                         rejects with the engine's "Could not open the vocabulary file: no text editor."
+//                         and ?fail=learned_vocabulary_open reject with the engine's
+//                         "Could not open the vocabulary file: no text editor."
 //   ?fullscreen=1         the window starts in full screen
 //   ?pick=<path>          the open panel picks that file (default /mock/Documents/terms.txt);
 //                         ?pick=cancel cancels it
@@ -35,6 +36,7 @@
 //   ?inputDevice=<name>   the saved input device starts as that name (else '', the Mac default)
 //   ?silenceSplitMs=<n>   the silence split starts as n ms in the settings (else 0, off)
 //   ?keepSegments=1       the hidden keep_segments setting starts true (else false)
+//   ?learnedVocabulary=<path>  the learned list starts at that absolute path (else DEFAULT_LEARNED_VOCABULARY)
 // window.__mockBridge.split() is the fake microphone closing the running part at a silence: with the
 // split read at the last Record or Resume non-zero and the session recording, it closes the part
 // (queued for transcription like a Pause) while recording goes on; otherwise it does nothing.
@@ -55,7 +57,8 @@
 // mock emits a synthetic input level every LEVEL_MS, like the core's 50 ms
 // windows. The settings' vocabulary is kept like the engine keeps it: '' for
 // the default (answered as MOCK_VOCABULARY), and settings_set's '' keeps the
-// saved path while MOCK_VOCABULARY is saved as ''. Open in Text Editor appends
+// saved path while MOCK_VOCABULARY is saved as ''. The learned list is kept
+// the same way, answered as DEFAULT_LEARNED_VOCABULARY. Open in Text Editor appends
 // the resolved path to window.__mockBridge.opened, and Browse… the path its
 // open panel starts at to window.__mockBridge.browsed. The models are kept
 // like the engine keeps them: '' for the default (answered as
@@ -130,6 +133,9 @@ export const NOT_IN_LIBRARY = 'That recording is no longer in the library.';
 
 /** The default glossary's absolute path, as the engine answers it. */
 export const MOCK_VOCABULARY = '/mock/data/vocabulary.txt';
+
+/** The default learned list's absolute path, as the engine answers it. */
+export const DEFAULT_LEARNED_VOCABULARY = '/mock/data/learned.txt';
 
 /** What the mock open panel picks without ?pick=. */
 export const MOCK_PICK = '/mock/Documents/terms.txt';
@@ -596,6 +602,7 @@ export class Mock {
       inputDevice: params.get('inputDevice') ?? '',
       silenceSplitMs: Number(params.get('silenceSplitMs') ?? '0'),
       keepSegments: params.get('keepSegments') === '1',
+      learnedVocabulary: params.get('learnedVocabulary') ?? DEFAULT_LEARNED_VOCABULARY,
     };
     const inputs = params.get('inputs');
     this.inputs =
@@ -745,6 +752,7 @@ export class Mock {
       cleanupModel: this.settings.cleanupModel || MOCK_DEFAULT_MODEL,
       libraryWidth: storedWidth(this.settings.libraryWidth),
       silenceSplitMs: storedSplit(this.settings.silenceSplitMs),
+      learnedVocabulary: this.settings.learnedVocabulary || DEFAULT_LEARNED_VOCABULARY,
     };
   }
 
@@ -755,9 +763,12 @@ export class Mock {
     // The engine's write rule: '' keeps the saved glossary, the default is saved as ''.
     const vocabulary =
       settings.vocabulary === '' ? this.settings.vocabulary : settings.vocabulary === MOCK_VOCABULARY ? '' : settings.vocabulary;
+    const learnedVocabulary =
+      settings.learnedVocabulary === '' ? this.settings.learnedVocabulary : settings.learnedVocabulary === DEFAULT_LEARNED_VOCABULARY ? '' : settings.learnedVocabulary;
     this.settings = {
       ...settings,
       vocabulary,
+      learnedVocabulary,
       summaryModel: stored(settings.summaryModel, this.settings.summaryModel),
       cleanupModel: stored(settings.cleanupModel, this.settings.cleanupModel),
       // settings.json owns the hidden key: a change made in the app never touches it.
@@ -804,6 +815,13 @@ export class Mock {
     await this.gate('vocabulary_open');
     if (this.failing === 'vocabulary_open') throw new Error(OPEN_FAILED);
     this.opened.push(this.resolved().vocabulary);
+  }
+
+  /** Opens the learned list in the text editor (the engine creates it first). */
+  async learnedVocabularyOpen(): Promise<void> {
+    await this.gate('learned_vocabulary_open');
+    if (this.failing === 'learned_vocabulary_open') throw new Error(OPEN_FAILED);
+    this.opened.push(this.resolved().learnedVocabulary);
   }
 
   onChange(cb: (s: Snapshot) => void): () => void {

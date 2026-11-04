@@ -15,17 +15,39 @@ const DEFAULT = '/mock/data/vocabulary.txt';
 const PICKED = '/mock/Documents/terms.txt';
 const DEFAULT_NAME = 'vocabulary.txt';
 const PICKED_NAME = 'terms.txt';
+const DEFAULT_LEARNED = '/mock/data/learned.txt';
+const DEFAULT_LEARNED_NAME = 'learned.txt';
+
+function vocabularyGroup(page: Page) {
+  return page.getByRole('group', { name: 'Vocabulary file', exact: true });
+}
 
 function path(page: Page) {
-  return page.getByRole('textbox', { name: 'Vocabulary file' });
+  return vocabularyGroup(page).getByRole('textbox', { name: 'Vocabulary file', exact: true });
 }
 
 function browse(page: Page) {
-  return page.getByRole('button', { name: 'Browse…' });
+  return vocabularyGroup(page).getByRole('button', { name: 'Browse…' });
 }
 
 function editor(page: Page) {
-  return page.getByRole('button', { name: 'Open in Text Editor' });
+  return vocabularyGroup(page).getByRole('button', { name: 'Open in Text Editor' });
+}
+
+function learnedGroup(page: Page) {
+  return page.getByRole('group', { name: 'Learned vocabulary file', exact: true });
+}
+
+function learnedPath(page: Page) {
+  return learnedGroup(page).getByRole('textbox', { name: 'Learned vocabulary file', exact: true });
+}
+
+function learnedBrowse(page: Page) {
+  return learnedGroup(page).getByRole('button', { name: 'Browse…' });
+}
+
+function learnedEditor(page: Page) {
+  return learnedGroup(page).getByRole('button', { name: 'Open in Text Editor' });
 }
 
 function alert(page: Page) {
@@ -53,7 +75,16 @@ test("the vocabulary file shows the default file's name at launch", async ({ pag
   await expect(path(page)).toHaveAttribute('readonly', '');
   await expect(path(page)).toHaveAttribute('title', DEFAULT);
   await expect(path(page)).toHaveAccessibleDescription(DEFAULT);
-  await expect(page.getByRole('group', { name: 'Vocabulary file' })).toBeVisible();
+  await expect(vocabularyGroup(page)).toBeVisible();
+});
+
+test("the learned vocabulary file shows the default file's name at launch", async ({ page }) => {
+  await openSettings(page);
+  await expect(learnedPath(page)).toHaveValue(DEFAULT_LEARNED_NAME);
+  await expect(learnedPath(page)).toHaveAttribute('readonly', '');
+  await expect(learnedPath(page)).toHaveAttribute('title', DEFAULT_LEARNED);
+  await expect(learnedPath(page)).toHaveAccessibleDescription(DEFAULT_LEARNED);
+  await expect(learnedGroup(page)).toBeVisible();
 });
 
 test('Browse picks another file and saves it', async ({ page }) => {
@@ -62,7 +93,7 @@ test('Browse picks another file and saves it', async ({ page }) => {
   await expect(path(page)).toHaveValue(PICKED_NAME);
   await expect(path(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current file').toEqual([DEFAULT]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -105,6 +136,45 @@ test('a text editor that fails says why', async ({ page }) => {
   expect(await opened(page)).toEqual([]);
 });
 
+test('Browse picks another learned vocabulary file and saves it', async ({ page }) => {
+  await openSettings(page, { pick: PICKED });
+  await learnedBrowse(page).click();
+  await expect(learnedPath(page)).toHaveValue(PICKED_NAME);
+  await expect(learnedPath(page)).toHaveAttribute('title', PICKED);
+  expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current learned file').toEqual([DEFAULT_LEARNED]);
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: PICKED });
+  await expect(alert(page)).toHaveCount(0);
+});
+
+test('Open in Text Editor opens the learned vocabulary file', async ({ page }) => {
+  await openSettings(page);
+  await learnedEditor(page).click();
+  await expect.poll(() => opened(page)).toEqual([DEFAULT_LEARNED]);
+  await expect(alert(page)).toHaveCount(0);
+});
+
+test('a text editor that fails on the learned vocabulary file says why', async ({ page }) => {
+  await openSettings(page, { fail: 'learned_vocabulary_open' });
+  await learnedEditor(page).click();
+  await expect(alert(page)).toHaveText('Could not open the vocabulary file: no text editor.');
+  expect(await opened(page)).toEqual([]);
+});
+
+test('an open panel that fails for the learned vocabulary file says why and saves nothing', async ({ page }) => {
+  await openSettings(page, { fail: 'pick_vocabulary_file' });
+  await learnedBrowse(page).click();
+  await expect(alert(page)).toHaveText('Mock failure: pick_vocabulary_file');
+  await expect(learnedPath(page)).toHaveValue(DEFAULT_LEARNED_NAME);
+  expect(await saved(page)).toEqual([]);
+});
+
+test('a picked learned file that cannot be saved stays on screen and says why', async ({ page }) => {
+  await openSettings(page, { fail: 'settings_set', pick: PICKED });
+  await learnedBrowse(page).click();
+  await expect(alert(page)).toHaveText('Mock failure: settings_set');
+  await expect(learnedPath(page)).toHaveValue(PICKED_NAME);
+});
+
 test('a long path never scrolls the window sideways at the minimum size', async ({ page }) => {
   await page.setViewportSize({ width: 520, height: 380 });
   const long = `/${'a'.repeat(195)}.txt`;
@@ -112,6 +182,9 @@ test('a long path never scrolls the window sideways at the minimum size', async 
   await browse(page).click();
   await expect(path(page)).toHaveValue(long.slice(1));
   await expect(editor(page)).toBeInViewport();
+  await learnedBrowse(page).click();
+  await expect(learnedPath(page)).toHaveValue(long.slice(1));
+  await expect(learnedEditor(page)).toBeInViewport();
   const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
   expect(fits, 'no horizontal scroll').toBe(true);
 });
@@ -127,7 +200,7 @@ test('post-processing starts off and turning it on saves it', async ({ page }) =
   await expect(cleanupSwitch(page)).toBeChecked();
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -185,11 +258,11 @@ test('choosing a model saves it', async ({ page }) => {
   await summaryModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED });
   await cleanupModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -347,7 +420,7 @@ test('the whole modal shows in the narrowest window', async ({ page }) => {
   expect(box?.y).toBeGreaterThanOrEqual(0);
   expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(380);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-  for (const target of [path(page), browse(page), editor(page), cleanupSwitch(page), summarySwitch(page), summaryModel(page), cleanupModel(page)]) {
+  for (const target of [path(page), browse(page), editor(page), learnedPath(page), learnedBrowse(page), learnedEditor(page), cleanupSwitch(page), summarySwitch(page), summaryModel(page), cleanupModel(page)]) {
     await target.scrollIntoViewIfNeeded();
     await expect(target).toBeInViewport();
   }
@@ -411,7 +484,7 @@ test('the Close button closes the modal and returns the focus to the gear', asyn
 
 test('a click on the overlay closes the modal; a click inside does not', async ({ page }) => {
   await openSettings(page);
-  await page.locator('#settings .caption').click();
+  await vocabularyGroup(page).locator('.caption').click();
   await expect(modal(page)).toBeVisible();
   await page.mouse.click(5, 5);
   await expect(modal(page)).toBeHidden();
@@ -421,7 +494,7 @@ test('a click on the overlay closes the modal; a click inside does not', async (
 
 test('a drag from inside the modal released on the overlay leaves it open', async ({ page }) => {
   await openSettings(page);
-  const box = await page.locator('#settings .caption').boundingBox();
+  const box = await vocabularyGroup(page).locator('.caption').boundingBox();
   await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2);
   await page.mouse.down();
   await page.mouse.move(5, 5);

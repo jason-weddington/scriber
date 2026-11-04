@@ -241,7 +241,7 @@ test('Space does nothing behind the open Settings (ready)', async ({ page }) => 
   await key(page, 'Meta+n');
   await expect(status(page)).toHaveText('Click Record and start talking.');
   await button(page, 'Settings').click();
-  await page.getByRole('button', { name: 'Browse…' }).click();
+  await page.getByRole('group', { name: 'Vocabulary file', exact: true }).getByRole('button', { name: 'Browse…' }).click();
   await key(page, 'Space');
   expect(await acts(page)).toEqual(['new']);
 });
@@ -251,7 +251,7 @@ test('Space and Return do nothing behind the open Settings (recording)', async (
   await press(page, 'New', 'Record');
   await expect(status(page)).toContainText('Recording.');
   await button(page, 'Settings').click();
-  await page.getByRole('button', { name: 'Browse…' }).click();
+  await page.getByRole('group', { name: 'Vocabulary file', exact: true }).getByRole('button', { name: 'Browse…' }).click();
   await key(page, 'Space');
   await key(page, 'Enter');
   expect(await acts(page)).toEqual(['new', 'record']);
@@ -561,7 +561,7 @@ async function listings(page: Page): Promise<number | undefined> {
 }
 
 const settings = (page: Page) => page.getByRole('dialog', { name: 'Settings' });
-const vocabulary = (page: Page) => page.getByRole('textbox', { name: 'Vocabulary file' });
+const vocabulary = (page: Page) => page.getByRole('textbox', { name: 'Vocabulary file', exact: true });
 
 test('⌘, opens Settings when ready, without acting', async ({ page }) => {
   await open(page);

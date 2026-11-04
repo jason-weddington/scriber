@@ -67,7 +67,7 @@ use scriber_core::dictation::{Dictation, Job, work};
 use scriber_core::library;
 use scriber_core::ports::{JobQueue, Library, Ports};
 use scriber_core::settings;
-use scriber_core::store::{MODEL, VOCABULARY};
+use scriber_core::store::{LEARNED, MODEL, VOCABULARY};
 use scriber_core::sync::lock;
 
 pub use clock::LocalClock;
@@ -758,14 +758,28 @@ impl Engine {
             .into_owned()
     }
 
+    /// The default learned list's absolute path: `learned.txt` in the data
+    /// folder.
+    fn default_learned_vocabulary(&self) -> String {
+        self.0
+            .files
+            .root()
+            .join(LEARNED)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// The user's settings (the defaults where none are saved), with the
-    /// glossary always an absolute path and both models always named
-    /// ([`EngineConfig::summary_model`] where none is saved).
+    /// glossary and the learned list always absolute paths and both models
+    /// always named ([`EngineConfig::summary_model`] where none is saved).
     #[must_use]
     pub fn settings(&self) -> Settings {
         let mut s = settings::load(&self.0.files);
         if s.vocabulary.is_empty() {
             s.vocabulary = self.default_vocabulary();
+        }
+        if s.learned_vocabulary.is_empty() {
+            s.learned_vocabulary = self.default_learned_vocabulary();
         }
         for model in [&mut s.summary_model, &mut s.cleanup_model] {
             if model.is_empty() {
@@ -779,7 +793,9 @@ impl Engine {
     /// reads them back. Every field is replaced, except that an empty
     /// `vocabulary` keeps the saved one, and the default glossary's absolute
     /// path is saved as `""` (the default, wherever the data folder is).
-    /// Likewise for each of `summary_model` and `cleanup_model`: empty keeps
+    /// Likewise for `learned_vocabulary`: empty keeps the saved one, and its
+    /// default absolute path is saved as `""`. Likewise for each of
+    /// `summary_model` and `cleanup_model`: empty keeps
     /// the saved one, and [`EngineConfig::summary_model`] is saved as `""`.
     /// `input_device` is saved verbatim: `""` means the Mac's default input
     /// device.
@@ -796,6 +812,11 @@ impl Engine {
             s.vocabulary = settings::load(&self.0.files).vocabulary;
         } else if s.vocabulary == self.default_vocabulary() {
             s.vocabulary = String::new();
+        }
+        if s.learned_vocabulary.is_empty() {
+            s.learned_vocabulary = settings::load(&self.0.files).learned_vocabulary;
+        } else if s.learned_vocabulary == self.default_learned_vocabulary() {
+            s.learned_vocabulary = String::new();
         }
         let saved = settings::load(&self.0.files);
         s.keep_segments = saved.keep_segments;
@@ -851,6 +872,22 @@ impl Engine {
     /// cannot be started or fails.
     pub fn open_vocabulary(&self) -> Result<(), EngineError> {
         let path = PathBuf::from(self.settings().vocabulary);
+        self.0
+            .editor
+            .open(&path)
+            .map_err(|e| EngineError::Editor(e.to_string()))
+    }
+
+    /// Opens the learned list ([`Self::settings`]' `learned_vocabulary`) in
+    /// the text editor, creating it empty first when it is missing. It still
+    /// works after [`Self::shutdown`].
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::Editor`]: the file cannot be created, or the editor
+    /// cannot be started or fails.
+    pub fn open_learned_vocabulary(&self) -> Result<(), EngineError> {
+        let path = PathBuf::from(self.settings().learned_vocabulary);
         self.0
             .editor
             .open(&path)

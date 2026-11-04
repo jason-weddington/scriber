@@ -923,6 +923,14 @@ mod tests {
             .into_owned()
     }
 
+    /// The default learned list's absolute path in `dir`.
+    fn default_learned(dir: &TempDir) -> String {
+        dir.path()
+            .join("learned.txt")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn saved(dir: &TempDir) -> String {
         std::fs::read_to_string(dir.path().join("settings.json")).unwrap()
     }
@@ -943,6 +951,7 @@ mod tests {
             input_device: String::new(),
             silence_split_ms: 0,
             keep_segments: false,
+            learned_vocabulary: default_learned(&dir),
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -953,7 +962,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":""}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -979,7 +988,10 @@ mod tests {
         assert!(back.keep_segments, "returned");
         assert!(engine.settings().keep_segments, "read back");
         assert!(!back.summaries, "the other keys are saved");
-        assert!(saved(&dir).ends_with(r#""keep_segments":true}"#), "on disk");
+        assert!(
+            saved(&dir).ends_with(r#""keep_segments":true,"learned_vocabulary":""}"#),
+            "on disk, before the learned list's default"
+        );
     }
 
     #[test]
@@ -993,8 +1005,8 @@ mod tests {
         assert!(!engine.set_settings(on).unwrap().keep_segments, "returned");
         assert!(!engine.settings().keep_segments, "read back");
         assert!(
-            saved(&dir).ends_with(r#""keep_segments":false}"#),
-            "on disk"
+            saved(&dir).ends_with(r#""keep_segments":false,"learned_vocabulary":""}"#),
+            "on disk, before the learned list's default"
         );
     }
 
@@ -1048,6 +1060,7 @@ mod tests {
             input_device: String::new(),
             silence_split_ms: 0,
             keep_segments: false,
+            learned_vocabulary: String::new(),
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1080,6 +1093,7 @@ mod tests {
             input_device: String::new(),
             silence_split_ms: 0,
             keep_segments: false,
+            learned_vocabulary: default_learned(&dir),
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1102,6 +1116,7 @@ mod tests {
             input_device: String::new(),
             silence_split_ms: 0,
             keep_segments: false,
+            learned_vocabulary: String::new(),
         };
         let kept = Settings {
             summaries: false,
@@ -1128,6 +1143,7 @@ mod tests {
                 input_device: String::new(),
                 silence_split_ms: 0,
                 keep_segments: false,
+                learned_vocabulary: String::new(),
             })
             .unwrap();
         let back = engine
@@ -1142,6 +1158,7 @@ mod tests {
                 input_device: String::new(),
                 silence_split_ms: 0,
                 keep_segments: false,
+                learned_vocabulary: String::new(),
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1176,9 +1193,151 @@ mod tests {
                 input_device: String::new(),
                 silence_split_ms: 0,
                 keep_segments: false,
+                learned_vocabulary: String::new(),
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
+    }
+
+    #[test]
+    fn the_learned_vocabulary_defaults_to_the_data_folder_and_is_absolute() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            engine.settings().learned_vocabulary,
+            default_learned(&dir),
+            "no file"
+        );
+        assert!(
+            engine.settings().learned_vocabulary.starts_with('/'),
+            "absolute"
+        );
+    }
+
+    #[test]
+    fn the_learned_vocabulary_in_the_settings_is_answered() {
+        let dir = TempDir::new().unwrap();
+        write(
+            &dir,
+            "settings.json",
+            br#"{"learned_vocabulary":"/x/learned.txt"}"#,
+        );
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            engine.settings().learned_vocabulary,
+            "/x/learned.txt",
+            "configured"
+        );
+    }
+
+    #[test]
+    fn a_relative_learned_vocabulary_path_is_the_default() {
+        let dir = TempDir::new().unwrap();
+        write(
+            &dir,
+            "settings.json",
+            br#"{"learned_vocabulary":"learned.txt"}"#,
+        );
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            engine.settings().learned_vocabulary,
+            default_learned(&dir),
+            "the default"
+        );
+    }
+
+    #[test]
+    fn a_learned_vocabulary_path_is_saved_and_an_empty_one_keeps_it() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let elsewhere = Settings {
+            learned_vocabulary: "/x/learned.txt".to_string(),
+            ..engine.settings()
+        };
+        assert_eq!(
+            engine.set_settings(elsewhere.clone()),
+            Ok(elsewhere),
+            "saved"
+        );
+        assert_eq!(
+            engine.settings().learned_vocabulary,
+            "/x/learned.txt",
+            "read back"
+        );
+        assert!(
+            saved(&dir).contains(r#""learned_vocabulary":"/x/learned.txt""#),
+            "on disk"
+        );
+        let unknown = Settings {
+            summaries: false,
+            learned_vocabulary: String::new(),
+            ..engine.settings()
+        };
+        let back = engine.set_settings(unknown).unwrap();
+        assert_eq!(
+            back.learned_vocabulary, "/x/learned.txt",
+            "'' keeps the saved path"
+        );
+        assert_eq!(engine.settings().learned_vocabulary, "/x/learned.txt");
+    }
+
+    #[test]
+    fn the_default_learned_vocabulary_path_is_saved_as_empty() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let _: Settings = engine
+            .set_settings(Settings {
+                learned_vocabulary: "/x/learned.txt".to_string(),
+                ..engine.settings()
+            })
+            .unwrap();
+        let back = engine
+            .set_settings(Settings {
+                learned_vocabulary: default_learned(&dir),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert_eq!(back.learned_vocabulary, default_learned(&dir), "answered");
+        assert!(
+            saved(&dir).contains(r#""learned_vocabulary":"""#),
+            "stored empty"
+        );
+        assert_eq!(
+            engine.settings().learned_vocabulary,
+            default_learned(&dir),
+            "read back"
+        );
+    }
+
+    #[test]
+    fn a_relative_learned_vocabulary_path_is_written_verbatim_and_dropped_on_read() {
+        let dir = TempDir::new().unwrap();
+        write(
+            &dir,
+            "settings.json",
+            br#"{"learned_vocabulary":"learned.txt"}"#,
+        );
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            engine.settings().learned_vocabulary,
+            default_learned(&dir),
+            "the default"
+        );
+        let _: Settings = engine
+            .set_settings(Settings {
+                learned_vocabulary: "terms.txt".to_string(),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert!(
+            saved(&dir).contains(r#""learned_vocabulary":"terms.txt""#),
+            "written verbatim"
+        );
+        assert_eq!(
+            engine.settings().learned_vocabulary,
+            default_learned(&dir),
+            "read back as the default"
+        );
     }
 
     /// An editor stub in `dir` that writes its arguments, one per line, to
@@ -1247,6 +1406,7 @@ mod tests {
                 input_device: String::new(),
                 silence_split_ms: 0,
                 keep_segments: false,
+                learned_vocabulary: String::new(),
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1285,6 +1445,81 @@ mod tests {
         assert!(text.contains("nope"), "with the reason: {text}");
     }
 
+    #[test]
+    fn open_learned_vocabulary_creates_and_opens_the_default_list() {
+        let dir = TempDir::new().unwrap();
+        let bin = TempDir::new().unwrap();
+        let (stub, log) = editor(&bin, 0);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            editor: stub,
+            ..config(&dir)
+        });
+        engine.open_learned_vocabulary().unwrap();
+        let file = dir.path().join("learned.txt");
+        assert_eq!(std::fs::read(&file).unwrap(), b"", "created empty");
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            format!("-t\n{}\n", file.display()),
+            "opened as text"
+        );
+        let _report = engine.shutdown();
+        std::fs::remove_file(&log).unwrap();
+        engine.open_learned_vocabulary().unwrap();
+        assert!(log.exists(), "still opens after shutdown");
+    }
+
+    #[test]
+    fn open_learned_vocabulary_opens_the_configured_list() {
+        let dir = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let bin = TempDir::new().unwrap();
+        let (stub, log) = editor(&bin, 0);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            editor: stub,
+            ..config(&dir)
+        });
+        let file = other.path().join("words/learned.txt");
+        let _: Settings = engine
+            .set_settings(Settings {
+                learned_vocabulary: file.to_string_lossy().into_owned(),
+                ..engine.settings()
+            })
+            .unwrap();
+        engine.open_learned_vocabulary().unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"", "created empty");
+        assert!(!dir.path().join("learned.txt").exists(), "not the default");
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            format!("-t\n{}\n", file.display()),
+            "opened"
+        );
+    }
+
+    #[test]
+    fn a_failing_editor_is_an_editor_error_for_the_learned_list() {
+        let dir = TempDir::new().unwrap();
+        let bin = TempDir::new().unwrap();
+        let (stub, _log) = editor(&bin, 3);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            editor: stub,
+            ..config(&dir)
+        });
+        let opened = engine.open_learned_vocabulary();
+        assert!(
+            matches!(&opened, Err(EngineError::Editor(_))),
+            "an error: {opened:?}"
+        );
+        let text = opened.unwrap_err().to_string();
+        assert!(
+            text.starts_with("Could not open the vocabulary file: "),
+            "{text}"
+        );
+        assert!(text.contains("nope"), "with the reason: {text}");
+    }
+
     const DEFAULT: &str = "qwen3.8:27b-mlx";
 
     /// The settings as answered with nothing saved, but with these models.
@@ -1300,6 +1535,7 @@ mod tests {
             input_device: String::new(),
             silence_split_ms: 0,
             keep_segments: false,
+            learned_vocabulary: default_learned(dir),
         }
     }
 

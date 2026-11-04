@@ -91,6 +91,12 @@ mod commands {
         engine.open_vocabulary().map_err(|e| e.to_string())
     }
 
+    /// `learned_vocabulary_open`: opens the learned list in the default text editor, creating it empty first.
+    #[tauri::command]
+    pub(crate) async fn learned_vocabulary_open(engine: State<'_, Engine>) -> Result<(), String> {
+        engine.open_learned_vocabulary().map_err(|e| e.to_string())
+    }
+
     /// `ollama_models`: the installed Ollama models' names that can generate text (embedding models hidden), sorted.
     #[tauri::command]
     pub(crate) async fn ollama_models(engine: State<'_, Engine>) -> Result<Vec<String>, String> {
@@ -149,6 +155,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::settings_get,
             commands::settings_set,
             commands::vocabulary_open,
+            commands::learned_vocabulary_open,
             commands::ollama_models,
             commands::input_devices,
         ])

@@ -16,6 +16,7 @@
     libraryCopy,
     libraryGet,
     libraryList,
+    learnedVocabularyOpen,
     onDictationChanged,
     ollamaModels,
     onFullscreenChanged,
@@ -78,7 +79,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: '' });
   let settingsOpen = $state(false);
   let settingsButton = $state<HTMLButtonElement>();
   let settingsFromPointer = false;
@@ -315,6 +316,34 @@
   /** Open in Text Editor: the engine creates the glossary when missing, then opens it. */
   function openVocabulary(): void {
     vocabularyOpen().catch((e: unknown) => {
+      settingsError = errorText(e);
+    });
+  }
+
+  /** Browse…: the open panel picks another learned list, which is saved at once. */
+  function browseLearnedVocabulary(): void {
+    pickVocabularyFile(settings.learnedVocabulary).then(
+      (path) => {
+        if (path === null) return;
+        settings = { ...settings, learnedVocabulary: path };
+        settingsSet(settings).then(
+          () => {
+            settingsError = null;
+          },
+          (e: unknown) => {
+            settingsError = errorText(e);
+          },
+        );
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
+      },
+    );
+  }
+
+  /** Open in Text Editor: the engine creates the learned list when missing, then opens it. */
+  function openLearnedVocabulary(): void {
+    learnedVocabularyOpen().catch((e: unknown) => {
       settingsError = errorText(e);
     });
   }
@@ -697,6 +726,8 @@
     oncleanup={setCleanup}
     onbrowse={browseVocabulary}
     onopenvocabulary={openVocabulary}
+    onbrowselearned={browseLearnedVocabulary}
+    onopenlearned={openLearnedVocabulary}
     onsilencesplit={setSilenceSplit}
     onclose={settingsClosed}
   />

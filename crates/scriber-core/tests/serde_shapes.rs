@@ -154,7 +154,27 @@ mod tests {
                 input_device: "AirPods Pro".to_string(),
                 silence_split_ms: 2_500,
                 keep_segments: true,
+                learned_vocabulary: "/data/learned.txt".to_string(),
             },
+        );
+        let settings = Settings {
+            summaries: true,
+            library_open: true,
+            vocabulary: "/data/vocabulary.txt".to_string(),
+            cleanup: true,
+            summary_model: "gemma3:4b".to_string(),
+            cleanup_model: "qwen3.8:27b-mlx".to_string(),
+            library_width: 300,
+            input_device: "AirPods Pro".to_string(),
+            silence_split_ms: 2_500,
+            keep_segments: true,
+            learned_vocabulary: "/data/learned.txt".to_string(),
+        };
+        assert!(
+            serde_json::to_string(&settings)
+                .unwrap()
+                .ends_with(r#""keepSegments":true,"learnedVocabulary":"/data/learned.txt"}"#),
+            "camelCase, last key"
         );
     }
 

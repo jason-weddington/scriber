@@ -257,7 +257,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
     test('the settings modal with the text editor failing', async ({ page }) => {
       await open(page, { fail: 'vocabulary_open' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await page.getByRole('button', { name: 'Open in Text Editor' }).click();
+      await page.getByRole('group', { name: 'Vocabulary file', exact: true }).getByRole('button', { name: 'Open in Text Editor' }).click();
       await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('alert')).toHaveText(
         'Could not open the vocabulary file: no text editor.',
       );

@@ -118,6 +118,12 @@ export async function vocabularyOpen(): Promise<void> {
   return invoke<undefined>('vocabulary_open');
 }
 
+/** Opens the learned list in the default text editor, creating it empty first. */
+export async function learnedVocabularyOpen(): Promise<void> {
+  if (!underTauri()) return mock().learnedVocabularyOpen();
+  return invoke<undefined>('learned_vocabulary_open');
+}
+
 /** The native open panel for a glossary file, starting at `current`; null when cancelled. */
 export async function pickVocabularyFile(current: string): Promise<string | null> {
   if (!underTauri()) return mock().pickVocabularyFile(current);

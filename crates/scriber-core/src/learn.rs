@@ -2,7 +2,8 @@
 //! word in the finished transcript and presses Copy, [`learn`] compares the
 //! transcript they were shown with the one they copied and returns the
 //! corrected terms worth remembering; [`remember`] puts them at the head of
-//! the learned list (`learned.txt`, [`crate::store::LEARNED`]); and
+//! the learned list ([`crate::store::learned_path`], `learned.txt` in the data
+//! folder unless `settings.json`'s `learned_vocabulary` names another); and
 //! [`enforce`] rewrites later transcripts to the learned spellings. Pure
 //! functions over text, with no I/O, so any app can use them.
 //!
