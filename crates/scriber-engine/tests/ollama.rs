@@ -9,6 +9,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use scriber_core::cleanup;
     use scriber_engine::{
         CLEANUP_TIMEOUT, Cleaner as _, KEEP_ALIVE, KEEP_WARM_INTERVAL, Ollama, RELEASE_TIMEOUT,
         SUMMARY_TIMEOUT, SYSTEM_PROMPT, Summarizer as _, TAGS_TIMEOUT, WARM_TIMEOUT, Warmer as _,
@@ -87,7 +88,7 @@ mod tests {
         let out = Ollama::with_timeout(&base, "m", CLEANUP_TIMEOUT)
             .clean("", "S", "R")
             .unwrap();
-        assert_eq!(out, "Fix the parser.");
+        assert_eq!(out, cleanup::Reply::new("Fix the parser."));
     }
 
     #[test]
@@ -227,7 +228,11 @@ mod tests {
         let reply = Ollama::with_timeout(&base, "m", CLEANUP_TIMEOUT)
             .clean("", "S", "R")
             .unwrap();
-        assert_eq!(reply, " A note about the board. ", "the field verbatim");
+        assert_eq!(
+            reply,
+            cleanup::Reply::new(" A note about the board. "),
+            "the field verbatim"
+        );
         let (line, body) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(line, "POST /api/chat HTTP/1.1", "the request line");
         let body: Value = serde_json::from_str(&body).unwrap();
@@ -240,8 +245,22 @@ mod tests {
                 "keep_alive": "10m",
                 "format": {
                     "type": "object",
-                    "properties": {"transcript": {"type": "string"}},
-                    "required": ["transcript"],
+                    "properties": {
+                        "replacements": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "from": {"type": "string"},
+                                    "to": {"type": "string"},
+                                },
+                                "required": ["from", "to"],
+                            },
+                        },
+                        "learned": {"type": "array", "items": {"type": "string"}},
+                        "transcript": {"type": "string"},
+                    },
+                    "required": ["replacements", "learned", "transcript"],
                 },
                 "messages": [
                     {"role": "system", "content": "S"},
@@ -274,7 +293,7 @@ mod tests {
         ));
         assert_eq!(
             Ollama::new(&stop_base, "m").clean("", "S", "R").unwrap(),
-            "A note",
+            cleanup::Reply::new("A note"),
             "a finished reply"
         );
     }
@@ -308,7 +327,7 @@ mod tests {
         assert_eq!(cleanup("c2"), json!("c2"), "cleanup: chosen");
     }
 
-    fn cleaned(content: &str) -> Result<String, String> {
+    fn cleaned(content: &str) -> Result<cleanup::Reply, String> {
         let (base, _rx) = serve(&reply(content));
         Ollama::with_timeout(&base, "m", CLEANUP_TIMEOUT)
             .clean("", "S", "R")
@@ -319,14 +338,37 @@ mod tests {
     fn a_cleanup_returns_its_transcript_field() {
         assert_eq!(
             cleaned(r#"{"transcript":" Fix the parser. "}"#),
-            Ok(" Fix the parser. ".to_string()),
+            Ok(cleanup::Reply::new(" Fix the parser. ")),
             "verbatim"
         );
-        assert_eq!(cleaned(r#"{"transcript":""}"#), Ok(String::new()), "empty");
+        assert_eq!(
+            cleaned(r#"{"transcript":""}"#),
+            Ok(cleanup::Reply::new("")),
+            "empty"
+        );
         assert_eq!(
             cleaned(r#"{"transcript":"x","note":"y"}"#),
-            Ok("x".to_string()),
+            Ok(cleanup::Reply::new("x")),
             "extra keys"
+        );
+        assert_eq!(
+            cleaned(r#"{"replacements":5,"learned":[1],"transcript":"t"}"#),
+            Ok(cleanup::Reply::new("t")),
+            "junk arrays"
+        );
+        assert_eq!(
+            cleaned(
+                r#"{"replacements":[{"from":"Clawed","to":"Claude"}],"learned":["Claude"],"transcript":"t"}"#
+            ),
+            Ok(cleanup::Reply {
+                replacements: vec![cleanup::Replacement {
+                    from: "Clawed".to_string(),
+                    to: "Claude".to_string(),
+                }],
+                learned: vec!["Claude".to_string()],
+                transcript: "t".to_string(),
+            }),
+            "all three fields"
         );
     }
 

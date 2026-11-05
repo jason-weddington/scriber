@@ -141,7 +141,7 @@ fn lcs_table(old: &[Word], new: &[Word]) -> Vec<Vec<usize>> {
 }
 
 /// The Levenshtein distance between two char sequences.
-fn levenshtein(a: &[char], b: &[char]) -> usize {
+pub(crate) fn levenshtein(a: &[char], b: &[char]) -> usize {
     let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.iter().enumerate() {
         let mut next = vec![i.saturating_add(1)];
@@ -272,7 +272,7 @@ pub fn remember(
 /// A term's key: lowercase, ASCII spaces and hyphens removed. A key that is
 /// empty or holds anything but letters and digits never matches, because a
 /// match only ever joins runs of letters and digits.
-fn key(term: &str) -> String {
+pub(crate) fn key(term: &str) -> String {
     term.to_lowercase()
         .chars()
         .filter(|c| *c != ' ' && *c != '-')

@@ -1795,6 +1795,150 @@ mod tests {
     }
 
     #[test]
+    fn a_cleanup_learned_name_is_saved_and_logged() {
+        let w = World::default();
+        let raw = "I want A-I-J-U on the board.";
+        let reply =
+            r#"{"replacements":[],"learned":["Aiju"],"transcript":"I want Aiju on the board."}"#;
+        let (mut d, job) = to_cleanup(&w, raw);
+        let s = cleaned(&w, &mut d, &job, Ok(reply));
+        assert_eq!(s.text, "I want Aiju on the board.", "cleaned");
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("cleaned")),
+            "label"
+        );
+        assert_eq!(entry_file(&w, "cleanup.reply.txt"), None, "no reply kept");
+        assert_eq!(learned_file(&w), Some(b"Aiju\n".to_vec()), "learned.txt");
+        assert_eq!(s.learned, strings(&["Aiju"]), "shown as learned");
+        assert_eq!(
+            learning_log(&w),
+            [json!({
+                "event": "learn",
+                "started": "2026-10-26 14:03:09",
+                "path": "learned.txt",
+                "found": ["Aiju"],
+                "added": ["Aiju"],
+                "outcome": "saved",
+                "error": null,
+            })],
+            "log"
+        );
+        let p = w.library_cleaner_ports();
+        d.undo_learn(&p).unwrap();
+        assert_eq!(learned_file(&w), Some(Vec::new()), "undone");
+        assert!(d.snapshot(&p).learned.is_empty(), "forgotten");
+    }
+
+    #[test]
+    fn a_cleanup_that_learns_nothing_writes_no_line() {
+        let w = World::default();
+        let raw = "I want A-I-J-U on the board.";
+        let reply = r#"{"replacements":[],"learned":[],"transcript":"I want Aiju on the board."}"#;
+        let (mut d, job) = to_cleanup(&w, raw);
+        let s = cleaned(&w, &mut d, &job, Ok(reply));
+        assert_eq!(s.text, "I want Aiju on the board.", "cleaned");
+        assert!(learning_log(&w).is_empty(), "no line");
+        assert_eq!(learned_file(&w), None, "no file");
+    }
+
+    #[test]
+    fn a_rejected_cleanup_learns_nothing() {
+        let w = World::default();
+        let raw = "I want A-I-J-U on the board.";
+        let reply = r#"{"replacements":[],"learned":["Aiju"],"transcript":"Here is the text: I want Aiju on the board."}"#;
+        let (mut d, job) = to_cleanup(&w, raw);
+        let s = cleaned(&w, &mut d, &job, Ok(reply));
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("rejected-new-words")),
+            "rejected"
+        );
+        assert!(learning_log(&w).is_empty(), "no line");
+        assert_eq!(learned_file(&w), None, "no file");
+        assert_eq!(s.text, raw, "the raw text");
+    }
+
+    #[test]
+    fn an_unreadable_learned_list_still_finishes_with_the_clean_text() {
+        let w = World::default();
+        let raw = "I want A-I-J-U on the board.";
+        let reply =
+            r#"{"replacements":[],"learned":["Aiju"],"transcript":"I want Aiju on the board."}"#;
+        let (mut d, job) = to_cleanup(&w, raw);
+        w.files.write(LEARNED, &[0xff]).unwrap();
+        let s = cleaned(&w, &mut d, &job, Ok(reply));
+        assert_eq!(
+            learning_log(&w),
+            [json!({
+                "event": "learn",
+                "started": "2026-10-26 14:03:09",
+                "path": "learned.txt",
+                "found": ["Aiju"],
+                "added": [],
+                "outcome": "unreadable",
+                "error": null,
+            })],
+            "log"
+        );
+        assert_eq!(learned_file(&w), Some(vec![0xff]), "untouched");
+        assert_eq!(s.text, "I want Aiju on the board.", "the cleaned text");
+    }
+
+    #[test]
+    fn a_cleanup_learned_term_is_enforced_in_the_finished_text() {
+        let w = World::default();
+        let raw = "I want a iju on the board, spelled A-I-J-U.";
+        let reply = r#"{"replacements":[],"learned":["Aiju"],"transcript":"I want a iju on the board, spelled A-I-J-U."}"#;
+        let (mut d, job) = to_cleanup(&w, raw);
+        let s = cleaned(&w, &mut d, &job, Ok(reply));
+        assert_eq!(
+            s.text, "I want Aiju on the board, spelled A-I-J-U.",
+            "enforced"
+        );
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("unchanged")),
+            "label"
+        );
+        assert_eq!(
+            entry_file(&w, "transcript.raw.txt").as_deref(),
+            Some(raw),
+            "the original is kept"
+        );
+        assert_eq!(learned_file(&w), Some(b"Aiju\n".to_vec()), "learned.txt");
+    }
+
+    #[test]
+    fn a_json_cleanup_reply_carries_all_three_fields() {
+        let w = World::default();
+        let raw = "Yukara says Aijo.";
+        let reply = r#"{"replacements":[{"from":"Yukara","to":"Chie"},{"from":"Aijo","to":"Aiju"}],"learned":["Aiju"],"transcript":"Chie says Aiju."}"#;
+        let (mut d, job) = to_cleanup(&w, raw);
+        let s = cleaned(&w, &mut d, &job, Ok(reply));
+        assert_eq!(s.text, "Yukara says Aiju.", "the revert and the kept fix");
+        assert_eq!(learned_file(&w), Some(b"Aiju\n".to_vec()), "learned.txt");
+        assert_eq!(
+            learning_log(&w).first().and_then(|l| l.get("found")),
+            Some(&json!(["Aiju"])),
+            "the learned field arrived"
+        );
+    }
+
+    #[test]
+    fn a_braced_reply_that_is_not_a_reply_is_literal_text() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let s = cleaned(&w, &mut d, &job, Ok(r#"{"transcript":3}"#));
+        assert_eq!(
+            entry_json(&w).get("cleanup"),
+            Some(&json!("rejected-cut-off")),
+            "treated as text"
+        );
+        assert_eq!(s.text, CLAWED, "the raw text");
+    }
+
+    #[test]
     fn a_failed_model_falls_back_to_the_raw_text() {
         let w = World::default();
         let (mut d, job) = to_cleanup(&w, CLAWED);

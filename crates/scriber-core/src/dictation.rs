@@ -20,11 +20,11 @@
 //! and a cleanup model in the ports, a non-empty transcript then goes to the
 //! model as one more job ([`crate::cleanup`]) and the session stays
 //! transcribing until it answers; the transcript copied is the model's reply
-//! when [`cleanup::accept`] keeps it, and Whisper's text otherwise, which then
-//! goes through [`crate::shortcuts::to_glyphs`] and the learned spellings
-//! ([`learn::enforce`]). Copy and Accept learn the user's corrections to the
-//! transcript into the learned list ([`store::learned_path`]); Undo learning
-//! forgets them. An illegal
+//! when [`cleanup::accept_reply`] keeps it, and Whisper's text otherwise, which
+//! then goes through [`crate::shortcuts::to_glyphs`] and the learned spellings
+//! ([`learn::enforce`]). Copy, Accept and an accepted cleanup learn the user's
+//! corrections and the words the speaker spelled out into the learned list
+//! ([`store::learned_path`]); Undo learning forgets them. An illegal
 //! action returns [`DictationError::Illegal`] and changes nothing.
 
 use std::collections::BTreeMap;
@@ -194,7 +194,7 @@ impl Job {
     /// audio.wav with audio.m4a, keeping the WAV when encoding fails; a
     /// summary replaces the entry's excerpt with the model's sentence, and
     /// leaves it when the model fails or says nothing. A cleanup asks the
-    /// cleanup model for its raw reply to [`cleanup::request`] under
+    /// cleanup model for its structured reply to [`cleanup::request`] under
     /// [`cleanup::PROMPT`]; judging it is left to [`Dictation::complete`].
     #[must_use]
     pub fn run(&self, ports: &Ports<'_>, progress: &dyn Fn(u64)) -> Outcome {
@@ -234,11 +234,13 @@ impl Job {
                 ports
                     .transcriber
                     .transcribe(heard_audio, prompt.as_deref())
-                    .map(|phrases| kept_text(heard_audio, &phrases))
+                    .map(|phrases| kept_text(heard_audio, &phrases).map(cleanup::Reply::new))
                     .map_err(|e| e.to_string())
             }
             Work::Encode { id } => encode(id, ports).map(|()| None),
-            Work::Summary { id, text } => summarize(id, text, ports).map(Some),
+            Work::Summary { id, text } => {
+                summarize(id, text, ports).map(|summary| Some(cleanup::Reply::new(summary)))
+            }
             Work::Cleanup { text, terms, .. } => match ports.cleaner {
                 None => Err(CLEANUP_OFF.to_string()),
                 Some(cleaner) => cleaner
@@ -311,7 +313,7 @@ fn summarize(id: &str, text: &str, ports: &Ports<'_>) -> Result<String, String> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     mark: Mark,
-    result: Result<Option<String>, String>,
+    result: Result<Option<cleanup::Reply>, String>,
 }
 
 /// The speech model's download.
@@ -1062,9 +1064,15 @@ impl Dictation {
     }
 
     /// The cleanup model answered for `session`: finish with its reply when
-    /// [`cleanup::accept`] keeps it, and with Whisper's transcript otherwise.
-    /// Ignored unless that session is still waiting for it.
-    fn cleaned(&mut self, session: u64, result: Result<Option<String>, String>, ports: &Ports<'_>) {
+    /// [`cleanup::accept_reply`] keeps it, and with Whisper's transcript
+    /// otherwise. An accepted reply's learned terms are saved before the
+    /// session finishes. Ignored unless that session is still waiting for it.
+    fn cleaned(
+        &mut self,
+        session: u64,
+        result: Result<Option<cleanup::Reply>, String>,
+        ports: &Ports<'_>,
+    ) {
         if session != self.session || self.phase != Phase::Transcribing {
             return;
         }
@@ -1081,12 +1089,18 @@ impl Dictation {
         let (text, record) = match result {
             Ok(reply) => {
                 let reply = reply.unwrap_or_default();
-                match cleanup::accept(&raw, &reply, &terms) {
-                    Ok(clean) if clean == raw => {
-                        (clean, record(cleanup::UNCHANGED, None, None, None))
+                match cleanup::accept_reply(&raw, &reply, &terms) {
+                    Ok((clean, learned)) => {
+                        if !learned.is_empty() {
+                            self.learn_terms(&learned, &learned, ports);
+                        }
+                        if clean == raw {
+                            (clean, record(cleanup::UNCHANGED, None, None, None))
+                        } else {
+                            (clean, record(cleanup::CLEANED, Some(raw), None, None))
+                        }
                     }
-                    Ok(clean) => (clean, record(cleanup::CLEANED, Some(raw), None, None)),
-                    Err(r) => (raw, record(r.label(), None, Some(reply), None)),
+                    Err(r) => (raw, record(r.label(), None, Some(reply.transcript), None)),
                 }
             }
             Err(e) => (raw, record(cleanup::FAILED, None, None, Some(e))),
@@ -1096,7 +1110,7 @@ impl Dictation {
 
     /// The download finished: the model is in place and warms up, or the
     /// download failed and the window offers it again.
-    fn downloaded(&mut self, result: Result<Option<String>, String>, ports: &Ports<'_>) {
+    fn downloaded(&mut self, result: Result<Option<cleanup::Reply>, String>, ports: &Ports<'_>) {
         if !matches!(self.fetch, Fetch::Running(_)) {
             return;
         }
@@ -1114,7 +1128,7 @@ impl Dictation {
         &mut self,
         session: u64,
         index: u32,
-        result: Result<Option<String>, String>,
+        result: Result<Option<cleanup::Reply>, String>,
         ports: &Ports<'_>,
     ) {
         if session != self.session {
@@ -1127,7 +1141,7 @@ impl Dictation {
             return;
         }
         *slot = match result {
-            Ok(text) => Slot::Heard(text),
+            Ok(text) => Slot::Heard(text.map(|reply| reply.transcript)),
             Err(e) => Slot::Failed(e),
         };
         self.revision = self.revision.wrapping_add(1);
@@ -1308,6 +1322,15 @@ impl Dictation {
     /// the undo list change only when the list is saved.
     fn learn_from(&mut self, edited: &str, ports: &Ports<'_>) {
         let found = learn::candidates(&self.text, edited);
+        self.learn_terms(&found, &learn::learn(&self.text, edited), ports);
+    }
+
+    /// Learns `found` (the terms the edit qualified for) under `terms` (the
+    /// spellings to save) into the learned list ([`store::learned_path`]),
+    /// and logs what happened. Nothing happens when there is no correction;
+    /// the learned terms and the undo list change only when the list is
+    /// saved.
+    fn learn_terms(&mut self, found: &[String], terms: &[String], ports: &Ports<'_>) {
         if found.is_empty() {
             return;
         }
@@ -1316,8 +1339,7 @@ impl Dictation {
         let outcome = if found.len() > learn::MAX_RUNS {
             "capped"
         } else if let Some(list) = store::learned(ports.files) {
-            let terms = learn::learn(&self.text, edited);
-            let (new, placed) = learn::remember(&list, &terms, &vocabulary_terms(ports));
+            let (new, placed) = learn::remember(&list, terms, &vocabulary_terms(ports));
             if placed.is_empty() {
                 "nothing_added"
             } else if let Err(e) = store::save_learned(ports.files, &new) {
@@ -1339,7 +1361,7 @@ impl Dictation {
                 event: "learn",
                 started: self.started.as_deref(),
                 path: &path,
-                found: &found,
+                found,
                 added: &added,
                 outcome,
                 error,

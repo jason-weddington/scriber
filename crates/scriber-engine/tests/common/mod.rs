@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use scriber_core::cleanup;
 use scriber_core::sync::LoadOnce;
 use scriber_engine::{
     Adapters, Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Engine, EngineConfig,
@@ -367,7 +368,12 @@ impl Default for FakeCleaner {
 }
 
 impl Cleaner for FakeCleaner {
-    fn clean(&self, model: &str, _system: &str, _request: &str) -> Result<String, PortError> {
+    fn clean(
+        &self,
+        model: &str,
+        _system: &str,
+        _request: &str,
+    ) -> Result<cleanup::Reply, PortError> {
         self.models
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -377,6 +383,14 @@ impl Cleaner for FakeCleaner {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+            .map(|answer| {
+                if answer.starts_with('{')
+                    && let Ok(reply) = serde_json::from_str::<cleanup::Reply>(&answer)
+                {
+                    return reply;
+                }
+                cleanup::Reply::new(answer)
+            })
             .map_err(PortError)
     }
 }

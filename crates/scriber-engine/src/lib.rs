@@ -20,9 +20,11 @@
 //!
 //! With the `cleanup` setting on ([`Settings::cleanup`]), each finished
 //! transcript goes once more to the same Ollama server and model, which fixes
-//! misheard glossary terms and spoken self-corrections; the raw Whisper text
-//! is used whenever that fails or the reply does not pass the core's check
-//! (`scriber_core::cleanup::accept`).
+//! misheard glossary terms and spoken self-corrections and answers with a
+//! three-field value (the corrected transcript, its replacements and the words
+//! the speaker spelled out); the raw Whisper text is used whenever that fails
+//! or the reply does not pass the core's check
+//! (`scriber_core::cleanup::accept_reply`).
 //! While it is on, the engine also keeps the cleanup model loaded in Ollama on a thread of its own ([`Warmer`]), renewing it every [`EngineConfig::keep_warm_every`] and releasing it when cleanup turns off, the model changes or the engine shuts down.
 //!
 //! ```rust,no_run

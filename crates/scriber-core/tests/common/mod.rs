@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read};
 use std::sync::Arc;
 
+use scriber_core::cleanup;
 use scriber_core::dictation::{Job, Outcome};
 use scriber_core::model::InputDevices;
 use scriber_core::ports::{
@@ -444,7 +445,7 @@ pub(crate) struct FakeCleaner {
 }
 
 impl Cleaner for FakeCleaner {
-    fn clean(&self, model: &str, system: &str, request: &str) -> Result<String, PortError> {
+    fn clean(&self, model: &str, system: &str, request: &str) -> Result<cleanup::Reply, PortError> {
         self.models.borrow_mut().push(model.to_string());
         self.calls
             .borrow_mut()
@@ -457,6 +458,14 @@ impl Cleaner for FakeCleaner {
                     .split_once("\n\nTranscript:\n")
                     .map_or("", |(_, t)| t)
                     .to_string())
+            })
+            .map(|answer| {
+                if answer.starts_with('{')
+                    && let Ok(reply) = serde_json::from_str::<cleanup::Reply>(&answer)
+                {
+                    return reply;
+                }
+                cleanup::Reply::new(answer)
             })
             .map_err(PortError)
     }

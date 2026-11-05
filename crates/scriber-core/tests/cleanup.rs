@@ -4,7 +4,8 @@
 mod tests {
     use scriber_core::cleanup::{
         CLEANED, FAILED, MAX_TERMS, MIN_WORDS_FOR_RATIO, NEW_WORDS_MIN, NEW_WORDS_PER, OFF, PROMPT,
-        Reject, UNCHANGED, accept, request,
+        Reject, Replacement, Reply, UNCHANGED, accept, accept_reply, filter, learned_terms,
+        request, spelled,
     };
 
     const RAW30: &str = "Tell the team I mean, I mean, what they really meant was, but what I actually meant was the deploy moves to Wednesday and the release notes go out Thursday.";
@@ -19,6 +20,13 @@ mod tests {
 
     #[test]
     fn the_constants_are_pinned() {
+        const S1: &str = "You correct a dictated transcript. Make only four kinds of change.";
+        const S2: &str = "First, where a word or phrase was misheard and sounds closely like one of the glossary terms (and fits the sentence), replace it with that term spelled exactly as in the glossary; never replace an unrelated name or foreign word just because it starts with a similar sound.";
+        const S3: &str = "Second, where the speaker explicitly spells out a word or name inside the transcript (for example, \"X is spelled A-B-C\"), use that spelling in normal title case (not all-caps unless it is an acronym) everywhere that word or name appears in the transcript (fixing any phonetic mishearing, including when joined to another word), while keeping the speaker's spelling sentence intact unless they were correcting a false start.";
+        const S4: &str = "Third, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words.";
+        const S5: &str = "Fourth, where a clock time followed by a.m. or p.m. has a dot between the hour and the minutes, change the dot to a colon: 9.43 a.m. becomes 9:43 a.m. Leave every other number unchanged, including version numbers and decimals.";
+        const S6: &str = "Change nothing else: keep every other word, the word order, the spelling, the punctuation and the paragraph breaks exactly as they are. Do not rephrase, summarize, add, explain or answer anything else in the transcript.";
+        const S7: &str = "Record every change you make (or any spelled-out word, with `from` and `to` equal when already spelled right) in `replacements`, every new word or proper name the speaker spelled out in `learned` in normal title case, and the corrected transcript in `transcript` (unchanged when nothing needs changing).";
         assert_eq!(MAX_TERMS, 200, "terms");
         assert_eq!(MIN_WORDS_FOR_RATIO, 20, "ratio floor");
         assert_eq!(NEW_WORDS_MIN, 3, "new words min");
@@ -28,10 +36,369 @@ mod tests {
             ["off", "cleaned", "unchanged", "failed"],
             "labels"
         );
+        assert_eq!(PROMPT, [S1, S2, S3, S4, S5, S6, S7].join(" "), "prompt");
+        assert!(
+            PROMPT
+                .starts_with("You correct a dictated transcript. Make only four kinds of change."),
+            "opens with rule one"
+        );
+        assert!(!PROMPT.contains("three kinds"), "four rules");
+        assert!(
+            !PROMPT.contains("Reply with the corrected transcript only"),
+            "no closing reply sentence"
+        );
+    }
+
+    #[test]
+    fn the_reply_shape_is_pinned() {
         assert_eq!(
-            PROMPT,
-            "You correct a dictated transcript. Make only three kinds of change. First, where a word or phrase was misheard and should be one of the glossary terms, replace it with that term spelled exactly as in the glossary. Second, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words. Third, where a clock time followed by a.m. or p.m. has a dot between the hour and the minutes, change the dot to a colon: 9.43 a.m. becomes 9:43 a.m. Leave every other number unchanged, including version numbers and decimals. Change nothing else: keep every other word, the word order, the spelling, the punctuation and the paragraph breaks exactly as they are. Do not rephrase, summarize, add, explain or answer anything else in the transcript. Reply with the corrected transcript only, with no preamble, quotes or notes. If nothing needs changing, reply with the transcript unchanged.",
-            "prompt"
+            Reply::new("a"),
+            Reply {
+                replacements: vec![],
+                learned: vec![],
+                transcript: "a".to_string(),
+            },
+            "new"
+        );
+        assert_eq!(Reply::default(), Reply::new(""), "default");
+        assert_eq!(
+            serde_json::from_str::<Reply>(r#"{"transcript":"t"}"#).unwrap(),
+            Reply::new("t"),
+            "absent arrays"
+        );
+        assert_eq!(
+            serde_json::to_string(&Reply::new("t")).unwrap(),
+            r#"{"replacements":[],"learned":[],"transcript":"t"}"#,
+            "order"
+        );
+        let full = Reply {
+            replacements: vec![Replacement {
+                from: "Clawed".to_string(),
+                to: "Claude".to_string(),
+            }],
+            learned: vec!["Claude".to_string()],
+            transcript: "Ask Claude to check the board.".to_string(),
+        };
+        assert_eq!(
+            serde_json::from_str::<Reply>(&serde_json::to_string(&full).unwrap()).unwrap(),
+            full,
+            "round trip"
+        );
+    }
+
+    #[test]
+    fn spelled_finds_spelled_out_words() {
+        assert_eq!(spelled("Y-A-G-U-R-A."), ["yagura"], "one");
+        assert_eq!(
+            spelled("spell it A-I-J-U and the A-I-J-U again"),
+            ["aiju"],
+            "de-duplicated"
+        );
+        assert_eq!(spelled("A-B"), Vec::<String>::new(), "two parts");
+        assert_eq!(
+            spelled("a-1-c"),
+            Vec::<String>::new(),
+            "a part that is not a letter"
+        );
+        assert_eq!(spelled("X-Y-Z-th"), Vec::<String>::new(), "a long part");
+        assert_eq!(spelled("Zed"), Vec::<String>::new(), "no dashes");
+        assert_eq!(spelled(""), Vec::<String>::new(), "empty");
+    }
+
+    fn replacement(from: &str, to: &str) -> Replacement {
+        Replacement {
+            from: from.to_string(),
+            to: to.to_string(),
+        }
+    }
+
+    fn reply_with(replacements: Vec<Replacement>, transcript: &str) -> Reply {
+        Reply {
+            replacements,
+            learned: vec![],
+            transcript: transcript.to_string(),
+        }
+    }
+
+    #[test]
+    fn filter_leaves_long_or_numeric_replacements_alone() {
+        let raw = "The deploy moves to Wednesday.";
+        for from_to in [
+            ("the deploy moves to Wednesday", "Deploy is Wednesday"),
+            ("two", "2"),
+            ("", "x"),
+        ] {
+            let reply = reply_with(vec![replacement(from_to.0, from_to.1)], raw);
+            assert_eq!(filter(raw, &reply), reply, "{from_to:?}");
+        }
+    }
+
+    #[test]
+    fn filter_reverts_a_spelled_out_capitalisation() {
+        let spelled_raw = "I want CLAUDE spelled C-L-A-U-D-E.";
+        let spelled_reply = reply_with(vec![replacement("Claude", "CLAUDE")], spelled_raw);
+        assert_eq!(
+            filter(spelled_raw, &spelled_reply).transcript,
+            "I want Claude spelled C-L-A-U-D-E.",
+            "spelled out"
+        );
+
+        let plain_raw = "I want Claude on the board.";
+        let plain_reply = reply_with(
+            vec![replacement("Claude", "CLAUDE")],
+            "I want CLAUDE on the board.",
+        );
+        let filtered = filter(plain_raw, &plain_reply);
+        assert_eq!(filtered, plain_reply, "not spelled out");
+        assert_eq!(
+            filtered.transcript, "I want CLAUDE on the board.",
+            "unchanged"
+        );
+
+        let short_raw = "I filed it in Gtd, spelled G-T-D.";
+        let short_reply = reply_with(vec![replacement("Gtd", "GTD")], short_raw);
+        assert_eq!(
+            filter(short_raw, &short_reply),
+            short_reply,
+            "three letters"
+        );
+
+        let caps_raw = "I want CLAUDE spelled C-L-A-U-D-E.";
+        let caps_reply = reply_with(vec![replacement("CLAUDE", "CLAUDE")], caps_raw);
+        assert_eq!(filter(caps_raw, &caps_reply), caps_reply, "already caps");
+    }
+
+    #[test]
+    fn filter_reverts_a_distant_respelling() {
+        let raw = "Ask Clawed to check the board.";
+        let distant = reply_with(vec![replacement("Yukara", "Chie")], raw);
+        assert_eq!(
+            filter(raw, &distant).replacements,
+            Vec::<Replacement>::new(),
+            "distant"
+        );
+        assert_eq!(filter(raw, &distant).transcript, raw, "reverted");
+
+        let threshold = reply_with(vec![replacement("Yagura", "YAGNI")], raw);
+        assert_eq!(
+            filter(raw, &threshold).replacements,
+            Vec::<Replacement>::new(),
+            "threshold"
+        );
+
+        let close = reply_with(vec![replacement("Talus", "Talos")], raw);
+        assert_eq!(filter(raw, &close), close, "close");
+
+        let spelled_raw = "I want Yagura spelled Y-A-G-U-R-A.";
+        let spelled_reply = reply_with(vec![replacement("Yagura", "Yakura")], spelled_raw);
+        assert_eq!(
+            filter(spelled_raw, &spelled_reply).replacements,
+            Vec::<Replacement>::new(),
+            "spelled word"
+        );
+
+        let grounded_raw = "Spell it A-I-J-U.";
+        let grounded_reply = reply_with(vec![replacement("Clawed", "Aijulabs")], grounded_raw);
+        assert_eq!(
+            filter(grounded_raw, &grounded_reply),
+            grounded_reply,
+            "grounded"
+        );
+    }
+
+    #[test]
+    fn filter_reverts_by_replacing_the_reply_word() {
+        let twice_raw = "Yukara met Yukara at nine.";
+        let twice = Reply {
+            replacements: vec![replacement("Yukara", "Chie"), replacement("Yukara", "Chie")],
+            learned: vec!["Kept".to_string()],
+            transcript: "Chie met Chie at nine.".to_string(),
+        };
+        assert_eq!(
+            filter(twice_raw, &twice),
+            Reply {
+                replacements: vec![],
+                learned: vec!["Kept".to_string()],
+                transcript: "Yukara met Yukara at nine.".to_string(),
+            },
+            "progressive"
+        );
+
+        let mixed_raw = "Yukara says Talus is up.";
+        let mixed = Reply {
+            replacements: vec![replacement("Yukara", "Chie"), replacement("Talus", "Talos")],
+            learned: vec!["Aiju".to_string()],
+            transcript: "Chie says Talos is up.".to_string(),
+        };
+        assert_eq!(
+            filter(mixed_raw, &mixed),
+            Reply {
+                replacements: vec![replacement("Talus", "Talos")],
+                learned: vec!["Aiju".to_string()],
+                transcript: "Yukara says Talos is up.".to_string(),
+            },
+            "good kept in place"
+        );
+    }
+
+    #[test]
+    fn learned_terms_keeps_what_the_speaker_spelled() {
+        let raw = "I want A-I-J-U on the board.";
+        let reply = Reply {
+            replacements: vec![],
+            learned: strings(&["Aij", "Aiju Labs Extra Words", "Aiju.Labs", "Aiju!", ""]),
+            transcript: "I want Aiju on the board.".to_string(),
+        };
+        assert_eq!(learned_terms(raw, &reply, &[]), ["Aiju"], "kept");
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn learned_terms_titles_and_expands() {
+        let caps_raw = "I want A-I-J-U on the board.";
+        let caps = Reply {
+            replacements: vec![],
+            learned: strings(&["AIJU"]),
+            transcript: "I want Aiju on the board.".to_string(),
+        };
+        assert_eq!(learned_terms(caps_raw, &caps, &[]), ["Aiju"], "titled");
+
+        let labs_raw = "Use A-I-J-U Labs on the board.";
+        let joined = Reply {
+            replacements: vec![],
+            learned: strings(&["AijuLabs"]),
+            transcript: "Use Aiju Labs on the board.".to_string(),
+        };
+        assert_eq!(
+            learned_terms(labs_raw, &joined, &[]),
+            strings(&["Aiju", "Aiju Labs"]),
+            "expanded"
+        );
+
+        let shouted = Reply {
+            replacements: vec![],
+            learned: strings(&["AIJULABS"]),
+            transcript: "Use Aiju Labs on the board.".to_string(),
+        };
+        assert_eq!(
+            learned_terms(labs_raw, &shouted, &[]),
+            strings(&["Aiju", "Aiju Labs"]),
+            "expanded from caps"
+        );
+    }
+
+    #[test]
+    fn learned_terms_applies_its_keep_rules() {
+        let raw = "I want A-I-J-U on the board.";
+        let transcript = "I want Aiju on the board.";
+        let with = |learned: &[&str]| {
+            let reply = Reply {
+                replacements: vec![],
+                learned: strings(learned),
+                transcript: transcript.to_string(),
+            };
+            learned_terms(raw, &reply, &[])
+        };
+        assert_eq!(
+            learned_terms(
+                raw,
+                &Reply {
+                    replacements: vec![],
+                    learned: strings(&["Aiju"]),
+                    transcript: transcript.to_string(),
+                },
+                &["aiju".to_string()]
+            ),
+            Vec::<String>::new(),
+            "already a term"
+        );
+        assert_eq!(with(&["Zed"]), Vec::<String>::new(), "grounded nowhere");
+        assert_eq!(with(&["Aiju", "Board"]), ["Aiju"], "board not grounded");
+        assert_eq!(with(&["Aiju", "aiju"]), ["Aiju"], "case-insensitive");
+        assert_eq!(
+            with(&["Aiju", "Zedx", "Aiju Labs"]),
+            ["Aiju"],
+            "ungrounded and multi-word"
+        );
+
+        let many_raw = "I want A-I-J-U on the board.";
+        let many = Reply {
+            replacements: vec![],
+            learned: strings(&["Aiju", "Aijua", "Aijub", "Aijuc", "Aijud", "Aijue"]),
+            transcript: "Aiju Aijua Aijub Aijuc Aijud Aijue".to_string(),
+        };
+        assert_eq!(
+            learned_terms(many_raw, &many, &[]),
+            Vec::<String>::new(),
+            "capped"
+        );
+
+        let yagura_raw = "The Yagura release is late.";
+        let yagura = Reply {
+            replacements: vec![replacement("Yakura", "Yagura")],
+            learned: strings(&["Yagura"]),
+            transcript: yagura_raw.to_string(),
+        };
+        assert_eq!(
+            learned_terms(yagura_raw, &yagura, &[]),
+            ["Yagura"],
+            "from a replacement"
+        );
+
+        let clawed_raw = "Ask Clawed to check the board.";
+        let clawed = Reply {
+            replacements: vec![replacement("Clawed", "Claude")],
+            learned: strings(&["Claude"]),
+            transcript: "Ask Claude to check the board.".to_string(),
+        };
+        assert_eq!(
+            learned_terms(clawed_raw, &clawed, &[]),
+            Vec::<String>::new(),
+            "too distant"
+        );
+    }
+
+    #[test]
+    fn accept_reply_judges_the_filtered_transcript() {
+        let raw = "Ask Clawed to check the board.";
+        let reply = reply_with(
+            vec![replacement("Clawed", "Chie")],
+            "Ask Chie to check the board.",
+        );
+        assert_eq!(
+            accept_reply(raw, &reply, &[]),
+            Ok((raw.to_string(), Vec::new())),
+            "reverted"
+        );
+        let filtered = filter(raw, &reply);
+        assert_eq!(
+            accept(raw, &filtered.transcript, &[]),
+            Ok(raw.to_string()),
+            "judged as accept judges it"
+        );
+    }
+
+    #[test]
+    fn accept_reply_exempts_a_spelled_term_from_the_budget() {
+        let raw = "I want A-I-J-U to check the board.";
+        let transcript = "I want Aiju to check the new deployment plan board.";
+        let reply = Reply {
+            replacements: vec![],
+            learned: strings(&["Aiju"]),
+            transcript: transcript.to_string(),
+        };
+        assert_eq!(
+            accept(raw, transcript, &[]),
+            Err(Reject::NewWords),
+            "over budget alone"
+        );
+        assert_eq!(
+            accept_reply(raw, &reply, &[]),
+            Ok((transcript.to_string(), strings(&["Aiju"]))),
+            "the spelled term is exempt"
         );
     }
 

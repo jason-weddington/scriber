@@ -805,6 +805,49 @@ mod tests {
         assert_eq!(fakes.cleaner.calls.load(Ordering::SeqCst), 0, "never asked");
     }
 
+    fn cleanup_label(dir: &TempDir) -> String {
+        let text =
+            std::fs::read_to_string(dir.path().join("library/20261026-140309/entry.json")).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(&text).unwrap();
+        entry
+            .get("cleanup")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn a_json_cleanup_reply_is_judged_by_its_fields() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"cleanup":true}"#);
+        write(&dir, "vocabulary.txt", b"Zed\n");
+        let fakes = cleaning(Ok(
+            r#"{"replacements":[{"from":"Yukara","to":"Zed"}],"learned":[],"transcript":"Zed world"}"#,
+        ));
+        let (engine, _rx) = fakes.open(library_config(&dir));
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "Yukara world",
+            "the bogus replacement is reverted"
+        );
+    }
+
+    #[test]
+    fn a_braced_reply_that_is_not_a_reply_is_literal_text() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"cleanup":true}"#);
+        let fakes = cleaning(Ok(r#"{"transcript":3}"#));
+        let (engine, _rx) = fakes.open(library_config(&dir));
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "the raw text"
+        );
+        assert_eq!(cleanup_label(&dir), "rejected-cut-off", "literal text");
+    }
+
     #[test]
     fn a_slow_summary_never_holds_up_the_next_session() {
         let dir = TempDir::new().unwrap();

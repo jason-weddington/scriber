@@ -3,11 +3,12 @@
 //! model the call names (or the adapter's default), and the listing of the
 //! installed models ([`installed_models`], `GET /api/tags`, embedding models hidden).
 //! A reply containing `</think>` is cut to the trimmed text after its last occurrence, and an empty remainder is an error.
-//! The cleanup request sends Ollama's `format` with the one-field `transcript` schema, and `clean` returns that field, so a reply that is not JSON or has no string `transcript` is an error quoting the start of the reply.
+//! The cleanup request sends Ollama's `format` with the three-field `replacements`/`learned`/`transcript` schema, and `clean` returns the structured reply, so a reply that is not JSON or has no string `transcript` is an error quoting the start of the reply.
 //! It also keeps the cleanup model loaded ([`Warmer`]): `POST /api/generate` with no prompt and `keep_alive` [`KEEP_ALIVE`] loads it, and `keep_alive` 0 releases it; every chat request sends [`KEEP_ALIVE`] too, so it never shortens the model's stay.
 
 use std::time::Duration;
 
+use scriber_core::cleanup;
 use scriber_core::ports::{Cleaner, PortError, Summarizer, fail};
 use serde_json::{Value, json};
 
@@ -76,7 +77,7 @@ impl Ollama {
     }
 
     /// `model`'s reply to `user` under the `system` prompt: one
-    /// non-streaming chat request, thinking off, within the timeout; a reply containing `</think>` is cut to the trimmed text after its last occurrence (see `after_think`). With a `format` the request sends it as Ollama's structured output (the cleanup request sends the one-field `transcript` schema, and `clean` returns that field, so a reply that is not JSON or has no string `transcript` is an error quoting the start of the reply).
+    /// non-streaming chat request, thinking off, within the timeout; a reply containing `</think>` is cut to the trimmed text after its last occurrence (see `after_think`). With a `format` the request sends it as Ollama's structured output (the cleanup request sends the three-field `replacements`/`learned`/`transcript` schema, and `clean` returns the structured reply, so a reply that is not JSON or has no string `transcript` is an error quoting the start of the reply).
     fn chat(
         &self,
         model: &str,
@@ -176,19 +177,40 @@ impl Summarizer for Ollama {
 }
 
 impl Cleaner for Ollama {
-    fn clean(&self, model: &str, system: &str, request: &str) -> Result<String, PortError> {
+    fn clean(&self, model: &str, system: &str, request: &str) -> Result<cleanup::Reply, PortError> {
         let schema = json!({
             "type": "object",
-            "properties": {"transcript": {"type": "string"}},
-            "required": ["transcript"],
+            "properties": {
+                "replacements": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "string"},
+                            "to": {"type": "string"},
+                        },
+                        "required": ["from", "to"],
+                    },
+                },
+                "learned": {"type": "array", "items": {"type": "string"}},
+                "transcript": {"type": "string"},
+            },
+            "required": ["replacements", "learned", "transcript"],
         });
         let content = self.chat(self.model_for(model), system, request, Some(&schema))?;
-        transcript_field(&content)
+        reply_field(&content)
     }
 }
 
-/// The string `transcript` field of the JSON `content`, verbatim.
-fn transcript_field(content: &str) -> Result<String, PortError> {
+/// The array at `key` in `value`, empty when it is absent or not a list of
+/// `T`.
+fn array_field<T: serde::de::DeserializeOwned>(value: &Value, key: &str) -> Vec<T> {
+    serde_json::from_value(value.get(key).cloned().unwrap_or(Value::Null)).unwrap_or_default()
+}
+
+/// The structured reply in the JSON `content`: the string `transcript` field
+/// verbatim, and the two arrays (empty when absent or unusable).
+fn reply_field(content: &str) -> Result<cleanup::Reply, PortError> {
     let excerpt = || {
         let start: String = content.chars().take(200).collect();
         if content.chars().count() > 200 {
@@ -199,11 +221,15 @@ fn transcript_field(content: &str) -> Result<String, PortError> {
     };
     let value: Value = serde_json::from_str(content)
         .map_err(|_| PortError(format!("the reply is not JSON: {}", excerpt())))?;
-    value
+    let transcript = value
         .get("transcript")
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| PortError(format!("the reply has no transcript field: {}", excerpt())))
+        .ok_or_else(|| PortError(format!("the reply has no transcript field: {}", excerpt())))?;
+    Ok(cleanup::Reply {
+        replacements: array_field(&value, "replacements"),
+        learned: array_field(&value, "learned"),
+        transcript: transcript.to_string(),
+    })
 }
 
 /// Whether a `/api/tags` entry is a model that can write text.
