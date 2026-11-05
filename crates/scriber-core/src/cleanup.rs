@@ -109,7 +109,7 @@ pub fn request(text: &str, terms: &[String]) -> String {
 /// Why a reply was not used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reject {
-    /// The reply is empty or blank.
+    /// The reply is empty or blank, or nothing but the wrapper characters [`accept`] strips.
     Empty,
     /// The reply contains a code fence.
     Fenced,
@@ -177,8 +177,10 @@ fn tail(words: &[String]) -> &[String] {
         .unwrap_or_default()
 }
 
-/// The model's `reply` for transcript `raw` with glossary `terms`, trimmed,
-/// when it is a faithful cleanup; otherwise the first rule it breaks, in
+/// The model's `reply` for transcript `raw` with glossary `terms`, trimmed of
+/// leading and trailing whitespace and of any trailing `"`, `\u{201d}` or `}`
+/// that `raw` does not end with, when it is a faithful cleanup; otherwise the
+/// first rule it breaks, in
 /// this order: empty; contains three backticks; the transcript or the reply
 /// has no word; the transcript has at least [`MIN_WORDS_FOR_RATIO`] words
 /// and the reply fewer than a third as many; the reply's words, less any
@@ -189,7 +191,10 @@ fn tail(words: &[String]) -> &[String] {
 ///
 /// The [`Reject`] for the first rule the reply breaks.
 pub fn accept(raw: &str, reply: &str, terms: &[String]) -> Result<String, Reject> {
-    let text = reply.trim();
+    let raw_end = raw.trim_end();
+    let text = reply.trim_start().trim_end_matches(|c: char| {
+        c.is_whitespace() || (matches!(c, '"' | '\u{201d}' | '}') && !raw_end.ends_with(c))
+    });
     if text.is_empty() {
         return Err(Reject::Empty);
     }

@@ -545,6 +545,83 @@ mod tests {
     }
 
     #[test]
+    fn leaked_trailing_json_braces_and_quotes_are_stripped() {
+        assert_eq!(
+            accept(
+                "Before we get started, though, what questions do you have for me?",
+                "Before we get started, though, what questions do you have for me?\" }",
+                &[]
+            ),
+            Ok("Before we get started, though, what questions do you have for me?".to_string()),
+            "a leaked quote, space and brace after the transcript"
+        );
+        assert_eq!(
+            accept("Ship it.", "Ship it.\"}", &[]),
+            Ok("Ship it.".to_string()),
+            "a leaked quote then brace"
+        );
+        assert_eq!(
+            accept("Ship it.", "Ship it.}\"", &[]),
+            Ok("Ship it.".to_string()),
+            "a leaked brace then quote"
+        );
+        assert_eq!(
+            accept("Ship it.", "Ship it.}\u{201d}", &[]),
+            Ok("Ship it.".to_string()),
+            "a leaked brace then right double quotation mark"
+        );
+        assert_eq!(
+            accept("He said \"yes\"", "He said \"yes\"}", &[]),
+            Ok("He said \"yes\"".to_string()),
+            "raw keeps its own quote"
+        );
+        assert_eq!(
+            accept(
+                "He said \u{201c}yes\u{201d}",
+                "He said \u{201c}yes\u{201d}}",
+                &[]
+            ),
+            Ok("He said \u{201c}yes\u{201d}".to_string()),
+            "raw keeps its own right double quotation mark"
+        );
+        assert_eq!(
+            accept("Write {x}", "Write {x}\"", &[]),
+            Ok("Write {x}".to_string()),
+            "raw keeps its own brace"
+        );
+        assert_eq!(
+            accept("He said \"yes\" ", "He said \"yes\" }", &[]),
+            Ok("He said \"yes\"".to_string()),
+            "raw's trailing space is not part of its ending"
+        );
+        assert_eq!(
+            accept("Write {x} ", "Write {x}\"", &[]),
+            Ok("Write {x}".to_string()),
+            "raw's trailing space keeps its own brace"
+        );
+        assert_eq!(
+            accept("He said \"yes\"", "He said \"yes\"\"}", &[]),
+            Ok("He said \"yes\"\"".to_string()),
+            "a leak equal to raw's last character is kept, the documented limit"
+        );
+        assert_eq!(
+            accept("Write {x}", "Write {x}}\"", &[]),
+            Ok("Write {x}}".to_string()),
+            "only the run outside raw's own tail is stripped"
+        );
+        assert_eq!(
+            accept_reply("Ship it.", &Reply::new("Ship it.\"}"), &[]),
+            Ok(("Ship it.".to_string(), Vec::new())),
+            "the same stripping through accept_reply"
+        );
+        assert_eq!(
+            accept("Ship it.", "\"}", &[]),
+            Err(Reject::Empty),
+            "a reply that is only a leak is empty"
+        );
+    }
+
+    #[test]
     fn empty_fenced_and_wordless_replies_are_refused() {
         assert_eq!(accept(CLAWED, "", &[]), Err(Reject::Empty), "empty");
         assert_eq!(accept(CLAWED, "   ", &[]), Err(Reject::Empty), "blank");
