@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.6.0 - 2026-11-05
+#### Features
+- (**7736710e**) Structured cleanup replacements and self-learning vocabulary loop - (8a9130f) - claude-code-sonnet, *Claude Sonnet 5.5*
+#### Bug Fixes
+- wrap the no-speech-was-heard warning on narrow windows - (7860066) - Jason Weddington
+#### Tests
+- (**cleanup**) cover boundary conditions for mutation testing - (7346191) - Jason Weddington
+
+- - -
+
 ## v0.5.0 - 2026-11-04
 #### Features
 - Menu-bar dictation: a Scriber icon in the macOS menu bar with New/Record, Pause, Done, Discard and Quit, background running, and a global toggle shortcut - (8e54598) - talos-deepseek
