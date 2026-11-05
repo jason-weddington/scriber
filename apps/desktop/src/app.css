@@ -691,7 +691,7 @@ button.mic {
   color: var(--accent);
 }
 
-/* The one-line message slot: fixed height, never wraps, so a message appearing moves nothing. */
+/* The one-line message slot: fixed height, never wraps, so a message appearing moves nothing; wraps when a finished session heard nothing. */
 .status-row {
   flex-shrink: 0;
   display: flex;
@@ -699,6 +699,11 @@ button.mic {
   gap: 8px;
   height: 20px;
   min-width: 0;
+}
+
+.status-row.wrap {
+  height: auto;
+  min-height: 20px;
 }
 
 .status-row > p {
@@ -709,6 +714,12 @@ button.mic {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.status-row.wrap > p {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 button.row-action {

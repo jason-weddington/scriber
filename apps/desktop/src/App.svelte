@@ -609,7 +609,7 @@
       <p class="error" role="alert">Could not read the session: {loadError}</p>
       <button type="button" onclick={load}>Try again</button>
     {:else if snapshot !== null}
-      <div class="status-row">
+      <div class="status-row" class:wrap={snapshot.phase === 'finished' && snapshot.text === '' && alert === null}>
         <p class="status" aria-live="polite" title={line} class:visually-hidden={alert !== null}>{line}</p>
         {#if alert !== null}
           <p class="error" role="alert" title={alert}>{alert}</p>

@@ -165,9 +165,13 @@ test('a session left unfinished at the last launch is offered for Retry', async 
 });
 
 test('silence says nothing was heard and leaves the clipboard alone', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 380 });
   await open(page, { mic: 'silent' });
   await press(page, 'New', 'Record', 'Done');
   await expect(status(page)).toContainText('No speech was heard.');
+  expect(
+    await status(page).evaluate((e) => e.scrollWidth <= e.clientWidth && e.scrollHeight <= e.clientHeight && e.clientHeight > 20),
+  ).toBe(true);
   expect(await copied(page)).toEqual([]);
   await expect(button(page, 'Copy')).toBeDisabled();
 });
