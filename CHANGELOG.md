@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.6.1 - 2026-11-05
+#### Bug Fixes
+- (**933dce41**) Strip leaked trailing JSON braces and quotes from cleanup replies - (816176e) - claude-code-sonnet, *Claude Sonnet 5.5*
+
+- - -
+
 ## v0.6.0 - 2026-11-05
 #### Features
 - (**7736710e**) Structured cleanup replacements and self-learning vocabulary loop - (8a9130f) - claude-code-sonnet, *Claude Sonnet 5.5*
