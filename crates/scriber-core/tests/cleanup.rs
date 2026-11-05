@@ -189,6 +189,9 @@ mod tests {
         let close = reply_with(vec![replacement("Talus", "Talos")], raw);
         assert_eq!(filter(raw, &close), close, "close");
 
+        let boundary = reply_with(vec![replacement("Talus", "Tolas")], raw);
+        assert_eq!(filter(raw, &boundary), boundary, "at 40% boundary");
+
         let spelled_raw = "I want Yagura spelled Y-A-G-U-R-A.";
         let spelled_reply = reply_with(vec![replacement("Yagura", "Yakura")], spelled_raw);
         assert_eq!(
@@ -243,13 +246,26 @@ mod tests {
 
     #[test]
     fn learned_terms_keeps_what_the_speaker_spelled() {
-        let raw = "I want A-I-J-U on the board.";
+        let raw = "I want A-I-J and A-I-J-U on the board.";
         let reply = Reply {
             replacements: vec![],
-            learned: strings(&["Aij", "Aiju Labs Extra Words", "Aiju.Labs", "Aiju!", ""]),
-            transcript: "I want Aiju on the board.".to_string(),
+            learned: strings(&[
+                "Aij",
+                "Aiju Labs Extra Words",
+                "Aiju.Core",
+                "Aiju!",
+                "",
+                "Aiju-Core",
+            ]),
+            transcript:
+                "I want Aij and Aiju and Aiju Labs Extra Words and Aiju.Core and Aiju-Core on the board."
+                    .to_string(),
         };
-        assert_eq!(learned_terms(raw, &reply, &[]), ["Aiju"], "kept");
+        assert_eq!(
+            learned_terms(raw, &reply, &[]),
+            ["Aiju", "Aiju-Core"],
+            "kept"
+        );
     }
 
     fn strings(items: &[&str]) -> Vec<String> {
@@ -325,6 +341,16 @@ mod tests {
         );
 
         let many_raw = "I want A-I-J-U on the board.";
+        let five = Reply {
+            replacements: vec![],
+            learned: strings(&["Aiju", "Aijua", "Aijub", "Aijuc", "Aijud"]),
+            transcript: "Aiju Aijua Aijub Aijuc Aijud".to_string(),
+        };
+        assert_eq!(
+            learned_terms(many_raw, &five, &[]),
+            strings(&["Aiju", "Aijua", "Aijub", "Aijuc", "Aijud"]),
+            "five allowed"
+        );
         let many = Reply {
             replacements: vec![],
             learned: strings(&["Aiju", "Aijua", "Aijub", "Aijuc", "Aijud", "Aijue"]),

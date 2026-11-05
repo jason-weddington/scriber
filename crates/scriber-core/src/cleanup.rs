@@ -427,13 +427,7 @@ pub fn accept_reply(
             .iter()
             .any(|s| crate::learn::key(candidate).contains(s))
         {
-            augmented.extend(
-                candidate
-                    .split_whitespace()
-                    .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
-                    .filter(|word| !word.is_empty())
-                    .map(str::to_string),
-            );
+            augmented.push(candidate.clone());
         }
     }
     let clean = accept(raw, &filtered.transcript, &augmented)?;
