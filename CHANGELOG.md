@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.8.0 - 2026-11-07
+#### Features
+- (**1886362a**) scriber-engine StreamRecorder: a Recorder adapter fed pushed 16 kHz PCM chunks, reusing the core Tap and feeder, selected through EngineConfig.recorder - (3becde9) - claude-code-sonnet, *Claude Sonnet 5.5*
+
+- - -
+
 ## v0.7.0 - 2026-11-07
 #### Features
 - (**f007202e**) While local-AI post-processing runs, the status says 'Post-processing with local AI…' instead of 'Transcribing…' - (68051b4) - claude-code-sonnet, *Claude Sonnet 5.5*
