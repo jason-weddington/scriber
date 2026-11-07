@@ -15,8 +15,8 @@ use scriber_core::cleanup;
 use scriber_core::sync::LoadOnce;
 use scriber_engine::{
     Adapters, Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Engine, EngineConfig,
-    Event, InputDevices, LevelSink, LocalTime, Phrase, PortError, Recorder, Snapshot, Summarizer,
-    Transcriber, Warmer,
+    Event, InputDevices, LevelSink, LocalTime, Phrase, PortError, Recorder, Snapshot,
+    StreamRecorder, Summarizer, Transcriber, Warmer,
 };
 
 /// How long a test waits for anything.
@@ -506,13 +506,38 @@ impl Fakes {
 
     /// An engine over clones of the fakes, and its events.
     pub(crate) fn open(&self, config: EngineConfig) -> (Engine, Receiver<Event>) {
+        let recorder = self.recorder.clone();
+        self.open_over(config, move |level| {
+            *recorder
+                .level
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(level);
+            Box::new(recorder)
+        })
+    }
+
+    /// [`Self::open`] with `stream` as the recorder, given the level sink.
+    pub(crate) fn open_with_stream(
+        &self,
+        config: EngineConfig,
+        stream: StreamRecorder,
+    ) -> (Engine, Receiver<Event>) {
+        self.open_over(config, move |level| {
+            stream.with_level(level);
+            Box::new(stream)
+        })
+    }
+
+    /// The one body of both openers: the fakes, with the recorder `recorder`
+    /// builds from the level sink.
+    fn open_over(
+        &self,
+        config: EngineConfig,
+        recorder: impl FnOnce(LevelSink) -> Box<dyn Recorder + Send + Sync> + 'static,
+    ) -> (Engine, Receiver<Event>) {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let (recorder, transcriber, downloader) = (
-            self.recorder.clone(),
-            self.transcriber.clone(),
-            self.downloader.clone(),
-        );
+        let (transcriber, downloader) = (self.transcriber.clone(), self.downloader.clone());
         let (encoder, summarizer, cleaner) = (
             self.encoder.clone(),
             self.summarizer.clone(),
@@ -521,21 +546,15 @@ impl Fakes {
         let warmer = self.warmer.clone();
         let engine = Engine::with_adapters(
             config,
-            move |level| {
-                *recorder
-                    .level
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(level);
-                Adapters {
-                    recorder: Box::new(recorder),
-                    transcriber: Box::new(transcriber),
-                    downloader: Box::new(downloader),
-                    clock: Box::new(FakeClock),
-                    encoder: Box::new(encoder),
-                    summarizer: Box::new(summarizer),
-                    cleaner: Box::new(cleaner),
-                    warmer: Arc::new(warmer),
-                }
+            move |level| Adapters {
+                recorder: recorder(level),
+                transcriber: Box::new(transcriber),
+                downloader: Box::new(downloader),
+                clock: Box::new(FakeClock),
+                encoder: Box::new(encoder),
+                summarizer: Box::new(summarizer),
+                cleaner: Box::new(cleaner),
+                warmer: Arc::new(warmer),
             },
             events(tx),
         );

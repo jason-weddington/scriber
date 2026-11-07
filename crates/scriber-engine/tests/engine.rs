@@ -15,7 +15,7 @@ mod tests {
     use scriber_engine::{
         Action, Clipboard, DEFAULT_OLLAMA_URL, DEFAULT_SUMMARY_MODEL, DictationError, Download,
         Engine, EngineConfig, EngineError, Event, InputDevices, LibraryEntry, ModelSource, Phase,
-        PortError, Settings, ShutdownReport, Source, level_sink,
+        PortError, Recorder, Settings, ShutdownReport, Source, StreamRecorder, level_sink,
     };
     use tempfile::TempDir;
 
@@ -2533,6 +2533,103 @@ mod tests {
             recording.microphone.as_deref(),
             Some("AirPods Pro"),
             "the snapshot names it"
+        );
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::as_conversions,
+        reason = "a test sine in -0.5..0.5 scaled to i16 fits"
+    )]
+    fn sine_i16(samples: usize) -> Vec<i16> {
+        (0..samples)
+            .map(|i| {
+                let i = f32::from(u16::try_from(i).unwrap());
+                let x = 0.5 * (2.0 * std::f32::consts::PI * 440.0 * i / 16_000.0).sin();
+                (x * 32767.0).round() as i16
+            })
+            .collect()
+    }
+
+    #[test]
+    fn open_uses_the_configs_stream_recorder_and_wires_its_level() {
+        let dir = TempDir::new().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut c = config(&dir);
+        c.model = ModelSource::Local(dir.path().join("absent.bin"));
+        let stream = StreamRecorder::new();
+        c.recorder = Some(stream.clone());
+        let _engine = Engine::open(c, events(Mutex::new(tx)));
+        let _name = Recorder::start(&stream, "", 0).unwrap();
+        for chunk in sine_i16(16_000).chunks(4_000) {
+            stream.push_pcm16(chunk);
+        }
+        let started = Instant::now();
+        loop {
+            match rx.recv_timeout(PATIENCE.saturating_sub(started.elapsed())) {
+                Ok(Event::Level(l)) if l > 0.0 => break,
+                Ok(_) => {}
+                Err(e) => panic!("no level: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_session_records_pauses_and_finishes_from_pushed_audio() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::with(FakeTranscriber::answering(&[Ok("one"), Ok("two")]));
+        let stream = StreamRecorder::new();
+        let (engine, rx) = fakes.open_with_stream(config(&dir), stream.clone());
+        let second = sine_i16(16_000);
+        assert_eq!(engine.record().unwrap().phase, Phase::Recording, "record");
+        for chunk in second.chunks(4_000) {
+            stream.push_pcm16(chunk);
+        }
+        assert_eq!(engine.pause().unwrap().phase, Phase::Paused, "pause");
+        let before = stream.dropped_samples();
+        stream.push_pcm16(&second[..4_000]);
+        assert_eq!(stream.dropped_samples() - before, 4_000, "paused drops");
+        assert_eq!(engine.resume().unwrap().phase, Phase::Recording, "resume");
+        for chunk in second.chunks(4_000) {
+            stream.push_pcm16(chunk);
+        }
+        assert_eq!(engine.stop().unwrap().phase, Phase::Transcribing, "stop");
+        assert_eq!(
+            engine.wait(PATIENCE),
+            Ok("one\n\ntwo".to_string()),
+            "two paragraphs"
+        );
+        assert!(
+            rx.try_iter()
+                .any(|e| matches!(e, Event::Level(l) if l > 0.0)),
+            "a level arrived"
+        );
+    }
+
+    #[test]
+    fn the_stream_recorders_label_is_the_microphone() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open_with_stream(config(&dir), StreamRecorder::new());
+        let choose = |name: &str| Settings {
+            input_device: name.to_string(),
+            silence_split_ms: 0,
+            keep_segments: false,
+            ..engine.settings()
+        };
+        let _saved = engine.set_settings(choose("Pixel 9 mic")).unwrap();
+        let recording = engine.record().unwrap();
+        assert_eq!(recording.microphone.as_deref(), Some("Pixel 9 mic"));
+        assert_eq!(
+            engine.input_devices().unwrap().default_device.as_deref(),
+            Some("Pixel 9 mic")
+        );
+        let _paused = engine.pause().unwrap();
+        let _cleared = engine.set_settings(choose("")).unwrap();
+        let resumed = engine.resume().unwrap();
+        assert_eq!(
+            resumed.microphone.as_deref(),
+            Some("Remote microphone"),
+            "the default label"
         );
     }
 

@@ -57,6 +57,7 @@ pub mod extract;
 mod files;
 mod net;
 mod ollama;
+mod stream;
 mod warm;
 mod whisper;
 
@@ -93,6 +94,7 @@ pub use scriber_core::ports::{
     Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, LocalTime, Phrase, PortError,
     Recorder, Summarizer, Transcriber, fail,
 };
+pub use stream::{STREAM_CHANNELS, STREAM_DEFAULT_LABEL, STREAM_SAMPLE_RATE, StreamRecorder};
 pub use warm::Warmer;
 pub use whisper::{DetailedPhrase, DetailedToken, Whisper, vad_spans};
 
@@ -152,6 +154,9 @@ pub struct EngineConfig {
     /// How often the cleanup model's keep-alive is renewed while the cleanup
     /// setting is on ([`KEEP_WARM_INTERVAL`]).
     pub keep_warm_every: Duration,
+    /// Tightbeam's way to feed remote audio: a [`StreamRecorder`] the app
+    /// pushes samples into. `None` is the cpal device recorder.
+    pub recorder: Option<StreamRecorder>,
 }
 
 impl EngineConfig {
@@ -169,6 +174,7 @@ impl EngineConfig {
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             editor: PathBuf::from(OPEN),
             keep_warm_every: KEEP_WARM_INTERVAL,
+            recorder: None,
         }
     }
 }
@@ -326,7 +332,8 @@ struct Inner {
 }
 
 /// The recorder's split notice for the engine behind `weak`. It runs on the
-/// audio thread and only spawns a scriber-split thread, which takes the
+/// audio thread (for a `StreamRecorder`, the thread that pushes, before the
+/// push returns) and only spawns a scriber-split thread, which takes the
 /// closed segments into the session and reports the new snapshot. Locking
 /// the session on the audio thread could deadlock: Pause holds the lock while
 /// `stop` drops the stream, which waits for the audio callback. A failed
@@ -405,7 +412,7 @@ pub struct Engine(Arc<Inner>);
 impl Engine {
     /// Opens the session in `config.data_dir` with the real adapters: the
     /// input device the settings choose (the default one when they choose
-    /// none), whisper.cpp and HTTPS. A previous session there
+    /// none; or the config's [`StreamRecorder`] when it has one), whisper.cpp and HTTPS. A previous session there
     /// is recovered: a finished one with its transcript, an unfinished one
     /// failed and waiting for [`Self::retry`]. The model warms up, or for
     /// [`ModelSource::Download`] downloads first when missing, on a job
@@ -416,7 +423,8 @@ impl Engine {
     /// (or scriber-split) thread with the lock held otherwise, so `events`
     /// must not call any `Engine` method (it would deadlock); forward the
     /// event to a channel instead. [`Event::Level`] is delivered on the audio
-    /// thread and must return quickly.
+    /// thread (for a [`StreamRecorder`], the thread that calls `push`, before
+    /// `push` returns) and must return quickly; it must not block on the pusher.
     ///
     /// ```rust,no_run
     /// use std::sync::Arc;
@@ -436,10 +444,17 @@ impl Engine {
         let data_dir = config.data_dir.clone();
         let ollama_url = config.ollama_url.clone();
         let summary_model = config.summary_model.clone();
+        let stream = config.recorder.clone();
         Self::with_adapters(
             config,
             move |level| Adapters {
-                recorder: Box::new(CpalRecorder::new(level)),
+                recorder: match stream {
+                    Some(s) => {
+                        s.with_level(level);
+                        Box::new(s)
+                    }
+                    None => Box::new(CpalRecorder::new(level)),
+                },
                 transcriber: Box::new(transcriber),
                 downloader: Box::new(HttpDownloader::default()),
                 clock: Box::new(LocalClock),
@@ -463,6 +478,7 @@ impl Engine {
     /// [`Self::open`] over the adapters `make` builds from the level sink it
     /// is given (which reports to `events`). The threading contract is
     /// [`Self::open`]'s: never call the engine from `events`.
+    /// `config.recorder` is ignored here; supply the recorder in `make`.
     ///
     /// ```rust,no_run
     /// use std::sync::Arc;
@@ -503,6 +519,7 @@ impl Engine {
             summary_model,
             editor,
             keep_warm_every,
+            recorder: _,
         } = config;
         let keep_warm = KeepWarm::start(Arc::clone(&adapters.warmer), keep_warm_every);
         let clipboard = clipboard.unwrap_or_else(|| Arc::new(NoClipboard));
