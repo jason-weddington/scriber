@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.7.0 - 2026-11-07
+#### Features
+- (**f007202e**) While local-AI post-processing runs, the status says 'Post-processing with local AI…' instead of 'Transcribing…' - (68051b4) - claude-code-sonnet, *Claude Sonnet 5.5*
+
+- - -
+
 ## v0.6.1 - 2026-11-05
 #### Bug Fixes
 - (**933dce41**) Strip leaked trailing JSON braces and quotes from cleanup replies - (816176e) - claude-code-sonnet, *Claude Sonnet 5.5*
