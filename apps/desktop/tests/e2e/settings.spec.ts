@@ -276,7 +276,7 @@ test('a post-processing switch that cannot be saved says why', async ({ page }) 
 test('with post-processing on, the transcript waits for the cleanup', async ({ page }) => {
   await open(page, { cleanup: 'on', hold: 'cleanup' });
   await press(page, 'New', 'Record', 'Done');
-  await expect(status(page)).toHaveText('Transcribing…');
+  await expect(status(page)).toHaveText('Post-processing with local AI…');
   expect(await copied(page)).toEqual([]);
   await release(page, 'cleanup');
   await expect(page.getByRole('textbox', { name: 'Transcript' })).toHaveValue('This is part 1 of the dictation.');

@@ -133,7 +133,7 @@ async function settled(): Promise<void> {
 
 test.describe('the mock speaks the Rust JSON shapes', () => {
   test('every snapshot field, with the types the fixture allows', async () => {
-    const allowedTypes = types([shapes.snapshot ?? {}, shapes.snapshotFailed ?? {}, shapes.snapshotPaused ?? {}, shapes.snapshotDownloading ?? {}]);
+    const allowedTypes = types([shapes.snapshot ?? {}, shapes.snapshotFailed ?? {}, shapes.snapshotPaused ?? {}, shapes.snapshotDownloading ?? {}, shapes.snapshotPostProcessing ?? {}]);
     const downloading = new Mock('?model=download');
     const failed = new Mock('?model=fail');
     await finished(failed);
@@ -540,14 +540,38 @@ test('with cleanup on, a held cleanup keeps the session transcribing until relea
   await session(mock);
   const held = mock.snapshot();
   expect([held.phase, held.pending, held.text]).toEqual(['transcribing', 0, '']);
+  expect(held.postProcessing).toBe(true);
   expect(mock.handle.copied).toEqual([]);
   mock.handle.release('cleanup');
   await settled();
   const done = mock.snapshot();
+  expect(done.postProcessing).toBe(false);
+  expect(events.some((e) => e.postProcessing)).toBe(true);
+  expect(events.at(-1)?.postProcessing).toBe(false);
   expect([done.phase, done.text]).toEqual(['finished', 'This is part 1 of the dictation.']);
   expect(mock.handle.copied).toEqual(['This is part 1 of the dictation.']);
   expect(events.at(-1)?.revision).toBe(done.revision);
   expect(done.revision).toBeGreaterThan(held.revision);
+});
+
+test('postProcessing waits for the last segment, and is false with cleanup off', async () => {
+  const mock = new Mock('?cleanup=on');
+  mock.handle.hold('cleanup');
+  mock.handle.hold('transcribe');
+  await session(mock);
+  const waiting = mock.snapshot();
+  expect([waiting.phase, waiting.pending, waiting.postProcessing]).toEqual(['transcribing', 1, false]);
+  mock.handle.release('transcribe');
+  await settled();
+  const cleaning = mock.snapshot();
+  expect([cleaning.phase, cleaning.pending, cleaning.postProcessing]).toEqual(['transcribing', 0, true]);
+  mock.handle.release('cleanup');
+  await settled();
+  expect(mock.snapshot().postProcessing).toBe(false);
+  const off = new Mock('');
+  await session(off);
+  const done = off.snapshot();
+  expect([done.phase, done.postProcessing]).toEqual(['finished', false]);
 });
 
 test('the open panel picks ?pick=, a default, or nothing, and fails on request', async () => {

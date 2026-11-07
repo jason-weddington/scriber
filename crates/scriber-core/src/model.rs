@@ -133,6 +133,9 @@ pub struct Snapshot {
     /// Finished only: Whisper's joined transcript before cleanup, glyphs and
     /// learned spellings; `None` before finish and after a relaunch.
     pub raw_text: Option<String>,
+    /// True exactly while the phase is `transcribing` and the local-AI
+    /// cleanup pass is outstanding; false in every other state.
+    pub post_processing: bool,
 }
 
 /// How far the speech model's download has got.

@@ -86,6 +86,7 @@ mod tests {
             learned: vec![],
             partial: String::new(),
             raw_text: None,
+            post_processing: false,
         }
     }
 

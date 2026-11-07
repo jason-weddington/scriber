@@ -206,6 +206,7 @@ mod tests {
                 learned: vec![],
                 partial: String::new(),
                 raw_text: None,
+                post_processing: false,
             },
             "idle"
         );
@@ -1985,6 +1986,170 @@ mod tests {
             "label"
         );
         assert!(w.cleaner.calls.borrow().is_empty(), "never asked");
+    }
+
+    /// A one-part session with `p`, paused and not yet done: its segment job.
+    fn paused_part(d: &mut Dictation, p: &Ports<'_>) -> Job {
+        d.new_session(p).unwrap();
+        d.record(p).unwrap();
+        d.pause(p).unwrap().unwrap()
+    }
+
+    #[test]
+    fn post_processing_is_true_exactly_while_the_cleanup_is_outstanding() {
+        let w = World::default();
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let waiting = d.snapshot(&w.library_cleaner_ports());
+        assert_eq!(
+            (waiting.phase, waiting.pending, waiting.post_processing),
+            (Phase::Transcribing, 0, true),
+            "waiting for the cleanup"
+        );
+        let done = cleaned(&w, &mut d, &job, Ok(CLAUDE));
+        assert_eq!(
+            (done.phase, done.post_processing),
+            (Phase::Finished, false),
+            "accepted"
+        );
+    }
+
+    #[test]
+    fn post_processing_ends_with_a_rejected_or_failed_cleanup() {
+        for reply in [
+            Ok("I cannot help with that, sorry. Here is a long reply."),
+            Err("down"),
+        ] {
+            let w = World::default();
+            let (mut d, job) = to_cleanup(&w, CLAWED);
+            let s = cleaned(&w, &mut d, &job, reply);
+            assert_eq!(
+                (s.phase, s.post_processing),
+                (Phase::Finished, false),
+                "{reply:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn post_processing_ends_when_the_queue_refuses_the_cleanup() {
+        let w = World::default();
+        cleanup_on(&w);
+        let p = w.library_cleaner_ports();
+        let mut d = idle(&w);
+        let job = paused_part(&mut d, &p);
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        w.queue.fail.set(true);
+        let done = d.complete(w.run(&job), &p);
+        assert_eq!((done.phase, done.post_processing), (Phase::Finished, false));
+    }
+
+    #[test]
+    fn post_processing_waits_for_the_last_segment() {
+        let w = World::default();
+        cleanup_on(&w);
+        let p = w.library_cleaner_ports();
+        let mut d = idle(&w);
+        let job = paused_part(&mut d, &p);
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        let s = d.snapshot(&p);
+        assert_eq!(
+            (s.phase, s.pending, s.post_processing),
+            (Phase::Transcribing, 1, false),
+            "a segment is pending"
+        );
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        let landed = d.complete(w.run(&job), &p);
+        assert_eq!(
+            (landed.phase, landed.pending, landed.post_processing),
+            (Phase::Transcribing, 0, true),
+            "the last segment landed"
+        );
+    }
+
+    #[test]
+    fn post_processing_is_false_without_a_cleanup_pass() {
+        let w = World::default();
+        let (_, off) = heard_with(&w, &w.cleaner_ports(), CLAWED);
+        assert_eq!(
+            (off.phase, off.post_processing),
+            (Phase::Finished, false),
+            "off"
+        );
+        let silent = World::default();
+        cleanup_on(&silent);
+        let (_, none) = heard_with(&silent, &silent.library_cleaner_ports(), "");
+        assert_eq!(
+            (none.phase, none.post_processing),
+            (Phase::Finished, false),
+            "nothing heard"
+        );
+    }
+
+    #[test]
+    fn post_processing_is_false_in_every_other_phase() {
+        for phase in PHASES {
+            if phase == Phase::Transcribing || phase == Phase::Finished {
+                continue;
+            }
+            let w = World::default();
+            cleanup_on(&w);
+            let (d, _) = at(&w, phase);
+            assert!(!snap(&d, &w).post_processing, "{phase:?}");
+        }
+        let w = World::default();
+        cleanup_on(&w);
+        let (mut paused, _) = at(&w, Phase::Paused);
+        paused.discard(&w.ports()).unwrap();
+        assert!(!snap(&paused, &w).post_processing, "after discard");
+        let (mut finished, _) = at(&w, Phase::Finished);
+        finished.new_session(&w.ports()).unwrap();
+        assert!(!snap(&finished, &w).post_processing, "after new");
+    }
+
+    #[test]
+    fn a_retry_with_cleanup_on_post_processes_only_after_the_parts_land() {
+        let w = World::default();
+        cleanup_on(&w);
+        let p = w.library_cleaner_ports();
+        let mut d = idle(&w);
+        let seg = paused_part(&mut d, &p);
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Err("model exploded".to_string()));
+        let failed = d.complete(w.run(&seg), &p);
+        assert_eq!(
+            (failed.phase, failed.post_processing),
+            (Phase::Failed, false)
+        );
+        let retry = d.retry(&p).unwrap();
+        let retrying = d.snapshot(&p);
+        assert_eq!(
+            (retrying.phase, retrying.pending, retrying.post_processing),
+            (Phase::Transcribing, 1, false),
+            "retrying"
+        );
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        let landed = d.complete(w.run(retry.first().unwrap()), &p);
+        assert_eq!(
+            (landed.phase, landed.pending, landed.post_processing),
+            (Phase::Transcribing, 0, true),
+            "cleanup outstanding"
+        );
+        let job = w.queue.jobs.borrow_mut().pop().unwrap();
+        let done = cleaned(&w, &mut d, &job, Ok(CLAUDE));
+        assert_eq!((done.phase, done.post_processing), (Phase::Finished, false));
     }
 
     #[test]

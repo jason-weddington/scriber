@@ -42,6 +42,8 @@ export interface Snapshot {
   partial: string;
   /** Finished only: Whisper's joined transcript before cleanup, glyphs and learned spellings; null before finish and after a relaunch. */
   rawText: string | null;
+  /** True exactly while phase is 'transcribing' and the local-AI cleanup pass is outstanding; false in every other state. */
+  postProcessing: boolean;
 }
 
 /** One recording in the library, as the drawer lists it. */

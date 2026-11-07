@@ -155,7 +155,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
     test('transcribing, waiting for the cleanup', async ({ page }) => {
       await open(page, { cleanup: 'on', hold: 'cleanup' });
       await press(page, 'New', 'Record', 'Done');
-      await expect(status(page)).toHaveText('Transcribing…');
+      await expect(status(page)).toHaveText('Post-processing with local AI…');
       await expectNoViolations(page);
       await release(page, 'cleanup');
     });

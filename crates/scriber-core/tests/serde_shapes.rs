@@ -40,6 +40,31 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_post_processing() {
+        round_trip(
+            "snapshotPostProcessing",
+            &Snapshot {
+                revision: 5,
+                phase: Phase::Transcribing,
+                recorded_ms: 3_000,
+                segments: 2,
+                pending: 0,
+                text: String::new(),
+                error: None,
+                notice: None,
+                model_error: None,
+                download: None,
+                library_revision: 0,
+                microphone: None,
+                learned: vec![],
+                partial: "First thought.\n\nSecond thought.".to_string(),
+                raw_text: None,
+                post_processing: true,
+            },
+        );
+    }
+
+    #[test]
     fn snapshot() {
         round_trip(
             "snapshot",
@@ -59,6 +84,7 @@ mod tests {
                 learned: vec!["tightbeam".to_string()],
                 partial: "First thought.\n\nsecond thought".to_string(),
                 raw_text: Some("First thought.\n\nsecond thought".to_string()),
+                post_processing: false,
             },
         );
         round_trip(
@@ -84,6 +110,7 @@ mod tests {
                 learned: vec![],
                 partial: "First thought.".to_string(),
                 raw_text: None,
+                post_processing: false,
             },
         );
         round_trip(
@@ -107,6 +134,7 @@ mod tests {
                 learned: vec![],
                 partial: String::new(),
                 raw_text: None,
+                post_processing: false,
             },
         );
         round_trip(
@@ -127,6 +155,7 @@ mod tests {
                 learned: vec![],
                 partial: "First thought.".to_string(),
                 raw_text: None,
+                post_processing: false,
             },
         );
     }
@@ -409,6 +438,11 @@ mod tests {
         assert!(
             serde_json::from_value::<Snapshot>(no_partial).is_err(),
             "a missing partial is refused"
+        );
+        let (_, no_post) = altered("snapshot", "postProcessing");
+        assert!(
+            serde_json::from_value::<Snapshot>(no_post).is_err(),
+            "a missing postProcessing is refused"
         );
         let (_, no_raw) = altered("snapshot", "rawText");
         assert_eq!(

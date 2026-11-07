@@ -85,6 +85,24 @@ for (const colorScheme of ['light', 'dark'] as const) {
           await rowHeight(page);
         });
 
+        test('post-processing', async ({ page }) => {
+          await page.setViewportSize(size);
+          await open(page, { cleanup: 'on', hold: 'cleanup' });
+          await hold(page, 'transcribe');
+          await press(page, 'New', 'Record', 'Done');
+          await expect(status(page)).toHaveText('Transcribing the last 1 part…');
+          await expectNoShift(page, page.locator('.status-row').first(), async () => {
+            await expectNoShift(page, page.locator('.controls'), async () => {
+              await release(page, 'transcribe');
+              await expect(status(page)).toHaveText('Post-processing with local AI…');
+            });
+          });
+          expect(await status(page).evaluate((e) => e.scrollHeight <= e.clientHeight)).toBe(true);
+          await rowHeight(page);
+          await release(page, 'cleanup');
+          await expect(status(page)).toHaveText('Copied to the clipboard.');
+        });
+
         test('failing copy', async ({ page }) => {
           await page.setViewportSize(size);
           await open(page, { clipboard: 'fail' });

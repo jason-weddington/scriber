@@ -56,7 +56,7 @@
 // ('download' holds each step of the model's download; 'summarize' holds
 // each new library entry's summary; 'cleanup' holds the cleanup pass over a
 // finished transcript, with cleanup on, which keeps the session
-// transcribing; the mock cleaner answers the transcript unchanged.) A finished session with a transcript is
+// transcribing, and reads as postProcessing true; the mock cleaner answers the transcript unchanged.) A finished session with a transcript is
 // archived into the library like the core does it (crates/scriber-core/src/library.rs). While recording the
 // mock emits a synthetic input level every LEVEL_MS, like the core's 50 ms
 // windows. The settings' vocabulary is kept like the engine keeps it: '' for
@@ -580,6 +580,8 @@ export class Mock {
   private text = '';
   /** Whisper's text of the finished session, before the learned spellings (the core's raw). */
   private raw: string | null = null;
+  /** The core's cleaning: the cleanup job is outstanding. */
+  private cleaning = false;
   private error: string | null = null;
   private notice: string | null = null;
   private revision = 0;
@@ -714,6 +716,7 @@ export class Mock {
       learned: [...this.learned],
       partial: join(this.slots.map((s) => (s.state === 'heard' ? s.text : null))),
       rawText: this.phase === 'finished' ? this.raw : null,
+      postProcessing: this.phase === 'transcribing' && this.cleaning,
     };
   }
 
@@ -976,6 +979,7 @@ export class Mock {
     this.splitMs = 0;
     this.text = '';
     this.raw = null;
+    this.cleaning = false;
     this.error = null;
     this.notice = null;
     this.started = null;
@@ -1082,6 +1086,7 @@ export class Mock {
     }
     const text = join(this.slots.map((s) => (s.state === 'heard' ? s.text : null)));
     if (text !== '' && this.settings.cleanup) {
+      this.cleaning = true;
       void this.cleanup(this.session, text);
       return;
     }
@@ -1101,6 +1106,7 @@ export class Mock {
   /** The core's finish: keep the transcript, copy it, and archive it. */
   private finish(text: string): void {
     this.raw = text;
+    this.cleaning = false;
     this.text = enforceTerms(text, this.learnedList);
     this.phase = 'finished';
     if (this.text === '') this.notice = NOTHING_HEARD;

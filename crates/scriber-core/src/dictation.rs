@@ -701,6 +701,7 @@ impl Dictation {
             } else {
                 None
             },
+            post_processing: self.phase == Phase::Transcribing && self.cleaning.is_some(),
         }
     }
 

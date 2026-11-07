@@ -14,7 +14,8 @@
     "microphone": "Jabra Evolve 65",
     "learned": ["tightbeam"],
     "partial": "First thought.\n\nsecond thought",
-    "rawText": "First thought.\n\nsecond thought"
+    "rawText": "First thought.\n\nsecond thought",
+    "postProcessing": false
   },
   "snapshotFailed": {
     "revision": 7,
@@ -31,7 +32,8 @@
     "microphone": null,
     "learned": [],
     "partial": "First thought.",
-    "rawText": null
+    "rawText": null,
+    "postProcessing": false
   },
   "snapshotPaused": {
     "revision": 4,
@@ -48,7 +50,26 @@
     "microphone": null,
     "learned": [],
     "partial": "First thought.",
-    "rawText": null
+    "rawText": null,
+    "postProcessing": false
+  },
+  "snapshotPostProcessing": {
+    "revision": 5,
+    "phase": "transcribing",
+    "recordedMs": 3000,
+    "segments": 2,
+    "pending": 0,
+    "text": "",
+    "error": null,
+    "notice": null,
+    "modelError": null,
+    "download": null,
+    "libraryRevision": 0,
+    "microphone": null,
+    "learned": [],
+    "partial": "First thought.\n\nSecond thought.",
+    "rawText": null,
+    "postProcessing": true
   },
   "snapshotDownloading": {
     "revision": 1,
@@ -68,7 +89,8 @@
     "microphone": null,
     "learned": [],
     "partial": "",
-    "rawText": null
+    "rawText": null,
+    "postProcessing": false
   },
   "libraryEntry": {
     "id": "20261026-140309",

@@ -113,6 +113,7 @@ const SNAPSHOT = {
   learned: [],
   partial: '',
   rawText: null,
+  postProcessing: false,
 };
 
 test.describe('bridge.ts against the Rust command signatures', () => {
