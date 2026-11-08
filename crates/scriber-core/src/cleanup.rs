@@ -96,7 +96,8 @@ pub const PROMPT: &str = concat!(
 
 /// The user message for transcript `text` with glossary `terms`: the terms
 /// one per line (or `none`), then the transcript. The caller passes at most
-/// [`MAX_TERMS`] terms; they are used as given.
+/// [`MAX_TERMS`] user terms followed by at most [`crate::context::MAX_TERMS`]
+/// context terms; they are used as given.
 #[must_use]
 pub fn request(text: &str, terms: &[String]) -> String {
     if terms.is_empty() {

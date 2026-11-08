@@ -8,6 +8,7 @@
 //! segments/started.txt           the session's start, `2026-10-26 14:03:09`, with the library on
 //! library/<id>/entry.json        a recording in the library (crate::library): its title and summary
 //! library/<id>/transcript.txt    its transcript
+//! library/<id>/context.json      the embedder's conversation turns and the context terms appended to the cleanup glossary, when it supplied any
 //! library/<id>/audio.m4a         its audio (audio.wav until encoded, or when encoding fails)
 //! models/ggml-large-v3-turbo.bin the speech model (read by the transcriber, not here); the default, overridable in settings.json as model_folder
 //! microphone-log.jsonl           which microphone each Record or Resume opened, and each segment's format (newest 200 lines)

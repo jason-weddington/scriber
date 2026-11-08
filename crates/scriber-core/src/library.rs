@@ -6,6 +6,7 @@
 //! library/20261026-140309/transcript.txt      the transcript
 //! library/20261026-140309/transcript.raw.txt  Whisper's transcript as spoken, when an accepted cleanup or the shortcut glyphs changed the text
 //! library/20261026-140309/cleanup.reply.txt   the rejected reply's `transcript` field as the adapter returned it (after its `</think>` cut)
+//! library/20261026-140309/context.json        the embedder's conversation turns and the context terms appended to the cleanup glossary, when it supplied any
 //! library/20261026-140309/segments/segment-NNNN.wav  with keep_segments on: each part's WAV exactly as stored; a segment that cannot be kept is reported in `keep_error` and never fails the archive
 //! library/20261026-140309/audio.m4a          the session's audio (audio.wav until encoded, or when encoding fails)
 //! ```
@@ -187,10 +188,44 @@ fn taken(files: &dyn Files) -> Result<BTreeSet<String>, PortError> {
         .collect())
 }
 
+/// The embedder's conversation turns as they stood when a recording's cleanup
+/// job was built, and the context terms appended to that job's glossary.
+#[derive(Debug)]
+pub(crate) struct RecordedContext {
+    /// The turns, oldest first, verbatim.
+    pub(crate) turns: Vec<String>,
+    /// The terms the turns contributed and the glossary did not already hold.
+    pub(crate) terms: Vec<String>,
+}
+
+impl RecordedContext {
+    /// What to record for `turns`, or `None` when the embedder supplied no
+    /// turn at all (so a session without a context writes no `context.json`,
+    /// whatever `terms` holds).
+    pub(crate) fn of(turns: &[String], terms: Vec<String>) -> Option<Self> {
+        if turns.is_empty() {
+            return None;
+        }
+        Some(Self {
+            turns: turns.to_vec(),
+            terms,
+        })
+    }
+}
+
+/// `context.json`: the embedder's turns and the context terms of one
+/// recording, compact and in that key order.
+#[derive(Serialize)]
+struct ContextFile<'a> {
+    turns: &'a [String],
+    terms: &'a [String],
+}
+
 /// Keeps the finished session titled `title`, with transcript `text`, as a
 /// new entry: its stored segments joined into `audio.wav`, its transcript,
 /// then `transcript.raw.txt` and `cleanup.reply.txt` when `cleanup` has them,
-/// and last its entry.json, so an entry without one never lists. The
+/// then `context.json` when the embedder supplied conversation turns, and
+/// last its entry.json, so an entry without one never lists. The
 /// segments themselves are left for the caller to remove. With
 /// `keep_segments`, each stored segment is also copied unchanged to
 /// `library/<id>/segments/segment-NNNN.wav`, before entry.json; a segment that
@@ -204,6 +239,7 @@ pub(crate) fn archive(
     title: &str,
     text: &str,
     cleanup: &CleanupRecord,
+    context: Option<&RecordedContext>,
     keep_segments: bool,
 ) -> Result<Archived, PortError> {
     let base = base_id(title);
@@ -233,6 +269,14 @@ pub(crate) fn archive(
     }
     if let Some(reply) = &cleanup.reply {
         files.write(&entry_path(&id, "cleanup.reply.txt"), reply.as_bytes())?;
+    }
+    if let Some(context) = context {
+        let bytes = serde_json::to_vec(&ContextFile {
+            turns: &context.turns,
+            terms: &context.terms,
+        })
+        .map_err(fail)?;
+        files.write(&entry_path(&id, "context.json"), &bytes)?;
     }
     let mut keep_error = None;
     if keep_segments {

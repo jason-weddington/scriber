@@ -30,7 +30,13 @@ mod tests {
     const ABCD: &str = "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589";
 
     fn config(dir: &TempDir) -> EngineConfig {
-        EngineConfig::new(dir.path())
+        // No engine test may read the host's word list (`config` sets it off;
+        // only the lexicon-mode test names a temp file, and only the default
+        // assertion names the literal path).
+        EngineConfig {
+            context_lexicon: None,
+            ..EngineConfig::new(dir.path())
+        }
     }
 
     fn write(dir: &TempDir, path: &str, bytes: &[u8]) {
@@ -681,6 +687,11 @@ mod tests {
         assert_eq!(c.ollama_url, "http://127.0.0.1:11434", "url");
         assert_eq!(c.summary_model, "qwen3.8:27b-mlx", "model");
         assert_eq!(c.keep_warm_every, Duration::from_secs(240), "keep warm");
+        assert_eq!(
+            c.context_lexicon,
+            Some(PathBuf::from("/usr/share/dict/words")),
+            "lexicon"
+        );
         assert_eq!(
             (DEFAULT_OLLAMA_URL, DEFAULT_SUMMARY_MODEL),
             ("http://127.0.0.1:11434", "qwen3.8:27b-mlx"),
@@ -2922,6 +2933,170 @@ mod tests {
             "both parts"
         );
         assert_eq!(fakes.recorder.stops.load(Ordering::SeqCst), 1, "one stop");
+    }
+
+    /// With library and cleanup on and every turn set before the recording, the
+    /// glossary block (the terms between `Glossary:` and `Transcript:`) of the
+    /// first cleanup request.
+    fn context_glossary(config: EngineConfig) -> String {
+        let turn = vec!["the yukara thing StreamRecorder".to_string()];
+        context_glossary_of(config, &turn)
+    }
+
+    fn context_glossary_of(config: EngineConfig, turns: &[String]) -> String {
+        let fakes = cleaning(Ok("hello world"));
+        let (engine, _rx) = fakes.open(config);
+        engine.set_context(turns.to_vec());
+        let _recording = engine.record().unwrap();
+        let _text = engine.stop_and_wait(PATIENCE).unwrap();
+        let requests = fakes.cleaner.requests.lock().unwrap().clone();
+        let request = requests.first().unwrap().clone();
+        let block = request
+            .split_once("Glossary:\n")
+            .unwrap()
+            .1
+            .split_once("\n\nTranscript:\n")
+            .unwrap()
+            .0;
+        block.to_string()
+    }
+
+    #[test]
+    fn the_context_survives_a_new_recording_and_is_cleared_only_by_clear_context() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"cleanup":true}"#);
+        let fakes = cleaning(Ok("hello world"));
+        let (engine, _rx) = fakes.open(EngineConfig {
+            context_lexicon: None,
+            ..library_config(&dir)
+        });
+
+        let _first = engine.record().unwrap();
+        engine.set_context(vec!["Ask StreamRecorder".into()]);
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "cleaned"
+        );
+        let asked = fakes.cleaner.requests.lock().unwrap().clone();
+        assert!(
+            asked
+                .first()
+                .unwrap()
+                .starts_with("Glossary:\nStreamRecorder\n\nTranscript:\n"),
+            "{asked:?}"
+        );
+
+        // A new recording from finished keeps the embedder's turns.
+        let _second = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "second"
+        );
+        let twice = fakes.cleaner.requests.lock().unwrap().clone();
+        assert_eq!(twice.len(), 2, "asked twice");
+        assert!(
+            twice[1].starts_with("Glossary:\nStreamRecorder\n\nTranscript:\n"),
+            "{twice:?}"
+        );
+
+        engine.clear_context();
+        let _third = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "third"
+        );
+        let thrice = fakes.cleaner.requests.lock().unwrap().clone();
+        assert_eq!(thrice.len(), 3, "asked three times");
+        assert!(
+            thrice[2].starts_with("Glossary: none\n\nTranscript:\n"),
+            "{thrice:?}"
+        );
+
+        // A discard keeps them too: only clear_context (and set_context) change
+        // them.
+        engine.set_context(vec!["Ask StreamRecorder".into()]);
+        let _fourth = engine.record().unwrap();
+        let _discarded = engine.discard().unwrap();
+        let _fifth = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "fourth"
+        );
+        let all = fakes.cleaner.requests.lock().unwrap().clone();
+        assert_eq!(all.len(), 4, "asked four times");
+        assert!(
+            all[3].starts_with("Glossary:\nStreamRecorder\n\nTranscript:\n"),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn the_context_calls_are_legal_after_shutdown_and_change_no_snapshot() {
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(config(&dir));
+        let before = engine.state();
+        engine.set_context(vec!["Ask StreamRecorder".into()]);
+        engine.clear_context();
+        assert_eq!(engine.state(), before, "the snapshot is untouched");
+        let _report = engine.shutdown();
+        let phase = engine.state().phase;
+        engine.set_context(vec!["Ask StreamRecorder".into()]);
+        engine.clear_context();
+        assert_eq!(engine.state().phase, phase, "still legal after shutdown");
+    }
+
+    #[test]
+    fn the_context_word_list_decides_which_words_are_jargon() {
+        let no_list = TempDir::new().unwrap();
+        write(&no_list, "settings.json", br#"{"cleanup":true}"#);
+        assert_eq!(
+            context_glossary(EngineConfig {
+                context_lexicon: None,
+                ..library_config(&no_list)
+            }),
+            "StreamRecorder",
+            "rule (e) is off without a word list"
+        );
+
+        let listed = TempDir::new().unwrap();
+        write(&listed, "settings.json", br#"{"cleanup":true}"#);
+        write(&listed, "words.txt", b"the\nyukara\n");
+        assert_eq!(
+            context_glossary(EngineConfig {
+                context_lexicon: Some(listed.path().join("words.txt")),
+                ..library_config(&listed)
+            }),
+            "thing\nStreamRecorder",
+            "a word the list does not know is jargon"
+        );
+
+        let absent = TempDir::new().unwrap();
+        write(&absent, "settings.json", br#"{"cleanup":true}"#);
+        assert_eq!(
+            context_glossary(EngineConfig {
+                context_lexicon: Some(absent.path().join("absent.txt")),
+                ..library_config(&absent)
+            }),
+            "StreamRecorder",
+            "an unreadable list leaves rule (e) off"
+        );
+
+        let not_text = TempDir::new().unwrap();
+        write(&not_text, "settings.json", br#"{"cleanup":true}"#);
+        write(&not_text, "words.txt", &[0xFF]);
+        assert_eq!(
+            context_glossary(EngineConfig {
+                context_lexicon: Some(not_text.path().join("words.txt")),
+                ..library_config(&not_text)
+            }),
+            "StreamRecorder",
+            "a list that is not UTF-8 leaves rule (e) off"
+        );
     }
 
     #[test]

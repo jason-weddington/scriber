@@ -286,6 +286,15 @@ pub trait Cleaner {
     ) -> Result<crate::cleanup::Reply, PortError>;
 }
 
+/// A word list, for telling an ordinary word from the jargon of an embedder's
+/// conversation ([`crate::context`]). The real adapter is the engine's
+/// `WordList`.
+pub trait Lexicon {
+    /// Whether `word` is an ordinary word of the language. `word` arrives
+    /// lowercased, so a case-sensitive list is out of contract.
+    fn is_word(&self, word: &str) -> bool;
+}
+
 /// The ports only the recording library needs ([`crate::library`]).
 #[derive(Clone, Copy)]
 pub struct Library<'a> {
@@ -317,6 +326,9 @@ pub struct Ports<'a> {
     pub library: Option<Library<'a>>,
     /// The transcript's cleanup model; `None` never cleans up.
     pub cleaner: Option<&'a dyn Cleaner>,
+    /// The word list that tells ordinary words from the jargon of the
+    /// embedder's conversation turns; `None` disables that rule.
+    pub lexicon: Option<&'a dyn Lexicon>,
 }
 
 impl<'a> Ports<'a> {
@@ -340,6 +352,7 @@ impl<'a> Ports<'a> {
             downloader,
             library: None,
             cleaner: None,
+            lexicon: None,
         }
     }
 
@@ -358,6 +371,15 @@ impl<'a> Ports<'a> {
     pub fn with_cleaner(self, cleaner: &'a dyn Cleaner) -> Self {
         Self {
             cleaner: Some(cleaner),
+            ..self
+        }
+    }
+
+    /// These ports, telling ordinary words from jargon with `lexicon`.
+    #[must_use]
+    pub fn with_lexicon(self, lexicon: &'a dyn Lexicon) -> Self {
+        Self {
+            lexicon: Some(lexicon),
             ..self
         }
     }

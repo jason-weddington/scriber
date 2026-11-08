@@ -4,6 +4,8 @@ mod common;
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use scriber_core::audio::{decode_wav, encode_wav};
     use scriber_core::dictation::{
         COPIED, Dictation, DictationError, Job, NOTHING_HEARD, input_fallback, model_missing,
@@ -1433,6 +1435,37 @@ mod tests {
         (d, job)
     }
 
+    /// With cleanup and the library on and the embedder's `turns` set before
+    /// the session, a session heard as `heard` up to its queued cleanup job,
+    /// which is taken off the queue.
+    fn to_cleanup_with(w: &World, turns: &[&str], heard: &str) -> (Dictation, Job) {
+        cleanup_on(w);
+        let p = w.context_ports();
+        let mut d = idle(w);
+        d.set_context(strings(turns));
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let segment = d.pause(&p).unwrap().unwrap();
+        assert!(d.done(&p).unwrap().is_none(), "paused");
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(heard.to_string()));
+        let s = d.complete(w.run(&segment), &p);
+        assert_eq!(s.phase, Phase::Transcribing, "waiting for the cleanup");
+        let job = w.queue.jobs.borrow_mut().pop().unwrap();
+        assert!(format!("{job:?}").contains("Cleanup"), "{job:?}");
+        (d, job)
+    }
+
+    /// The glossary block of the first cleanup `request` (the terms between
+    /// `Glossary:` and `Transcript:`).
+    fn glossary_block(request: &str) -> String {
+        let (_, rest) = request.split_once("Glossary:\n").unwrap();
+        let (block, _) = rest.split_once("\n\nTranscript:\n").unwrap();
+        block.to_string()
+    }
+
     /// Runs the cleanup job with the cleaner answering `reply`.
     fn cleaned(w: &World, d: &mut Dictation, job: &Job, reply: Result<&str, &str>) -> Snapshot {
         let p = w.library_cleaner_ports();
@@ -2312,6 +2345,316 @@ mod tests {
         let s = cleaned(&w, &mut d, &job, Ok(CLAUDE));
         assert_eq!(s.phase, Phase::Finished, "finished");
         assert_eq!(s.text, CLAUDE, "the cleaned text");
+        assert_eq!(entry_file(&w, "entry.json"), None, "no entry");
+        assert_eq!(w.files.segments(), 1, "the part stays");
+        assert_eq!(s.library_revision, 0, "the library is unchanged");
+    }
+
+    #[test]
+    fn only_the_context_ports_carry_the_word_list() {
+        let w = World::default();
+        assert!(w.ports().lexicon.is_none(), "new leaves no lexicon");
+        assert!(w.library_ports().lexicon.is_none(), "the library alone");
+        assert!(w.cleaner_ports().lexicon.is_none(), "the cleaner alone");
+        assert!(w.library_cleaner_ports().lexicon.is_none(), "both alone");
+        assert!(
+            w.context_ports().lexicon.is_some(),
+            "the context ports carry the lexicon"
+        );
+    }
+
+    #[test]
+    fn the_context_terms_follow_the_user_terms_in_the_cleanup_glossary() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("Rust\nTightBeam\n"));
+        w.lexicon.set(&["use", "and"]);
+        let (_d, job) = to_cleanup_with(&w, &["use tightbeam and StreamRecorder"], CLAWED);
+        let _ran = w.run_with(&job, &w.context_ports());
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.first().unwrap();
+        assert!(
+            request.starts_with("Glossary:\nRust\nTightBeam\nStreamRecorder\n\nTranscript:\n"),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn a_context_term_never_repeats_a_user_term() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("Rust\nTightBeam\n"));
+        w.lexicon.set(&["ask"]);
+        let (_d, job) = to_cleanup_with(&w, &["Ask TightBeam Zed"], CLAWED);
+        let _ran = w.run_with(&job, &w.context_ports());
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.first().unwrap();
+        assert!(
+            request.starts_with("Glossary:\nRust\nTightBeam\nZed\n\nTranscript:\n"),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn the_user_terms_are_never_pushed_out_by_the_context() {
+        let w = World::default();
+        let mut vocabulary = String::new();
+        for n in 0..200 {
+            writeln!(vocabulary, "term{n}").unwrap();
+        }
+        w.files.set_vocabulary(Some(&vocabulary));
+        let (_d, job) = to_cleanup_with(&w, &["Zebra"], CLAWED);
+        let _ran = w.run_with(&job, &w.context_ports());
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.first().unwrap();
+        let block = glossary_block(request);
+        let lines: Vec<&str> = block.lines().collect();
+        assert_eq!(lines.len(), 201, "200 user terms and 1 context term");
+        for (n, line) in lines.iter().take(200).enumerate() {
+            assert_eq!(*line, format!("term{n}"), "the user's term {n}");
+        }
+        assert_eq!(lines.get(200), Some(&"Zebra"), "the context term last");
+    }
+
+    #[test]
+    fn the_context_leaves_whispers_prompt_alone() {
+        let w = World::default();
+        w.files.write(LEARNED, b"tightbeam\n").unwrap();
+        w.files.set_vocabulary(Some("Rust\n"));
+        let (_d, _job) = to_cleanup_with(&w, &["Use StreamRecorder"], CLAWED);
+        let calls = w.transcriber.calls.borrow();
+        assert_eq!(
+            calls.first().and_then(|(_, prompt)| prompt.clone()),
+            Some(format!("{STYLE} Glossary: tightbeam, Rust.")),
+            "the prompt is the user's glossary alone"
+        );
+    }
+
+    #[test]
+    fn the_context_is_read_once_and_both_halves_are_snapshotted() {
+        let w = World::default();
+        w.lexicon.set(&["use", "ask"]);
+        let (mut d, job) = to_cleanup_with(&w, &["Use StreamRecorder"], CLAWED);
+        d.set_context(strings(&["Ask Zed"]));
+        let p = w.context_ports();
+        let _done = d.complete(w.run_with(&job, &p), &p);
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.first().unwrap();
+        assert!(
+            request.starts_with("Glossary:\nStreamRecorder\n\nTranscript:\n"),
+            "{request:?}"
+        );
+        assert!(!request.contains("Zed"), "{request:?}");
+        assert!(!format!("{job:?}").contains("Zed"), "{job:?}");
+        assert_eq!(
+            entry_file(&w, "context.json").as_deref(),
+            Some(r#"{"turns":["Use StreamRecorder"],"terms":["StreamRecorder"]}"#),
+            "the turns as they stood at build time"
+        );
+    }
+
+    #[test]
+    fn a_new_session_keeps_the_embedders_turns() {
+        let w = World::default();
+        w.lexicon.set(&["use"]);
+        let (mut d, first) = to_cleanup_with(&w, &["Use StreamRecorder"], CLAWED);
+        let p = w.context_ports();
+        let finished = d.complete(w.run_with(&first, &p), &p);
+        assert_eq!(finished.phase, Phase::Finished, "the first session");
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let segment = d.pause(&p).unwrap().unwrap();
+        let _done = d.done(&p).unwrap();
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        let s = d.complete(w.run(&segment), &p);
+        assert_eq!(s.phase, Phase::Transcribing, "waiting for the cleanup");
+        let second = w.queue.jobs.borrow_mut().pop().unwrap();
+        let _ran = w.run_with(&second, &p);
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.get(1).unwrap();
+        assert!(
+            request.starts_with("Glossary:\nStreamRecorder\n\nTranscript:\n"),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn a_discarded_session_keeps_the_embedders_turns() {
+        let w = World::default();
+        w.lexicon.set(&["use"]);
+        cleanup_on(&w);
+        let p = w.context_ports();
+        let mut d = idle(&w);
+        d.set_context(strings(&["Use StreamRecorder"]));
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        d.discard(&p).unwrap();
+        d.record(&p).unwrap();
+        let segment = d.pause(&p).unwrap().unwrap();
+        let _done = d.done(&p).unwrap();
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        let s = d.complete(w.run(&segment), &p);
+        assert_eq!(s.phase, Phase::Transcribing, "waiting for the cleanup");
+        let job = w.queue.jobs.borrow_mut().pop().unwrap();
+        let _ran = w.run_with(&job, &p);
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.first().unwrap();
+        assert!(
+            request.starts_with("Glossary:\nStreamRecorder\n\nTranscript:\n"),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn clear_context_forgets_the_turns() {
+        let w = World::default();
+        w.lexicon.set(&["use"]);
+        cleanup_on(&w);
+        let p = w.context_ports();
+        let mut d = idle(&w);
+        d.set_context(strings(&["Use StreamRecorder"]));
+        d.clear_context();
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let segment = d.pause(&p).unwrap().unwrap();
+        let _done = d.done(&p).unwrap();
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        let s = d.complete(w.run(&segment), &p);
+        assert_eq!(s.phase, Phase::Transcribing, "waiting for the cleanup");
+        let job = w.queue.jobs.borrow_mut().pop().unwrap();
+        let _ran = w.run_with(&job, &p);
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.first().unwrap();
+        assert!(
+            request.starts_with("Glossary: none\n\nTranscript:\n"),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn a_recovered_session_has_no_context() {
+        let w = World::default();
+        w.lexicon.set(&["use"]);
+        let (mut d, job) = to_cleanup(&w, CLAWED);
+        let _done = d.complete(
+            w.run_with(&job, &w.library_cleaner_ports()),
+            &w.library_cleaner_ports(),
+        );
+        let requests = w.cleaner.calls.borrow();
+        let (_, request) = requests.first().unwrap();
+        assert!(
+            request.starts_with("Glossary: none\n\nTranscript:\n"),
+            "{request:?}"
+        );
+        drop(requests);
+        assert_eq!(entry_file(&w, "context.json"), None, "no context file");
+    }
+
+    #[test]
+    fn set_context_and_clear_context_leave_the_snapshot_alone() {
+        let w = World::default();
+        let p = w.context_ports();
+        let mut d = idle(&w);
+        let before = d.snapshot(&p);
+        d.set_context(strings(&["Ask StreamRecorder"]));
+        assert_eq!(
+            d.snapshot(&p),
+            before,
+            "set_context leaves the snapshot alone"
+        );
+        d.clear_context();
+        assert_eq!(
+            d.snapshot(&p),
+            before,
+            "clear_context leaves the snapshot alone"
+        );
+    }
+
+    #[test]
+    fn context_terms_are_never_learned() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("Rust\n"));
+        w.lexicon.set(&["use"]);
+        let (mut d, job) = to_cleanup_with(&w, &["Use StreamRecorder"], CLAWED);
+        let reply = format!(
+            r#"{{"replacements":[],"learned":["StreamRecorder"],"transcript":"{CLAWED}"}}"#
+        );
+        let s = cleaned(&w, &mut d, &job, Ok(&reply));
+        assert_eq!(s.phase, Phase::Finished, "the reply is accepted");
+        assert_eq!(learned_file(&w), None, "nothing learned");
+        assert!(learning_log(&w).is_empty(), "no learning log line");
+        assert_eq!(
+            w.files.files.borrow().get("vocabulary.txt"),
+            Some(&b"Rust\n".to_vec()),
+            "the glossary is untouched"
+        );
+    }
+
+    #[test]
+    fn one_context_turn_is_written_to_context_json() {
+        let w = World::default();
+        w.lexicon.set(&["use"]);
+        let (mut d, job) = to_cleanup_with(&w, &["Use StreamRecorder"], CLAWED);
+        let _done = cleaned(&w, &mut d, &job, Ok(CLAWED));
+        assert_eq!(
+            entry_file(&w, "context.json").as_deref(),
+            Some(r#"{"turns":["Use StreamRecorder"],"terms":["StreamRecorder"]}"#),
+            "compact, turns verbatim"
+        );
+    }
+
+    #[test]
+    fn two_context_turns_are_written_oldest_first() {
+        let w = World::default();
+        w.lexicon.set(&["use", "ask"]);
+        let (mut d, job) = to_cleanup_with(&w, &["Use StreamRecorder", "Ask Zed"], CLAWED);
+        let _done = cleaned(&w, &mut d, &job, Ok(CLAWED));
+        assert_eq!(
+            entry_file(&w, "context.json").as_deref(),
+            Some(r#"{"turns":["Use StreamRecorder","Ask Zed"],"terms":["Zed","StreamRecorder"]}"#),
+            "both turns, the later term first"
+        );
+    }
+
+    #[test]
+    fn a_context_with_cleanup_off_writes_no_terms() {
+        let w = World::default();
+        w.lexicon.set(&["use"]);
+        let p = w.library_ports();
+        let mut d = idle(&w);
+        d.set_context(strings(&["Use StreamRecorder"]));
+        d.new_session(&p).unwrap();
+        d.record(&p).unwrap();
+        let segment = d.pause(&p).unwrap().unwrap();
+        let _done = d.done(&p).unwrap();
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(CLAWED.to_string()));
+        let s = d.complete(w.run(&segment), &p);
+        assert_eq!(s.phase, Phase::Finished, "no cleanup ran");
+        assert_eq!(
+            entry_file(&w, "context.json").as_deref(),
+            Some(r#"{"turns":["Use StreamRecorder"],"terms":[]}"#),
+            "the turns alone"
+        );
+    }
+
+    #[test]
+    fn a_context_file_that_cannot_be_written_fails_the_archive() {
+        let w = World::default();
+        w.lexicon.set(&["use"]);
+        let (mut d, job) = to_cleanup_with(&w, &["Use StreamRecorder"], CLAWED);
+        *w.files.fail_write_suffix.borrow_mut() = Some("context.json".to_string());
+        let s = cleaned(&w, &mut d, &job, Ok(CLAWED));
+        assert_eq!(s.phase, Phase::Finished, "finished");
         assert_eq!(entry_file(&w, "entry.json"), None, "no entry");
         assert_eq!(w.files.segments(), 1, "the part stays");
         assert_eq!(s.library_revision, 0, "the library is unchanged");

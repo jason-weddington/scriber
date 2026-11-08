@@ -347,14 +347,16 @@ impl Summarizer for FakeSummarizer {
     }
 }
 
-/// A cleanup model that answers `reply` (an empty reply unless set) and
-/// counts its calls.
+/// A cleanup model that answers `reply` (an empty reply unless set), counts
+/// its calls and keeps every request it was given.
 #[derive(Clone)]
 pub(crate) struct FakeCleaner {
     pub(crate) reply: Arc<Mutex<Result<String, String>>>,
     pub(crate) calls: Arc<AtomicUsize>,
     /// The model each call named.
     pub(crate) models: Arc<Mutex<Vec<String>>>,
+    /// The request of each call, in order.
+    pub(crate) requests: Arc<Mutex<Vec<String>>>,
 }
 
 impl Default for FakeCleaner {
@@ -363,6 +365,7 @@ impl Default for FakeCleaner {
             reply: Arc::new(Mutex::new(Ok(String::new()))),
             calls: Arc::default(),
             models: Arc::default(),
+            requests: Arc::default(),
         }
     }
 }
@@ -372,12 +375,16 @@ impl Cleaner for FakeCleaner {
         &self,
         model: &str,
         _system: &str,
-        _request: &str,
+        request: &str,
     ) -> Result<cleanup::Reply, PortError> {
         self.models
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(model.to_string());
+        self.requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.to_string());
         let _before = self.calls.fetch_add(1, Ordering::SeqCst);
         self.reply
             .lock()

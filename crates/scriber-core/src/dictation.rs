@@ -33,6 +33,7 @@ use std::sync::Mutex;
 
 use crate::audio::{decode_wav, duration_ms, encode_wav, to_mono_16k};
 use crate::cleanup;
+use crate::context;
 use crate::download::{self, Source};
 use crate::learn;
 use crate::level::silence_profile;
@@ -457,6 +458,24 @@ fn prompt(ports: &Ports<'_>) -> String {
     vocabulary::prompt_for(&glossary(ports))
 }
 
+/// Appends the context terms of `turns` to `terms` — skipping any the user's
+/// terms already hold, ignoring case — and answers the ones appended, in the
+/// order [`context::terms`] put them.
+fn append_context(turns: &[String], ports: &Ports<'_>, terms: &mut Vec<String>) -> Vec<String> {
+    let lexicon = ports.lexicon;
+    let ask = |word: &str| lexicon.is_some_and(|lexicon| lexicon.is_word(word));
+    let is_word: Option<&dyn Fn(&str) -> bool> = if lexicon.is_some() { Some(&ask) } else { None };
+    let mut appended = Vec::new();
+    for term in context::terms(turns, is_word, context::MAX_TERMS) {
+        let lowered = term.to_lowercase();
+        if !terms.iter().any(|t| t.to_lowercase() == lowered) {
+            terms.push(term.clone());
+            appended.push(term);
+        }
+    }
+    appended
+}
+
 /// Writes `line` to [`store::MICROPHONE_LOG`], best effort.
 fn log(ports: &Ports<'_>, line: &impl Serialize) {
     if let Ok(text) = serde_json::to_string(line) {
@@ -518,6 +537,13 @@ pub struct Dictation {
     /// The learned list ([`store::learned_path`]) as it was before the last
     /// learning write, for Undo.
     undo: Option<Vec<String>>,
+    /// The embedder's conversation turns, newest last. Only
+    /// [`Self::set_context`] and [`Self::clear_context`] change them: New,
+    /// Discard and recovery leave them alone.
+    context: Vec<String>,
+    /// The turns and context terms of the recording being filed, as they
+    /// stood when its cleanup job was built, for `context.json`.
+    recorded_context: Option<library::RecordedContext>,
 }
 
 impl Dictation {
@@ -810,6 +836,22 @@ impl Dictation {
         }
         self.reset(ports);
         Ok(())
+    }
+
+    /// Replaces the embedder's conversation turns with `turns`, oldest first
+    /// and newest last, verbatim. They are per-conversation: this and
+    /// [`Self::clear_context`] are the only things that change them, so New,
+    /// Discard and recovery keep them. Called between sessions, it changes
+    /// nothing else: no revision, no phase, no file, no event.
+    pub fn set_context(&mut self, turns: Vec<String>) {
+        self.context = turns;
+    }
+
+    /// Forgets the embedder's conversation turns: the next recording's cleanup
+    /// glossary holds the user's terms alone. Like [`Self::set_context`], it
+    /// changes nothing else.
+    pub fn clear_context(&mut self) {
+        self.context.clear();
     }
 
     /// Starts the microphone; shared by Record and Resume. It opens the input
@@ -1179,6 +1221,8 @@ impl Dictation {
         if !text.is_empty() && ports.cleaner.is_some() && settings::load(ports.files).cleanup {
             let mut terms = glossary(ports);
             terms.truncate(cleanup::MAX_TERMS);
+            let appended = append_context(&self.context, ports, &mut terms);
+            self.recorded_context = library::RecordedContext::of(&self.context, appended);
             self.cleaning = Some((text.clone(), terms.clone()));
             let job = Job(Work::Cleanup {
                 session: self.session,
@@ -1194,6 +1238,7 @@ impl Dictation {
             reply: None,
             error: None,
         };
+        self.recorded_context = library::RecordedContext::of(&self.context, Vec::new());
         self.finish(text, &record, ports);
     }
 
@@ -1255,6 +1300,7 @@ impl Dictation {
             &title,
             &self.text,
             record,
+            self.recorded_context.as_ref(),
             settings.keep_segments,
         ) else {
             return;

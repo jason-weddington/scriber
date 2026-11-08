@@ -3,7 +3,7 @@
 //! fail, so a test sets up exactly the world it needs.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, Read};
 use std::sync::Arc;
 
@@ -11,8 +11,8 @@ use scriber_core::cleanup;
 use scriber_core::dictation::{Job, Outcome};
 use scriber_core::model::InputDevices;
 use scriber_core::ports::{
-    Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, JobQueue, Library, LocalTime,
-    Phrase, PortError, Ports, Recorder, Summarizer, Transcriber,
+    Captured, Cleaner, Clipboard, Clock, Downloader, Encoder, Files, JobQueue, Lexicon, Library,
+    LocalTime, Phrase, PortError, Ports, Recorder, Summarizer, Transcriber,
 };
 use scriber_core::store::{VOCABULARY, segment_index, segment_path};
 
@@ -471,6 +471,30 @@ impl Cleaner for FakeCleaner {
     }
 }
 
+/// A word list: every word is lowercased on the way in, and an empty list
+/// answers `false` for every word.
+#[derive(Default)]
+pub(crate) struct FakeLexicon {
+    pub(crate) words: RefCell<BTreeSet<String>>,
+}
+
+impl FakeLexicon {
+    /// Replaces the list with `words`, each lowercased.
+    pub(crate) fn set(&self, words: &[&str]) {
+        let mut set = self.words.borrow_mut();
+        set.clear();
+        for word in words {
+            let _added = set.insert(word.to_lowercase());
+        }
+    }
+}
+
+impl Lexicon for FakeLexicon {
+    fn is_word(&self, word: &str) -> bool {
+        self.words.borrow().contains(word)
+    }
+}
+
 /// Every fake, owned together.
 #[derive(Default)]
 pub(crate) struct World {
@@ -484,6 +508,7 @@ pub(crate) struct World {
     pub(crate) encoder: FakeEncoder,
     pub(crate) summarizer: FakeSummarizer,
     pub(crate) cleaner: FakeCleaner,
+    pub(crate) lexicon: FakeLexicon,
     /// Every progress report a job made through [`World::run`].
     pub(crate) progress: RefCell<Vec<u64>>,
 }
@@ -517,6 +542,11 @@ impl World {
     /// [`Self::library_ports`] with the cleanup model.
     pub(crate) fn library_cleaner_ports(&self) -> Ports<'_> {
         self.library_ports().with_cleaner(&self.cleaner)
+    }
+
+    /// [`Self::library_cleaner_ports`] with the word list.
+    pub(crate) fn context_ports(&self) -> Ports<'_> {
+        self.library_cleaner_ports().with_lexicon(&self.lexicon)
     }
 
     /// Runs `job` against the fakes, keeping its progress reports.

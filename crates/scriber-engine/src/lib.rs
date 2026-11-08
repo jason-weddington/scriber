@@ -55,6 +55,7 @@ mod editor;
 mod encode;
 pub mod extract;
 mod files;
+mod lexicon;
 mod net;
 mod ollama;
 mod stream;
@@ -79,6 +80,7 @@ pub use device::CpalRecorder;
 pub use editor::{OPEN, TextEditor};
 pub use encode::{AFCONVERT, Afconvert};
 pub use files::DataDir;
+pub use lexicon::WordList;
 pub use net::HttpDownloader;
 pub use ollama::{
     CLEANUP_TIMEOUT, KEEP_ALIVE, KEEP_WARM_INTERVAL, Ollama, RELEASE_TIMEOUT, SUMMARY_TIMEOUT,
@@ -157,6 +159,10 @@ pub struct EngineConfig {
     /// Tightbeam's way to feed remote audio: a [`StreamRecorder`] the app
     /// pushes samples into. `None` is the cpal device recorder.
     pub recorder: Option<StreamRecorder>,
+    /// The word list that tells an ordinary word from the jargon of the
+    /// embedder's conversation turns ([`Engine::set_context`]), read once at
+    /// open; `None` disables that rule.
+    pub context_lexicon: Option<PathBuf>,
 }
 
 impl EngineConfig {
@@ -175,6 +181,7 @@ impl EngineConfig {
             editor: PathBuf::from(OPEN),
             keep_warm_every: KEEP_WARM_INTERVAL,
             recorder: None,
+            context_lexicon: Some(PathBuf::from("/usr/share/dict/words")),
         }
     }
 }
@@ -329,6 +336,9 @@ struct Inner {
     default_model: String,
     /// Keeps the cleanup model loaded while the cleanup setting is on.
     keep_warm: KeepWarm,
+    /// The word list that tells ordinary words from the context's jargon,
+    /// read once at open; `None` leaves that rule off.
+    lexicon: Option<lexicon::WordList>,
 }
 
 /// The recorder's split notice for the engine behind `weak`. It runs on the
@@ -369,6 +379,10 @@ impl Inner {
             &*a.downloader,
         )
         .with_cleaner(&*a.cleaner);
+        let ports = match &self.lexicon {
+            Some(words) => ports.with_lexicon(words),
+            None => ports,
+        };
         if self.library {
             ports.with_library(Library {
                 clock: &*a.clock,
@@ -520,7 +534,9 @@ impl Engine {
             editor,
             keep_warm_every,
             recorder: _,
+            context_lexicon,
         } = config;
+        let lexicon = context_lexicon.as_deref().and_then(lexicon::WordList::load);
         let keep_warm = KeepWarm::start(Arc::clone(&adapters.warmer), keep_warm_every);
         let clipboard = clipboard.unwrap_or_else(|| Arc::new(NoClipboard));
         let inner = Arc::new_cyclic(|weak| Inner {
@@ -537,6 +553,7 @@ impl Engine {
             ollama_url,
             default_model: summary_model,
             keep_warm,
+            lexicon,
         });
         inner
             .adapters
@@ -819,13 +836,31 @@ impl Engine {
         self.act(Action::Done, "")
     }
 
-    /// Throws the session away and starts an empty one.
+    /// Throws the session away and starts an empty one. The embedder's
+    /// conversation turns are kept; [`Self::clear_context`] forgets them.
     ///
     /// # Errors
     ///
     /// [`EngineError::Refused`] while idle or transcribing.
     pub fn discard(&self) -> Result<Snapshot, EngineError> {
         self.act(Action::Discard, "")
+    }
+
+    /// Replaces the embedder's conversation turns with `turns`, oldest first
+    /// and newest last. They are per-conversation: they survive New and
+    /// Discard, and only this and [`Self::clear_context`] change them. Legal
+    /// in every phase, after [`Self::shutdown`] too; delivers no
+    /// [`Event::State`], bumps no revision and writes no log line.
+    pub fn set_context(&self, turns: Vec<String>) {
+        lock(&self.0.dictation).set_context(turns);
+    }
+
+    /// Forgets the embedder's conversation turns, so the next recording's
+    /// cleanup glossary holds the user's terms alone. Like
+    /// [`Self::set_context`], it changes nothing else and is legal in every
+    /// phase.
+    pub fn clear_context(&self) {
+        lock(&self.0.dictation).clear_context();
     }
 
     /// Transcribes a failed session's failed segments again.
