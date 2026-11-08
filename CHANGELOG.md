@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.9.0 - 2026-11-08
+#### Features
+- (**a21ee7b1**) menu bar: a second global shortcut, Pause/Resume (default ⌥⌘P), changeable in Settings - (3246666) - Jason Weddington, *Claude Opus 5.5*
+
+- - -
+
 ## v0.8.0 - 2026-11-07
 #### Features
 - (**1886362a**) scriber-engine StreamRecorder: a Recorder adapter fed pushed 16 kHz PCM chunks, reusing the core Tap and feeder, selected through EngineConfig.recorder - (3becde9) - claude-code-sonnet, *Claude Sonnet 5.5*
