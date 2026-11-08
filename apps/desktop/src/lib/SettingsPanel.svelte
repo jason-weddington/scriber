@@ -43,6 +43,7 @@
     onbrowsemodel: () => void;
     onsilencesplit: (ms: number) => void;
     onshortcut: (value: string) => void;
+    onpauseshortcut: (value: string) => void;
     onclose: () => void;
   }
 
@@ -65,17 +66,19 @@
     onbrowsemodel,
     onsilencesplit,
     onshortcut,
+    onpauseshortcut,
     onclose,
   }: Props = $props();
 
   let dialog = $state<HTMLDialogElement>();
   let path = $state<HTMLInputElement>();
-  // Whether the shortcut button is capturing the next key press, and why the
-  // last press was refused.
-  let armed = $state(false);
+  // Which shortcut button is capturing the next key press, and why the last
+  // press was refused.
+  let armed = $state<'toggle' | 'pause' | null>(null);
   let refusal = $state<string | null>(null);
-  // What the button shows: the saved shortcut as glyphs, or the capture's prompt.
-  const shown = $derived(armed ? 'Press a shortcut…' : shortcutGlyphs(settings.toggleShortcut));
+  // What each button shows: the saved shortcut as glyphs, or the capture's prompt.
+  const shown = $derived(armed === 'toggle' ? 'Press a shortcut…' : shortcutGlyphs(settings.toggleShortcut));
+  const pauseShown = $derived(armed === 'pause' ? 'Press a shortcut…' : settings.pauseShortcut === '' ? 'None' : shortcutGlyphs(settings.pauseShortcut));
   // Whether the press that led to a click began on the overlay, so that a
   // drag from inside the modal released on the overlay does not close it.
   let pressedBackdrop = false;
@@ -188,31 +191,69 @@
         aria-keyshortcuts={shortcutAria(settings.toggleShortcut)}
         title={shortcutAria(settings.toggleShortcut)}
         onclick={() => {
-          armed = true;
+          armed = 'toggle';
           refusal = null;
         }}
         onkeydown={(e) => {
-          if (!armed) return;
+          if (armed !== 'toggle') return;
           // Every key belongs to the capture: the modal must not see the
           // Escape that would close it, nor Space or Return that would click
           // the button again.
           e.preventDefault();
           const capture = captureShortcut(e);
           if (capture.kind === 'cancel') {
-            armed = false;
+            armed = null;
             refusal = null;
           } else if (capture.kind === 'needsModifier') {
             refusal = 'A shortcut needs ⌥ or ⌘.';
           } else if (capture.kind === 'badKey') {
             refusal = 'That key cannot be a shortcut.';
+          } else if (capture.value === settings.pauseShortcut) {
+            refusal = 'That shortcut is the pause shortcut.';
           } else {
-            armed = false;
+            armed = null;
             refusal = null;
             onshortcut(capture.value);
           }
         }}
       >
         {shown}
+      </button>
+    </div>
+  </div>
+  <div class="vocabulary" role="group" aria-label="Pause shortcut">
+    <span class="caption" aria-hidden="true">Pause shortcut</span>
+    <div class="row">
+      <button
+        type="button"
+        aria-label={`Pause shortcut: ${pauseShown}`}
+        aria-keyshortcuts={shortcutAria(settings.pauseShortcut) || undefined}
+        title={shortcutAria(settings.pauseShortcut) || undefined}
+        onclick={() => {
+          armed = 'pause';
+          refusal = null;
+        }}
+        onkeydown={(e) => {
+          if (armed !== 'pause') return;
+          e.preventDefault();
+          const capture = captureShortcut(e);
+          if (capture.kind === 'cancel') {
+            armed = null;
+            refusal = null;
+          } else if (capture.kind === 'needsModifier') {
+            refusal = 'A shortcut needs ⌥ or ⌘.';
+          } else if (capture.kind === 'badKey') {
+            refusal = 'That key cannot be a shortcut.';
+          } else if (capture.value === settings.toggleShortcut) {
+            refusal = 'That shortcut is the toggle shortcut.';
+          } else {
+            armed = null;
+            refusal = null;
+            onpauseshortcut(capture.value);
+          }
+        }}
+      >
+        {pauseShown}
       </button>
     </div>
   </div>

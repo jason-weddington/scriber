@@ -110,7 +110,8 @@
     "keepSegments": true,
     "learnedVocabulary": "/data/learned.txt",
     "modelFolder": "/data/models",
-    "toggleShortcut": "Opt+Cmd+D"
+    "toggleShortcut": "Opt+Cmd+D",
+    "pauseShortcut": "Opt+Cmd+P"
   },
   "inputDevices": {
     "defaultDevice": "Jabra Evolve 65",

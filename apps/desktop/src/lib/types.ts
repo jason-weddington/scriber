@@ -84,6 +84,8 @@ export interface Settings {
   modelFolder: string;
   /** The global shortcut that starts and finishes a dictation, in Scriber's form (`Opt+Cmd+D`); the engine answers the default when the stored value cannot be used. */
   toggleShortcut: string;
+  /** The global shortcut that pauses and resumes a dictation, in Scriber's form (`Opt+Cmd+P`); '' when no second shortcut is registered, and the engine answers the fallback when the stored value cannot be used. */
+  pauseShortcut: string;
 }
 
 /** The input devices the microphone menu offers. */

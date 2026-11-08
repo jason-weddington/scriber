@@ -9,8 +9,8 @@ mod common;
 mod tests {
     use scriber_core::dictation::{COPIED, Dictation, DictationError};
     use scriber_core::menubar::{
-        DEFAULT_SHORTCUT, Icon, Item, Log, Toggle, accelerator, accelerator_or_default, icon,
-        items, notice, toggle,
+        DEFAULT_PAUSE_SHORTCUT, DEFAULT_SHORTCUT, Icon, Item, Log, Toggle, accelerator,
+        accelerator_or_default, icon, items, notice, pause, toggle,
     };
     use scriber_core::model::{Action, Phase, Snapshot};
 
@@ -104,6 +104,23 @@ mod tests {
     }
 
     #[test]
+    fn the_pause_table_is_pinned() {
+        for phase in PHASES {
+            let want = match phase {
+                Phase::Recording => Toggle::Act(Action::Pause),
+                Phase::Paused => Toggle::Act(Action::Resume),
+                Phase::Idle
+                | Phase::Ready
+                | Phase::Transcribing
+                | Phase::Finished
+                | Phase::Failed => Toggle::Nothing,
+            };
+            assert_eq!(pause(phase), want, "{phase}");
+            assert_ne!(pause(phase), Toggle::Record, "{phase}: never records");
+        }
+    }
+
+    #[test]
     fn the_menu_is_six_items_with_show_and_quit_always_enabled() {
         for phase in PHASES {
             let [show, _, _, _, _, quit] = items(phase);
@@ -182,6 +199,16 @@ mod tests {
     #[test]
     fn the_default_shortcut_is_pinned() {
         assert_eq!(DEFAULT_SHORTCUT, "Opt+Cmd+D", "the default");
+    }
+
+    #[test]
+    fn the_default_pause_shortcut_is_pinned() {
+        assert_eq!(DEFAULT_PAUSE_SHORTCUT, "Opt+Cmd+P", "the default");
+        assert_eq!(
+            accelerator(DEFAULT_PAUSE_SHORTCUT).as_deref(),
+            Some("Alt+Super+KeyP"),
+            "the plugin's form"
+        );
     }
 
     #[test]
@@ -294,6 +321,13 @@ mod tests {
                 error: None,
                 phase_after: "transcribing",
             },
+            Log::Pause {
+                phase: "recording",
+                action: Some("pause"),
+                outcome: "ok",
+                error: None,
+                phase_after: "paused",
+            },
             Log::Menu {
                 id: "pause",
                 phase: "recording",
@@ -301,9 +335,17 @@ mod tests {
                 error: None,
             },
             Log::Shortcut {
+                chord: "toggle",
                 trigger: "launch",
                 accelerator: "Alt+Super+KeyD",
                 outcome: "registered",
+                error: None,
+            },
+            Log::Shortcut {
+                chord: "pause",
+                trigger: "launch",
+                accelerator: "",
+                outcome: "skipped",
                 error: None,
             },
             Log::Notify {
@@ -316,8 +358,10 @@ mod tests {
         ];
         let want = [
             r#"{"event":"toggle","phase":"recording","toggle":"act","action":"done","outcome":"ok","error":null,"phase_after":"transcribing"}"#,
+            r#"{"event":"pause","phase":"recording","action":"pause","outcome":"ok","error":null,"phase_after":"paused"}"#,
             r#"{"event":"menu","id":"pause","phase":"recording","outcome":"ok","error":null}"#,
-            r#"{"event":"shortcut","trigger":"launch","accelerator":"Alt+Super+KeyD","outcome":"registered","error":null}"#,
+            r#"{"event":"shortcut","chord":"toggle","trigger":"launch","accelerator":"Alt+Super+KeyD","outcome":"registered","error":null}"#,
+            r#"{"event":"shortcut","chord":"pause","trigger":"launch","accelerator":"","outcome":"skipped","error":null}"#,
             r#"{"event":"notify","phase":"finished","visible":false,"notice":"Copied to the clipboard.","outcome":"shown","error":null}"#,
         ];
         for (line, expected) in lines.iter().zip(want) {

@@ -195,6 +195,9 @@ export function shortcut(press: KeyPress, phase: Phase, inText: boolean): Action
  */
 export const DEFAULT_TOGGLE_SHORTCUT = 'Opt+Cmd+D';
 
+/** The pause key a fresh install uses (crates/scriber-core/src/menubar.rs): ⌥⌘P. */
+export const DEFAULT_PAUSE_SHORTCUT = 'Opt+Cmd+P';
+
 /** Scriber's modifiers, in the order the core and the glyphs list them. */
 const MODIFIERS = ['Ctrl', 'Opt', 'Shift', 'Cmd'] as const;
 type Modifier = (typeof MODIFIERS)[number];

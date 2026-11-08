@@ -697,6 +697,74 @@ impl Engine {
         result
     }
 
+    /// The menu bar's pause key: one press of the pause shortcut, decided by
+    /// [`menubar::pause`] from the phase the session lock shows.
+    ///
+    /// While recording it sends [`Action::Pause`], while paused it resumes,
+    /// and in every other phase it does nothing. Unlike [`Self::pause`],
+    /// which sends [`Action::Pause`] unconditionally and is refused outside
+    /// recording, `press_pause` is the phase-decided menu-bar gesture. Every
+    /// press writes one `menubar-log.jsonl` line, and a successful one is
+    /// delivered as [`Event::State`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever the session answers ([`EngineError::Refused`] included);
+    /// [`EngineError::ShutDown`] once [`Self::shutdown`] has run, in every
+    /// phase, because the check comes before the phase is read.
+    pub fn press_pause(&self) -> Result<Snapshot, EngineError> {
+        let ports = self.0.ports();
+        let mut dictation = lock(&self.0.dictation);
+        let shut = self.refuse_if_shut();
+        let phase = dictation.snapshot(&ports).phase;
+        let pause = menubar::pause(phase);
+        // A press after shutdown still logs its failure: the check comes
+        // before the phase is read, in every phase, `nothing` included.
+        let result = match shut {
+            Err(e) => Err(e),
+            Ok(()) => match pause {
+                menubar::Toggle::Act(action) => dictation
+                    .apply(action, "", &ports)
+                    .map_err(EngineError::from),
+                menubar::Toggle::Record | menubar::Toggle::Nothing => {
+                    Ok(dictation.snapshot(&ports))
+                }
+            },
+        };
+        let error: Option<String> = match &result {
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        let (outcome, success) = match &result {
+            Ok(snapshot) => (
+                if pause == menubar::Toggle::Nothing {
+                    "nothing"
+                } else {
+                    "ok"
+                },
+                Some(snapshot.phase),
+            ),
+            Err(EngineError::Refused(_)) => ("refused", None),
+            Err(_) => ("failed", None),
+        };
+        let action = match pause {
+            menubar::Toggle::Act(Action::Pause) => Some("pause"),
+            menubar::Toggle::Act(Action::Resume) => Some("resume"),
+            menubar::Toggle::Act(_) | menubar::Toggle::Record | menubar::Toggle::Nothing => None,
+        };
+        self.log_menubar(&menubar::Log::Pause {
+            phase: phase_name(phase),
+            action,
+            outcome,
+            error: error.as_deref(),
+            phase_after: phase_name(success.unwrap_or(phase)),
+        });
+        if let Ok(snapshot) = &result {
+            (self.0.events)(Event::State(snapshot.clone()));
+        }
+        result
+    }
+
     /// The accelerator the global-shortcut plugin takes, from the saved
     /// `toggle_shortcut`: `Alt+Super+KeyD` for the default. Never `None`,
     /// because [`settings::load`] keeps only a value `menubar::accelerator`
@@ -705,6 +773,15 @@ impl Engine {
     #[must_use]
     pub fn toggle_accelerator(&self) -> String {
         menubar::accelerator_or_default(&self.settings().toggle_shortcut)
+    }
+
+    /// The accelerator the global-shortcut plugin takes for the pause key,
+    /// from the saved `pause_shortcut`: `Some("Alt+Super+KeyP")` for the
+    /// default, and `None` for `""` (no second shortcut registered). Takes no
+    /// session lock, so it is safe in the settings command.
+    #[must_use]
+    pub fn pause_accelerator(&self) -> Option<String> {
+        menubar::accelerator(&self.settings().pause_shortcut)
     }
 
     /// Writes one `menubar-log.jsonl` line, best effort, in the shape of the

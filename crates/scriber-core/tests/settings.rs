@@ -5,7 +5,7 @@ mod common;
 
 #[cfg(test)]
 mod tests {
-    use scriber_core::menubar::DEFAULT_SHORTCUT;
+    use scriber_core::menubar::{DEFAULT_PAUSE_SHORTCUT, DEFAULT_SHORTCUT};
     use scriber_core::model::Settings;
     use scriber_core::ports::Files as _;
     use scriber_core::settings::{
@@ -33,6 +33,7 @@ mod tests {
             learned_vocabulary: String::new(),
             model_folder: String::new(),
             toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
+            pause_shortcut: DEFAULT_PAUSE_SHORTCUT.to_string(),
         }
     }
 
@@ -81,6 +82,7 @@ mod tests {
                     learned_vocabulary: String::new(),
                     model_folder: String::new(),
                     toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
+                    pause_shortcut: DEFAULT_PAUSE_SHORTCUT.to_string(),
                 },
             ),
             (
@@ -99,6 +101,7 @@ mod tests {
                     learned_vocabulary: String::new(),
                     model_folder: String::new(),
                     toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
+                    pause_shortcut: DEFAULT_PAUSE_SHORTCUT.to_string(),
                 },
             ),
             (
@@ -117,6 +120,7 @@ mod tests {
                     learned_vocabulary: String::new(),
                     model_folder: String::new(),
                     toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
+                    pause_shortcut: DEFAULT_PAUSE_SHORTCUT.to_string(),
                 },
             ),
             (
@@ -135,6 +139,7 @@ mod tests {
                     learned_vocabulary: String::new(),
                     model_folder: String::new(),
                     toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
+                    pause_shortcut: DEFAULT_PAUSE_SHORTCUT.to_string(),
                 },
             ),
             (br#"{"libraryOpen":false}"#, defaults()),
@@ -165,6 +170,7 @@ mod tests {
             learned_vocabulary: String::new(),
             model_folder: String::new(),
             toggle_shortcut: DEFAULT_SHORTCUT.to_string(),
+            pause_shortcut: DEFAULT_PAUSE_SHORTCUT.to_string(),
         };
         save(&files, &off).unwrap();
         assert_eq!(load(&files), off, "read back");
@@ -184,13 +190,14 @@ mod tests {
                 "keep_segments": false,
                 "learned_vocabulary": "",
                 "model_folder": "",
-                "toggle_shortcut": "Opt+Cmd+D"
+                "toggle_shortcut": "Opt+Cmd+D",
+                "pause_shortcut": "Opt+Cmd+P"
             }),
             "snake_case on disk"
         );
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
+            br#"{"summaries":false,"library_open":false,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
             "compact"
         );
         assert!(
@@ -255,7 +262,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"/x/learned.txt","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"/x/learned.txt","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -293,7 +300,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"/x/models","toggle_shortcut":"Opt+Cmd+D"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"/x/models","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -342,10 +349,49 @@ mod tests {
     }
 
     #[test]
-    fn the_toggle_shortcut_round_trips_and_is_saved_last() {
+    fn the_pause_shortcut_follows_its_read_rule() {
+        for bytes in [
+            &b"{}"[..],
+            br#"{"pause_shortcut":"nonsense"}"#,
+            br#"{"pause_shortcut":""}"#,
+            br#"{"pause_shortcut":"P"}"#,
+            br#"{"pause_shortcut":"Ctrl+P"}"#,
+            br#"{"pause_shortcut":42}"#,
+            br#"{"pause_shortcut":[]}"#,
+            br#"{"pause_shortcut":null}"#,
+            br#"{"pause_shortcut":"Opt+Cmd+D"}"#,
+        ] {
+            assert_eq!(
+                load(&with(bytes)).pause_shortcut,
+                "Opt+Cmd+P",
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        assert_eq!(
+            load(&with(br#"{"pause_shortcut":"Opt+Shift+Cmd+P"}"#)).pause_shortcut,
+            "Opt+Shift+Cmd+P",
+            "a valid value is kept verbatim"
+        );
+        for bytes in [
+            &br#"{"toggle_shortcut":"Opt+Cmd+P"}"#[..],
+            br#"{"toggle_shortcut":"Opt+Cmd+P","pause_shortcut":"Opt+Cmd+P"}"#,
+            br#"{"toggle_shortcut":"Opt+Cmd+P","pause_shortcut":"Cmd+Opt+P"}"#,
+        ] {
+            assert_eq!(
+                load(&with(bytes)).pause_shortcut,
+                "",
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn the_pause_shortcut_round_trips_after_the_toggle() {
         let files = FakeFiles::default();
         let s = Settings {
-            toggle_shortcut: "Opt+Shift+Cmd+K".to_string(),
+            pause_shortcut: "Opt+Shift+Cmd+P".to_string(),
             ..defaults()
         };
         save(&files, &s).unwrap();
@@ -353,7 +399,24 @@ mod tests {
             files
                 .read(SETTINGS)
                 .unwrap()
-                .ends_with(br#"","toggle_shortcut":"Opt+Shift+Cmd+K"}"#),
+                .ends_with(br#","pause_shortcut":"Opt+Shift+Cmd+P"}"#),
+            "the last key"
+        );
+        assert_eq!(load(&files), s, "read back");
+    }
+
+    #[test]
+    fn the_toggle_shortcut_round_trips_before_the_pause() {
+        let files = FakeFiles::default();
+        let s = Settings {
+            toggle_shortcut: "Opt+Shift+Cmd+K".to_string(),
+            ..defaults()
+        };
+        save(&files, &s).unwrap();
+        assert!(
+            files.read(SETTINGS).unwrap().ends_with(
+                br#"","toggle_shortcut":"Opt+Shift+Cmd+K","pause_shortcut":"Opt+Cmd+P"}"#
+            ),
             "the last key"
         );
         assert_eq!(load(&files), s, "read back");
@@ -369,7 +432,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"/x/terms.txt","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -407,7 +470,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":true,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -445,7 +508,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"gemma3:4b","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -496,7 +559,7 @@ mod tests {
         save(&files, &s).unwrap();
         let bytes = files.read(SETTINGS).unwrap();
         assert!(
-            bytes.ends_with(br#","library_width":300,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#),
+            bytes.ends_with(br#","library_width":300,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#),
             "{}",
             String::from_utf8_lossy(&bytes)
         );
@@ -539,7 +602,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert_eq!(
             files.read(SETTINGS).unwrap(),
-            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
+            br#"{"summaries":true,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"AirPods Pro","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
             "bytes"
         );
         assert_eq!(load(&files), s, "read back");
@@ -585,7 +648,7 @@ mod tests {
             files
                 .read(SETTINGS)
                 .unwrap()
-                .ends_with(br#","input_device":"","silence_split_ms":2500,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#),
+                .ends_with(br#","input_device":"","silence_split_ms":2500,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#),
             "saved before the learned vocabulary"
         );
         assert_eq!(load(&files), s, "read back");
@@ -621,7 +684,7 @@ mod tests {
         save(&files, &s).unwrap();
         assert!(
             files.read(SETTINGS).unwrap().ends_with(
-                br#","silence_split_ms":0,"keep_segments":true,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#
+                br#","silence_split_ms":0,"keep_segments":true,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#
             ),
             "saved before the learned vocabulary"
         );

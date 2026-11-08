@@ -209,6 +209,11 @@ pub struct Settings {
     /// canonical form (`Opt+Cmd+D`); the core answers the default when the
     /// stored value cannot be parsed (see [`crate::menubar`]).
     pub toggle_shortcut: String,
+    /// The global shortcut that pauses and resumes a dictation, in Scriber's
+    /// canonical form (`Opt+Cmd+P`, ⌥⌘P); `""` means no second shortcut is
+    /// registered. The core answers the fallback when the stored value cannot
+    /// be used (see [`crate::menubar`]).
+    pub pause_shortcut: String,
 }
 
 /// The input devices the microphone menu offers.

@@ -92,7 +92,7 @@ mod commands {
         settings: Settings,
     ) -> Result<Settings, String> {
         let saved = engine.set_settings(settings).map_err(|e| e.to_string())?;
-        super::register_toggle(&app, engine.inner(), "settings");
+        super::register_shortcuts(&app, engine.inner(), "settings");
         Ok(saved)
     }
 
@@ -160,40 +160,44 @@ fn on_tray_thread(work: impl FnOnce() + Send + 'static) {
         .spawn(work);
 }
 
-/// Registers the saved toggle shortcut, logging the attempt; after a settings save the old chord goes first, so a change works without a relaunch.
-fn register_toggle(app: &AppHandle, engine: &Engine, trigger: &'static str) {
-    let accel = engine.toggle_accelerator();
+/// Registers the saved toggle and pause shortcuts, logging each attempt; after a settings save the old chords go first, so a change works without a relaunch.
+#[rustfmt::skip]
+fn register_shortcuts(app: &AppHandle, engine: &Engine, trigger: &'static str) {
     let shortcuts = app.global_shortcut();
+    let toggle = engine.toggle_accelerator();
+    let pause = engine.pause_accelerator();
     if trigger == "settings" {
         match shortcuts.unregister_all() {
-            Ok(()) => log_shortcut(engine, trigger, &accel, "unregistered", None),
-            Err(e) => log_shortcut(engine, trigger, &accel, "failed", Some(&e.to_string())),
+            Ok(()) => log_shortcut(engine, "both", trigger, "", "unregistered", None),
+            Err(e) => log_shortcut(engine, "both", trigger, "", "failed", Some(&e.to_string())),
         }
     }
-    match shortcuts.register(accel.as_str()) {
-        Ok(()) => log_shortcut(engine, trigger, &accel, "registered", None),
-        Err(e) => log_shortcut(engine, trigger, &accel, "failed", Some(&e.to_string())),
+    match shortcuts.on_shortcut(toggle.as_str(), |handle, _shortcut, event| on_shortcut(handle, event, Engine::toggle)) {
+        Ok(()) => log_shortcut(engine, "toggle", trigger, &toggle, "registered", None),
+        Err(e) => log_shortcut(engine, "toggle", trigger, &toggle, "failed", Some(&e.to_string())),
+    }
+    match pause {
+        None => log_shortcut(engine, "pause", trigger, "", "skipped", None),
+        Some(pause) => match shortcuts.on_shortcut(pause.as_str(), |handle, _shortcut, event| on_shortcut(handle, event, Engine::press_pause)) {
+            Ok(()) => log_shortcut(engine, "pause", trigger, &pause, "registered", None),
+            Err(e) => log_shortcut(engine, "pause", trigger, &pause, "failed", Some(&e.to_string())),
+        },
     }
 }
 
 /// Writes one `shortcut` line, with the plugin's error text verbatim.
-fn log_shortcut(e: &Engine, t: &str, accel: &str, outcome: &str, error: Option<&str>) {
+fn log_shortcut(e: &Engine, chord: &str, t: &str, accel: &str, outcome: &str, error: Option<&str>) {
     #[rustfmt::skip]
-    e.log_menubar(&menubar::Log::Shortcut { trigger: t, accelerator: accel, outcome, error });
+    e.log_menubar(&menubar::Log::Shortcut { chord, trigger: t, accelerator: accel, outcome, error });
 }
 
-/// The global shortcut's handler: a press toggles (the plugin reports Released too, so one press would otherwise toggle twice), on a `scriber-tray` thread.
-fn on_shortcut(app: &AppHandle, event: ShortcutEvent) {
-    if event.state != ShortcutState::Pressed {
-        return;
-    }
-    let Some(engine) = app.try_state::<Engine>() else {
-        return;
-    };
+/// One press's handler: act on Pressed only (the plugin reports Released too), on a `scriber-tray` thread.
+#[rustfmt::skip]
+fn on_shortcut(app: &AppHandle, event: ShortcutEvent, gesture: fn(&Engine) -> Result<Snapshot, EngineError>) {
+    if event.state != ShortcutState::Pressed { return; }
+    let Some(engine) = app.try_state::<Engine>() else { return; };
     let engine = engine.inner().clone();
-    on_tray_thread(move || {
-        let _result = engine.toggle();
-    });
+    on_tray_thread(move || { let _result = gesture(&engine); });
 }
 
 /// Builds the menu bar icon and its menu, once, at launch.
@@ -347,11 +351,7 @@ pub fn run() -> Result<(), tauri::Error> {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| on_shortcut(app, event))
-                .build(),
-        )
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
             // An emit fails only once the webview is gone: no one hears.
@@ -378,7 +378,7 @@ pub fn run() -> Result<(), tauri::Error> {
                 phase: Mutex::new(phase),
             });
             install_tray(app.handle())?;
-            register_toggle(app.handle(), &engine, "launch");
+            register_shortcuts(app.handle(), &engine, "launch");
             Ok(())
         })
         .on_window_event(on_window_event)

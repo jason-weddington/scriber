@@ -3,8 +3,8 @@
 //! On disk the file is a JSON object with the `snake_case` keys `summaries`,
 //! `library_open`, `vocabulary`, `cleanup`, `summary_model`,
 //! `cleanup_model`, `library_width`, `input_device`, `silence_split_ms`,
-//! `keep_segments`, `learned_vocabulary`, `model_folder` and
-//! `toggle_shortcut`. Reading is lenient: a missing, unreadable or invalid file
+//! `keep_segments`, `learned_vocabulary`, `model_folder`, `toggle_shortcut`
+//! and `pause_shortcut`. Reading is lenient: a missing, unreadable or invalid file
 //! means the defaults (`summaries` and `library_open` true, `vocabulary`
 //! empty, `cleanup` false, both models `""`, meaning the engine's default
 //! model, `library_width` 220, `input_device` `""`, meaning the Mac's default
@@ -71,6 +71,7 @@ struct Disk {
     learned_vocabulary: String,
     model_folder: String,
     toggle_shortcut: String,
+    pause_shortcut: String,
 }
 
 /// The saved settings, or the defaults where there are none.
@@ -90,6 +91,30 @@ pub fn load(files: &dyn Files) -> Settings {
             .unwrap_or_default()
             .to_string()
     };
+    let toggle_shortcut = object
+        .get("toggle_shortcut")
+        .and_then(Value::as_str)
+        .filter(|s| crate::menubar::accelerator(s).is_some())
+        .unwrap_or(crate::menubar::DEFAULT_SHORTCUT)
+        .to_string();
+    let toggle_accelerator = crate::menubar::accelerator(&toggle_shortcut);
+    let pause_shortcut = object
+        .get("pause_shortcut")
+        .and_then(Value::as_str)
+        .filter(|s| crate::menubar::accelerator(s).is_some())
+        .filter(|s| crate::menubar::accelerator(s) != toggle_accelerator)
+        .map_or_else(
+            || {
+                if crate::menubar::accelerator(crate::menubar::DEFAULT_PAUSE_SHORTCUT)
+                    == toggle_accelerator
+                {
+                    String::new()
+                } else {
+                    crate::menubar::DEFAULT_PAUSE_SHORTCUT.to_string()
+                }
+            },
+            str::to_string,
+        );
     Settings {
         summaries: flag("summaries", true),
         library_open: flag("library_open", true),
@@ -127,12 +152,8 @@ pub fn load(files: &dyn Files) -> Settings {
             .filter(|path| path.starts_with('/'))
             .unwrap_or_default()
             .to_string(),
-        toggle_shortcut: object
-            .get("toggle_shortcut")
-            .and_then(Value::as_str)
-            .filter(|s| crate::menubar::accelerator(s).is_some())
-            .unwrap_or(crate::menubar::DEFAULT_SHORTCUT)
-            .to_string(),
+        toggle_shortcut,
+        pause_shortcut,
     }
 }
 
@@ -156,6 +177,7 @@ pub fn save(files: &dyn Files, s: &Settings) -> Result<(), PortError> {
         learned_vocabulary: s.learned_vocabulary.clone(),
         model_folder: s.model_folder.clone(),
         toggle_shortcut: s.toggle_shortcut.clone(),
+        pause_shortcut: s.pause_shortcut.clone(),
     };
     let bytes = serde_json::to_vec(&disk).map_err(fail)?;
     files.write(SETTINGS_PARTIAL, &bytes)?;

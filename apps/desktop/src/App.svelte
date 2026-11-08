@@ -34,6 +34,7 @@
     bars,
     barCount,
     controlsFor,
+    DEFAULT_PAUSE_SHORTCUT,
     DEFAULT_TOGGLE_SHORTCUT,
     downloadText,
     formatElapsed,
@@ -81,7 +82,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: '', modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: '', modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
   let settingsOpen = $state(false);
   let settingsButton = $state<HTMLButtonElement>();
   let settingsFromPointer = false;
@@ -258,16 +259,33 @@
     );
   }
 
-  /** A captured global shortcut: saved at once, and put back when the save fails. */
+  /** A captured global shortcut: saved at once, the engine's answer adopted, and put back when the save fails. */
   function setShortcut(value: string): void {
     const previous = settings.toggleShortcut;
     settings = { ...settings, toggleShortcut: value };
     settingsSet(settings).then(
-      () => {
+      (saved) => {
+        settings = saved;
         settingsError = null;
       },
       (e: unknown) => {
         settings = { ...settings, toggleShortcut: previous };
+        settingsError = errorText(e);
+      },
+    );
+  }
+
+  /** A captured pause shortcut: saved at once, the engine's answer adopted, and put back when the save fails. */
+  function setPauseShortcut(value: string): void {
+    const previous = settings.pauseShortcut;
+    settings = { ...settings, pauseShortcut: value };
+    settingsSet(settings).then(
+      (saved) => {
+        settings = saved;
+        settingsError = null;
+      },
+      (e: unknown) => {
+        settings = { ...settings, pauseShortcut: previous };
         settingsError = errorText(e);
       },
     );
@@ -772,6 +790,7 @@
     onbrowsemodel={browseModelFolder}
     onsilencesplit={setSilenceSplit}
     onshortcut={setShortcut}
+    onpauseshortcut={setPauseShortcut}
     onclose={settingsClosed}
   />
 </div>

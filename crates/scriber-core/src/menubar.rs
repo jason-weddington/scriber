@@ -1,14 +1,15 @@
 //! The menu bar's decisions, with no I/O: the tray menu's six items and which
-//! of them each phase enables, what the global shortcut does in each phase,
-//! the two icons, the notification rule, the shortcut grammar and the log line
-//! every decision writes. The desktop shell (`apps/desktop/src-tauri`) only
-//! applies them; every rule lives here.
+//! of them each phase enables, what a press of each of the two global
+//! shortcuts does in each phase, the two icons, the notification rule, the
+//! shortcut grammar and the log line every decision writes. The desktop shell
+//! (`apps/desktop/src-tauri`) only applies them; every rule lives here.
 //!
-//! The shortcut is Scriber's canonical form: `+`-joined tokens, zero to four
+//! A shortcut is Scriber's canonical form: `+`-joined tokens, zero to four
 //! modifiers out of `Ctrl`, `Opt`, `Shift` and `Cmd` (no repeats), then one key
 //! as `A`..`Z`, `F1`..`F19`, `Space`, `Tab`, `Return` or `Escape`, with at
 //! least one of `Opt` or `Cmd`; [`accelerator`] translates it to the
-//! `global-hotkey` plugin's form, and [`DEFAULT_SHORTCUT`] is ⌥⌘D.
+//! `global-hotkey` plugin's form. [`DEFAULT_SHORTCUT`] is ⌥⌘D and
+//! [`DEFAULT_PAUSE_SHORTCUT`] is ⌥⌘P.
 
 use crate::model::{Action, Phase, Snapshot};
 use serde::Serialize;
@@ -17,7 +18,11 @@ use serde::Serialize;
 /// chord, which is exactly why Settings can change it.
 pub const DEFAULT_SHORTCUT: &str = "Opt+Cmd+D";
 
-/// What a press of the global shortcut does in a phase.
+/// The shortcut a fresh install uses to pause and resume: ⌥⌘P. Another app may
+/// already claim it, which is why Settings can change it.
+pub const DEFAULT_PAUSE_SHORTCUT: &str = "Opt+Cmd+P";
+
+/// What a press of each of the two global shortcuts does in a phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Toggle {
     /// Start a new session at once: [`crate::dictation::Dictation::record`]
@@ -29,7 +34,7 @@ pub enum Toggle {
     Nothing,
 }
 
-/// The action a press of the global shortcut takes in `phase`.
+/// The action a press of the toggle shortcut takes in `phase`.
 ///
 /// The toggle never sends `Action::New` + `Action::Record`: `Engine::record`
 /// (`crates/scriber-engine/src/lib.rs`) already applies `Action::New` itself
@@ -47,6 +52,21 @@ pub fn toggle(phase: Phase) -> Toggle {
         Phase::Recording => Toggle::Act(Action::Done),
         Phase::Paused => Toggle::Act(Action::Resume),
         Phase::Transcribing | Phase::Failed => Toggle::Nothing,
+    }
+}
+
+/// The action a press of the pause shortcut takes in `phase`: Pause while
+/// recording, Resume while paused, and nothing in every other phase. It never
+/// answers [`Toggle::Record`], so a press outside recording and paused cannot
+/// start a session.
+#[must_use]
+pub fn pause(phase: Phase) -> Toggle {
+    match phase {
+        Phase::Recording => Toggle::Act(Action::Pause),
+        Phase::Paused => Toggle::Act(Action::Resume),
+        Phase::Idle | Phase::Ready | Phase::Transcribing | Phase::Finished | Phase::Failed => {
+            Toggle::Nothing
+        }
     }
 }
 
@@ -238,6 +258,19 @@ pub enum Log<'a> {
         /// The snapshot's phase after a success, the phase before it otherwise.
         phase_after: &'a str,
     },
+    /// A press of the pause shortcut (the engine's `press_pause`).
+    Pause {
+        /// The phase before the press.
+        phase: &'a str,
+        /// `"pause"` or `"resume"`, only for a `Toggle::Act`.
+        action: Option<&'a str>,
+        /// `"ok"`, `"nothing"`, `"refused"` or `"failed"`.
+        outcome: &'a str,
+        /// The engine's sentence, when the call failed.
+        error: Option<&'a str>,
+        /// The snapshot's phase after a success, the phase before it otherwise.
+        phase_after: &'a str,
+    },
     /// A click on one of the tray's items.
     Menu {
         /// The item's id.
@@ -249,13 +282,15 @@ pub enum Log<'a> {
         /// The engine's sentence, when the call failed.
         error: Option<&'a str>,
     },
-    /// A registration attempt of the global shortcut.
+    /// A registration attempt of one of the two global shortcuts.
     Shortcut {
+        /// `"toggle"`, `"pause"` or `"both"`.
+        chord: &'a str,
         /// `"launch"` in `setup`, `"settings"` after a save.
         trigger: &'a str,
         /// The accelerator string handed to the plugin.
         accelerator: &'a str,
-        /// `"registered"`, `"unregistered"` or `"failed"`.
+        /// `"registered"`, `"unregistered"`, `"skipped"` or `"failed"`.
         outcome: &'a str,
         /// The plugin's error text, verbatim, when it failed.
         error: Option<&'a str>,

@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-import { DEFAULT_TOGGLE_SHORTCUT, LEGAL } from '../../src/lib/format';
+import { DEFAULT_PAUSE_SHORTCUT, DEFAULT_TOGGLE_SHORTCUT, LEGAL } from '../../src/lib/format';
 import {
   COPIED,
   DEFAULT_LEARNED_VOCABULARY,
@@ -41,6 +41,7 @@ import {
   NOT_IN_LIBRARY,
   NOTHING_HEARD,
   partFailed,
+  storedPauseShortcut,
   storedShortcut,
   storedSplit,
   storedWidth,
@@ -444,8 +445,8 @@ test('summaries off, or Ollama down, keep the excerpt; nothing is archived from 
 
 test('settings round-trip, and the library calls fail on request', async () => {
   const mock = new Mock('?libraryOpen=0&summaries=off');
-  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT });
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT })).toEqual({
+  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: '/x/terms.txt',
@@ -457,9 +458,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
     silenceSplitMs: 0,
     keepSegments: false,
     learnedVocabulary: DEFAULT_LEARNED_VOCABULARY,
-    modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT
+    modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT
   });
-  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT });
+  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
   await expect(mock.libraryGet('../segments')).rejects.toThrow(NOT_IN_LIBRARY);
   for (const call of ['library_list', 'library_get', 'library_copy', 'settings_get', 'settings_set'] as const) {
     const failing = new Mock(`?fail=${call}&library=1`);
@@ -468,7 +469,7 @@ test('settings round-trip, and the library calls fail on request', async () => {
       library_get: () => failing.libraryGet('20261026-090000'),
       library_copy: () => failing.libraryCopy('20261026-090000'),
       settings_get: () => failing.settingsGet(),
-      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT }),
+      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT }),
     }[call];
     await expect(attempt(), call).rejects.toThrow(`Mock failure: ${call}`);
   }
@@ -483,9 +484,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
 test('the vocabulary file is kept like the engine keeps it', async () => {
   const mock = new Mock('');
   expect((await mock.settingsGet()).vocabulary, 'the default, as a path').toBe(MOCK_VOCABULARY);
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT });
-  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT })).toEqual({
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
+  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: MOCK_VOCABULARY,
@@ -497,10 +498,10 @@ test('the vocabulary file is kept like the engine keeps it', async () => {
     silenceSplitMs: 0,
     keepSegments: false,
     learnedVocabulary: DEFAULT_LEARNED_VOCABULARY,
-    modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT
+    modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT
   });
   // Stored as '': a later '' keeps the default rather than an old path.
-  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT })).vocabulary).toBe(MOCK_VOCABULARY);
+  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).vocabulary).toBe(MOCK_VOCABULARY);
   expect(mock.handle.saved.map((s) => s.vocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', MOCK_VOCABULARY, '']);
 });
 
@@ -510,7 +511,7 @@ test('the learned vocabulary file is kept like the engine keeps it', async () =>
   expect((await new Mock('?learnedVocabulary=/x/learned.txt').settingsGet()).learnedVocabulary).toBe('/x/learned.txt');
   await mock.settingsSet({ ...(await mock.settingsGet()), vocabulary: '/x/terms.txt', learnedVocabulary: '/x/terms.txt' });
   expect((await mock.settingsSet({ ...(await mock.settingsGet()), learnedVocabulary: '' })).learnedVocabulary, "'' keeps it").toBe('/x/terms.txt');
-  expect((await mock.settingsSet({ ...(await mock.settingsGet()), learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT })).learnedVocabulary).toBe(DEFAULT_LEARNED_VOCABULARY);
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).learnedVocabulary).toBe(DEFAULT_LEARNED_VOCABULARY);
   // Stored as '': a later '' keeps the default rather than an old path.
   expect((await mock.settingsSet({ ...(await mock.settingsGet()), learnedVocabulary: '' })).learnedVocabulary).toBe(DEFAULT_LEARNED_VOCABULARY);
   expect(mock.handle.saved.map((s) => s.learnedVocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', DEFAULT_LEARNED_VOCABULARY, '']);
@@ -593,11 +594,11 @@ test('the model folder starts at ?modelFolder= or the default, and an empty one 
 
 test('the model folder is kept like the engine keeps it', async () => {
   const mock = new Mock('');
-  await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '/x/models', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT });
-  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT })).modelFolder, "'' keeps it").toBe('/x/models');
-  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT })).modelFolder).toBe(DEFAULT_MODEL_FOLDER);
+  await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '/x/models', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).modelFolder, "'' keeps it").toBe('/x/models');
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).modelFolder).toBe(DEFAULT_MODEL_FOLDER);
   // Stored as '': a later '' keeps the default rather than an old path.
-  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT })).modelFolder).toBe(DEFAULT_MODEL_FOLDER);
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).modelFolder).toBe(DEFAULT_MODEL_FOLDER);
   expect(mock.handle.saved.map((s) => s.modelFolder), 'saved as sent').toEqual(['/x/models', '', DEFAULT_MODEL_FOLDER, '']);
 });
 
@@ -613,7 +614,7 @@ test('the missing-model sentence names the resolved model folder, and follows a 
   internals.modelPresent = false;
   internals.received = null;
   expect(internals.modelError()).toBe(modelMissing(`${DEFAULT_MODEL_FOLDER}/ggml-large-v3-turbo.bin`));
-  await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '/x/models', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT });
+  await mock.settingsSet({ ...(await mock.settingsGet()), modelFolder: '/x/models', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
   expect(internals.modelError()).toBe(modelMissing('/x/models/ggml-large-v3-turbo.bin'));
 });
 
@@ -635,7 +636,7 @@ test('the model folder panel picks ?picked=, a default, or nothing, and fails on
 test('opening the vocabulary file records the resolved path, or fails like the engine', async () => {
   const mock = new Mock('');
   await mock.vocabularyOpen();
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT });
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
   await mock.vocabularyOpen();
   expect(mock.handle.opened).toEqual([MOCK_VOCABULARY, '/x/terms.txt']);
   const failing = new Mock('?fail=vocabulary_open');
@@ -649,7 +650,7 @@ test('the models are kept like the engine keeps them', async () => {
   expect([got.summaryModel, got.cleanupModel], 'the defaults, by name').toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   expect((await new Mock('?summaryModel=llama3:70b').settingsGet()).summaryModel).toBe('llama3:70b');
   expect((await new Mock('?cleanupModel=llama3:70b').settingsGet()).cleanupModel).toBe('llama3:70b');
-  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT };
+  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT };
   await mock.settingsSet({ ...base, summaryModel: 'gemma3:4b', cleanupModel: 'llama3:8b' });
   const kept = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '' });
   expect([kept.summaryModel, kept.cleanupModel], "'' keeps them").toEqual(['gemma3:4b', 'llama3:8b']);
@@ -1181,4 +1182,37 @@ test('the toggle shortcut is kept like the engine keeps it', async () => {
   expect(mock.handle.saved.at(-1)?.toggleShortcut, 'saved verbatim').toBe('Opt+Cmd+K');
   await mock.settingsSet({ ...(await mock.settingsGet()), toggleShortcut: 'nonsense' });
   expect((await mock.settingsGet()).toggleShortcut, 'a stored value the core refuses').toBe(DEFAULT_TOGGLE_SHORTCUT);
+});
+
+test('the default pause shortcut is the fixture default, and starts changed only by request', async () => {
+  expect(DEFAULT_PAUSE_SHORTCUT).toBe(shapes.settings?.pauseShortcut);
+  expect((await new Mock('').settingsGet()).pauseShortcut).toBe('Opt+Cmd+P');
+  expect((await new Mock('?pauseShortcut=Opt+Cmd+Q').settingsGet()).pauseShortcut).toBe('Opt+Cmd+Q');
+  expect((await new Mock('?pauseShortcut=nonsense').settingsGet()).pauseShortcut).toBe('Opt+Cmd+P');
+});
+
+test('the pause shortcut is kept like the engine keeps it', () => {
+  for (const value of ['Opt+Cmd+P', 'Opt+Cmd+Q', 'Ctrl+Opt+Shift+Cmd+F13']) {
+    expect(storedPauseShortcut(value, 'Opt+Cmd+D'), value).toBe(value);
+  }
+  for (const value of ['', 'nonsense', 'P', 'Opt+Cmd+D']) {
+    expect(storedPauseShortcut(value, 'Opt+Cmd+D'), value).toBe(DEFAULT_PAUSE_SHORTCUT);
+  }
+  for (const value of ['', 'Opt+Cmd+P', 'Cmd+Opt+P']) {
+    expect(storedPauseShortcut(value, 'Opt+Cmd+P'), value).toBe('');
+  }
+});
+
+test('a saved pause shortcut comes back and is saved verbatim', async () => {
+  const mock = new Mock('');
+  await mock.settingsSet({ ...(await mock.settingsGet()), pauseShortcut: 'Opt+Cmd+Q' });
+  expect((await mock.settingsGet()).pauseShortcut, 'a saved value').toBe('Opt+Cmd+Q');
+  expect(mock.handle.saved.at(-1)?.pauseShortcut, 'saved verbatim').toBe('Opt+Cmd+Q');
+  await mock.settingsSet({ ...(await mock.settingsGet()), pauseShortcut: 'nonsense' });
+  expect((await mock.settingsGet()).pauseShortcut, 'a stored value the core refuses').toBe(DEFAULT_PAUSE_SHORTCUT);
+});
+
+test('a toggle on the pause chord leaves the mock with no pause shortcut', async () => {
+  expect((await new Mock('?toggleShortcut=Opt+Cmd+P').settingsGet()).pauseShortcut).toBe('');
+  expect((await new Mock('?toggleShortcut=Opt+Cmd+P&pauseShortcut=Cmd+Opt+P').settingsGet()).pauseShortcut).toBe('');
 });

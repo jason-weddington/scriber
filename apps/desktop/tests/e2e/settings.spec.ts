@@ -108,7 +108,7 @@ test('Browse picks another file and saves it', async ({ page }) => {
   await expect(path(page)).toHaveValue(PICKED_NAME);
   await expect(path(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current file').toEqual([DEFAULT]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D' });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -157,7 +157,7 @@ test('Browse picks another learned vocabulary file and saves it', async ({ page 
   await expect(learnedPath(page)).toHaveValue(PICKED_NAME);
   await expect(learnedPath(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current learned file').toEqual([DEFAULT_LEARNED]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: PICKED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D' });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: PICKED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -205,7 +205,7 @@ test('Browse picks another model folder and saves it', async ({ page }) => {
   await expect(modelPath(page)).toHaveValue('Models');
   await expect(modelPath(page)).toHaveAttribute('title', PICKED_MODEL);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current folder').toEqual([DEFAULT_MODEL]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: PICKED_MODEL, toggleShortcut: 'Opt+Cmd+D' });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: PICKED_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -263,7 +263,7 @@ test('post-processing starts off and turning it on saves it', async ({ page }) =
   await expect(cleanupSwitch(page)).toBeChecked();
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -321,11 +321,11 @@ test('choosing a model saves it', async ({ page }) => {
   await summaryModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
   await cleanupModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -670,4 +670,101 @@ test('a shortcut that cannot be saved says why and keeps the saved one', async (
   await page.keyboard.press('Meta+Alt+KeyK');
   await expect(alert(page)).toHaveText('Mock failure: settings_set');
   await expect(shortcutButton(page)).toHaveText('⌥⌘D');
+});
+function pauseButton(page: Page) {
+  return page.getByRole('button', { name: 'Pause shortcut' });
+}
+
+test('the pause shortcut shows ⌥⌘P at launch and arms a capture', async ({ page }) => {
+  await openSettings(page);
+  const button = pauseButton(page);
+  await expect(button).toBeVisible();
+  await expect(button).toHaveText('⌥⌘P');
+  await expect(button).toHaveAttribute('aria-keyshortcuts', 'Alt+Meta+P');
+  await expect(button).toHaveAttribute('title', 'Alt+Meta+P');
+  await expect(button).toHaveAccessibleName('Pause shortcut: ⌥⌘P');
+  await button.click();
+  await expect(button).toHaveText('Press a shortcut…');
+  expect(await saved(page)).toEqual([]);
+  await expect(shortcutButton(page)).toHaveText('⌥⌘D');
+});
+
+test('a captured pause shortcut is saved and shown, leaving the toggle alone', async ({ page }) => {
+  await openSettings(page);
+  await pauseButton(page).click();
+  await page.keyboard.press('Meta+Alt+KeyJ');
+  await expect(pauseButton(page)).toHaveText('⌥⌘J');
+  await expect(pauseButton(page)).toHaveAttribute('aria-keyshortcuts', 'Alt+Meta+J');
+  await expect.poll(async () => (await saved(page)).at(-1)).toMatchObject({ pauseShortcut: 'Opt+Cmd+J', toggleShortcut: 'Opt+Cmd+D' });
+  await expect(alert(page)).toHaveCount(0);
+});
+
+test('Escape cancels a pause capture and saves nothing', async ({ page }) => {
+  await openSettings(page);
+  await pauseButton(page).click();
+  await expect(pauseButton(page)).toHaveText('Press a shortcut…');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+  await expect(pauseButton(page)).toHaveText('⌥⌘P');
+  expect(await saved(page)).toEqual([]);
+  await expect(alert(page)).toHaveCount(0);
+});
+
+test('the pause capture refuses the toggle shortcut', async ({ page }) => {
+  await openSettings(page);
+  await pauseButton(page).click();
+  await page.keyboard.press('Meta+Alt+KeyD');
+  await expect(alert(page)).toHaveText('That shortcut is the toggle shortcut.');
+  await expect(pauseButton(page)).toHaveText('Press a shortcut…');
+  expect(await saved(page)).toEqual([]);
+});
+
+test('the toggle capture refuses the pause shortcut', async ({ page }) => {
+  await openSettings(page);
+  await shortcutButton(page).click();
+  await page.keyboard.press('Meta+Alt+KeyP');
+  await expect(alert(page)).toHaveText('That shortcut is the pause shortcut.');
+  await expect(shortcutButton(page)).toHaveText('Press a shortcut…');
+  expect(await saved(page)).toEqual([]);
+});
+
+test('a pause key without ⌥ or ⌘, or one that cannot be a shortcut, is refused', async ({ page }) => {
+  await openSettings(page);
+  await pauseButton(page).click();
+  await page.keyboard.press('d');
+  await expect(alert(page)).toHaveText('A shortcut needs ⌥ or ⌘.');
+  await expect(pauseButton(page)).toHaveText('Press a shortcut…');
+  await page.keyboard.press('Meta+Alt+Digit1');
+  await expect(alert(page)).toHaveText('That key cannot be a shortcut.');
+  await expect(pauseButton(page)).toHaveText('Press a shortcut…');
+  expect(await saved(page)).toEqual([]);
+});
+
+test('a pause shortcut that cannot be saved says why and keeps the saved one', async ({ page }) => {
+  await openSettings(page, { fail: 'settings_set' });
+  await pauseButton(page).click();
+  await page.keyboard.press('Meta+Alt+KeyJ');
+  await expect(alert(page)).toHaveText('Mock failure: settings_set');
+  await expect(pauseButton(page)).toHaveText('⌥⌘P');
+});
+
+test('a pause shortcut on the toggle chord shows None and omits both attributes', async ({ page }) => {
+  await openSettings(page, { toggleShortcut: 'Opt+Cmd+P' });
+  const button = pauseButton(page);
+  await expect(button).toHaveText('None');
+  await expect(button).not.toHaveAttribute('aria-keyshortcuts', /.*/);
+  await expect(button).not.toHaveAttribute('title', /.*/);
+  await expect(button).toHaveAccessibleName('Pause shortcut: None');
+  await button.click();
+  await page.keyboard.press('Meta+Alt+KeyJ');
+  await expect.poll(async () => (await saved(page)).at(-1)).toMatchObject({ pauseShortcut: 'Opt+Cmd+J' });
+});
+
+test('capturing the toggle adopts the pause shortcut the engine answered', async ({ page }) => {
+  await openSettings(page, { toggleShortcut: 'Opt+Cmd+P' });
+  await shortcutButton(page).click();
+  await page.keyboard.press('Meta+Alt+KeyD');
+  await expect(shortcutButton(page)).toHaveText('⌥⌘D');
+  await expect(pauseButton(page)).toHaveText('⌥⌘P');
+  await expect(pauseButton(page)).toHaveAttribute('aria-keyshortcuts', 'Alt+Meta+P');
 });

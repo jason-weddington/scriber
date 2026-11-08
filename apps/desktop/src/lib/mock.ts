@@ -39,6 +39,7 @@
 //   ?learnedVocabulary=<path>  the learned list starts at that absolute path (else DEFAULT_LEARNED_VOCABULARY)
 //   ?modelFolder=<path>   the model folder starts at that absolute path (else DEFAULT_MODEL_FOLDER)
 //   ?toggleShortcut=<value>   the toggle shortcut starts as that Scriber form (else DEFAULT_TOGGLE_SHORTCUT)
+//   ?pauseShortcut=<value>   the pause shortcut starts as that Scriber form (else DEFAULT_PAUSE_SHORTCUT), answered by the read rule storedPauseShortcut
 //   ?picked=<path>        the model folder panel picks that folder (default /mock/Models); ?picked=cancel cancels it
 // window.__mockBridge.split() is the fake microphone closing the running part at a silence: with the
 // split read at the last Record or Resume non-zero and the session recording, it closes the part
@@ -80,9 +81,11 @@
 
 import {
   clampLibraryWidth,
+  DEFAULT_PAUSE_SHORTCUT,
   DEFAULT_TOGGLE_SHORTCUT,
   isShortcut,
   LIBRARY_WIDTH_DEFAULT,
+  shortcutAria,
   SILENCE_SPLIT_MAX_MS,
   SILENCE_SPLIT_MIN_MS,
 } from './format';
@@ -291,6 +294,12 @@ export function storedSplit(n: number): number {
 /** The core's read rule for the toggle shortcut (crates/scriber-core/src/settings.rs). */
 export function storedShortcut(value: string): string {
   return isShortcut(value) ? value : DEFAULT_TOGGLE_SHORTCUT;
+}
+
+/** The core's read rule for the pause shortcut: kept when accepted and not the toggle's accelerator, else the default or ''. */
+export function storedPauseShortcut(value: string, toggle: string): string {
+  if (isShortcut(value) && shortcutAria(value) !== shortcutAria(toggle)) return value;
+  return shortcutAria(DEFAULT_PAUSE_SHORTCUT) === shortcutAria(toggle) ? '' : DEFAULT_PAUSE_SHORTCUT;
 }
 
 /** The engine's write rule for a model: '' keeps the saved one, the default is saved as ''. */
@@ -626,6 +635,8 @@ export class Mock {
       modelFolder: params.get('modelFolder') ?? DEFAULT_MODEL_FOLDER,
       // A URL query decodes '+' as a space; a shortcut never holds one.
       toggleShortcut: storedShortcut((params.get('toggleShortcut') ?? '').replaceAll(' ', '+')),
+      // Raw; the read rule is applied in resolved(), like the core's load.
+      pauseShortcut: (params.get('pauseShortcut') ?? '').replaceAll(' ', '+'),
     };
     const inputs = params.get('inputs');
     this.inputs =
@@ -780,6 +791,7 @@ export class Mock {
       learnedVocabulary: this.settings.learnedVocabulary || DEFAULT_LEARNED_VOCABULARY,
       modelFolder: this.settings.modelFolder || DEFAULT_MODEL_FOLDER,
       toggleShortcut: storedShortcut(this.settings.toggleShortcut),
+      pauseShortcut: storedPauseShortcut(this.settings.pauseShortcut, storedShortcut(this.settings.toggleShortcut)),
     };
   }
 

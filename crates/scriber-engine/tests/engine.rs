@@ -1121,6 +1121,185 @@ mod tests {
         assert_eq!(line["error"], "The engine has shut down.", "the sentence");
     }
 
+    /// A press that does nothing in `phase` writes the pinned `pause` line.
+    fn nothing_press(engine: &Engine, dir: &TempDir, phase: &str) {
+        let before = engine.state();
+        let after = engine.press_pause().unwrap();
+        assert_eq!(after.phase, before.phase, "{phase}: phase unchanged");
+        assert_eq!(
+            after.revision, before.revision,
+            "{phase}: revision unchanged"
+        );
+        assert_eq!(
+            menubar_log(dir).pop().unwrap(),
+            json!({
+                "event": "pause",
+                "phase": phase,
+                "action": null,
+                "outcome": "nothing",
+                "error": null,
+                "phase_after": phase
+            }),
+            "{phase}: logged"
+        );
+    }
+
+    #[test]
+    fn the_pause_shortcut_pauses_and_resumes() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let _recording = engine.record().unwrap();
+        let paused = engine.press_pause().unwrap();
+        assert_eq!(paused.phase, Phase::Paused, "recording -> paused");
+        assert_eq!(
+            menubar_log(&dir).pop().unwrap(),
+            json!({
+                "event": "pause",
+                "phase": "recording",
+                "action": "pause",
+                "outcome": "ok",
+                "error": null,
+                "phase_after": "paused"
+            }),
+            "the pause line"
+        );
+        let resumed = engine.press_pause().unwrap();
+        assert_eq!(resumed.phase, Phase::Recording, "paused -> recording");
+        assert!(resumed.revision > paused.revision, "revision grew");
+        assert_eq!(
+            menubar_log(&dir).pop().unwrap(),
+            json!({
+                "event": "pause",
+                "phase": "paused",
+                "action": "resume",
+                "outcome": "ok",
+                "error": null,
+                "phase_after": "recording"
+            }),
+            "the resume line"
+        );
+    }
+
+    #[test]
+    fn the_pause_shortcut_does_nothing_in_every_other_phase() {
+        let dir = TempDir::new().unwrap();
+        let (idle, _idle_rx) = Fakes::default().open(config(&dir));
+        nothing_press(&idle, &dir, "idle");
+
+        let ready_dir = TempDir::new().unwrap();
+        let (ready, _ready_rx) = Fakes::default().open(config(&ready_dir));
+        let _ready_recording = ready.record().unwrap();
+        let _ready = ready.act(Action::Discard, "").unwrap();
+        nothing_press(&ready, &ready_dir, "ready");
+
+        let transcribing_dir = TempDir::new().unwrap();
+        let (transcriber, gate) = FakeTranscriber::default().gated();
+        let (transcribing, _transcribing_rx) =
+            Fakes::with(transcriber).open(config(&transcribing_dir));
+        let _transcribing_recording = transcribing.record().unwrap();
+        let done = transcribing.act(Action::Done, "").unwrap();
+        assert_eq!(done.phase, Phase::Transcribing, "transcribing");
+        nothing_press(&transcribing, &transcribing_dir, "transcribing");
+        let _opened = gate.send(());
+
+        let finished_dir = TempDir::new().unwrap();
+        let (finished, _finished_rx) = Fakes::default().open(config(&finished_dir));
+        let _finished_recording = finished.record().unwrap();
+        assert_eq!(finished.stop_and_wait(PATIENCE).unwrap(), "hello world");
+        nothing_press(&finished, &finished_dir, "finished");
+
+        let failed_dir = TempDir::new().unwrap();
+        write(&failed_dir, "segments/segment-0000.wav", b"RIFF");
+        let (failed, _failed_rx) = Fakes::default().open(config(&failed_dir));
+        assert_eq!(failed.state().phase, Phase::Failed, "failed");
+        nothing_press(&failed, &failed_dir, "failed");
+    }
+
+    #[test]
+    fn a_refused_pause_press_is_logged_with_the_engine_sentence() {
+        let dir = TempDir::new().unwrap();
+        let model = dir.path().join("model.bin");
+        std::fs::write(&model, b"model").unwrap();
+        let fakes = Fakes::with(FakeTranscriber {
+            model: Some(model.clone()),
+            ..FakeTranscriber::default()
+        });
+        let (engine, _rx) = fakes.open(config(&dir));
+        let _recording = engine.record().unwrap();
+        let paused = engine.act(Action::Pause, "").unwrap();
+        assert_eq!(paused.phase, Phase::Paused, "paused");
+        std::fs::remove_file(&model).unwrap();
+        let err = engine.press_pause().unwrap_err();
+        assert!(
+            matches!(err, EngineError::Refused(DictationError::ModelMissing(_))),
+            "refused: {err}"
+        );
+        assert_eq!(engine.state().phase, Phase::Paused, "still paused");
+        assert_eq!(
+            menubar_log(&dir).pop().unwrap(),
+            json!({
+                "event": "pause",
+                "phase": "paused",
+                "action": "resume",
+                "outcome": "refused",
+                "error": err.to_string(),
+                "phase_after": "paused"
+            }),
+            "the refused resume line"
+        );
+    }
+
+    #[test]
+    fn a_pause_press_after_shutdown_fails_in_every_phase() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let _report = engine.shutdown();
+        assert_eq!(engine.press_pause(), Err(EngineError::ShutDown), "refused");
+        assert_eq!(
+            menubar_log(&dir).pop().unwrap(),
+            json!({
+                "event": "pause",
+                "phase": "idle",
+                "action": null,
+                "outcome": "failed",
+                "error": "The engine has shut down.",
+                "phase_after": "idle"
+            }),
+            "logged"
+        );
+    }
+
+    #[test]
+    fn the_pause_accelerator_follows_the_saved_shortcut() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(
+            engine.pause_accelerator(),
+            Some("Alt+Super+KeyP".to_string()),
+            "the default"
+        );
+        let saved = engine
+            .set_settings(Settings {
+                pause_shortcut: "Opt+Cmd+Q".to_string(),
+                ..engine.settings()
+            })
+            .unwrap();
+        assert_eq!(saved.pause_shortcut, "Opt+Cmd+Q", "saved");
+        assert_eq!(
+            engine.pause_accelerator(),
+            Some("Alt+Super+KeyQ".to_string()),
+            "after the save"
+        );
+    }
+
+    #[test]
+    fn a_toggle_on_the_pause_chord_leaves_no_pause_accelerator() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"toggle_shortcut":"Opt+Cmd+P"}"#);
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        assert_eq!(engine.pause_accelerator(), None, "no second shortcut");
+    }
+
     #[test]
     fn a_commands_snapshot_is_delivered_as_an_event() {
         let dir = TempDir::new().unwrap();
@@ -1174,6 +1353,7 @@ mod tests {
             learned_vocabulary: default_learned(&dir),
             model_folder: default_model(&dir),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
+            pause_shortcut: "Opt+Cmd+P".to_string(),
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -1184,7 +1364,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -1212,7 +1392,7 @@ mod tests {
         assert!(!back.summaries, "the other keys are saved");
         assert!(
             saved(&dir)
-                .ends_with(r#""keep_segments":true,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#),
+                .ends_with(r#""keep_segments":true,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#),
             "on disk, before the learned list's default"
         );
     }
@@ -1229,7 +1409,7 @@ mod tests {
         assert!(!engine.settings().keep_segments, "read back");
         assert!(
             saved(&dir)
-                .ends_with(r#""keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D"}"#),
+                .ends_with(r#""keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#),
             "on disk, before the learned list's default"
         );
     }
@@ -1287,6 +1467,7 @@ mod tests {
             learned_vocabulary: String::new(),
             model_folder: String::new(),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
+            pause_shortcut: "Opt+Cmd+P".to_string(),
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1322,6 +1503,7 @@ mod tests {
             learned_vocabulary: default_learned(&dir),
             model_folder: default_model(&dir),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
+            pause_shortcut: "Opt+Cmd+P".to_string(),
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1347,6 +1529,7 @@ mod tests {
             learned_vocabulary: String::new(),
             model_folder: String::new(),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
+            pause_shortcut: "Opt+Cmd+P".to_string(),
         };
         let kept = Settings {
             summaries: false,
@@ -1376,6 +1559,7 @@ mod tests {
                 learned_vocabulary: String::new(),
                 model_folder: String::new(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
+                pause_shortcut: "Opt+Cmd+P".to_string(),
             })
             .unwrap();
         let back = engine
@@ -1393,6 +1577,7 @@ mod tests {
                 learned_vocabulary: String::new(),
                 model_folder: String::new(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
+                pause_shortcut: "Opt+Cmd+P".to_string(),
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1430,6 +1615,7 @@ mod tests {
                 learned_vocabulary: String::new(),
                 model_folder: String::new(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
+                pause_shortcut: "Opt+Cmd+P".to_string(),
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -1830,6 +2016,7 @@ mod tests {
                 learned_vocabulary: String::new(),
                 model_folder: String::new(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
+                pause_shortcut: "Opt+Cmd+P".to_string(),
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -1961,6 +2148,7 @@ mod tests {
             learned_vocabulary: default_learned(dir),
             model_folder: default_model(dir),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
+            pause_shortcut: "Opt+Cmd+P".to_string(),
         }
     }
 
