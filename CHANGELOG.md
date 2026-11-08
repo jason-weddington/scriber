@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.10.0 - 2026-11-08
+#### Features
+- (**836dcfe4**) context-aware cleanup for embedding apps: Engine::set_context turns, deterministic jargon extraction, per-recording glossary terms, context.json in the library - (2655875) - Jason Weddington, *Claude Opus 5.5*
+#### Miscellaneous Chores
+- (**mutants**) floor the mutant test timeout at 60 s so a loaded Mac does not fail releases on a spurious TIMEOUT - (11725f1) - Jason Weddington, *Claude Opus 5.5*
+
+- - -
+
 ## v0.9.0 - 2026-11-08
 #### Features
 - (**a21ee7b1**) menu bar: a second global shortcut, Pause/Resume (default ⌥⌘P), changeable in Settings - (3246666) - Jason Weddington, *Claude Opus 5.5*
