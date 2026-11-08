@@ -7,3 +7,9 @@ examine_globs = ["crates/scriber-core/src/**/*.rs", "crates/scriber-engine/src/*
 exclude_globs = ["crates/scriber-engine/src/device.rs", "crates/scriber-engine/src/whisper.rs"]
 test_tool = "nextest"
 timeout_multiplier = 3.0
+# The auto-set test timeout is 3x a ~2 s baseline, floored at 20 s by default.
+# With other sessions loading the Mac, healthy tests that wait on real time
+# overran 20 s and failed two release runs on a random TIMEOUT (2026-11-08,
+# a different mutant each time, each caught in ~2.5 s when rerun alone).
+# Only a hung mutant ever waits this long, so the floor costs nothing otherwise.
+minimum_test_timeout = 60
