@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.11.0 - 2026-11-10
+#### Features
+- (**70081546**) menu bar: pulse the icon from Done until the transcript is copied, and play a soft Pop when it is (Settings switch, on by default) - (3408654) - Jason Weddington, *Claude Opus 5.5*
+
+- - -
+
 ## v0.10.0 - 2026-11-08
 #### Features
 - (**836dcfe4**) context-aware cleanup for embedding apps: Engine::set_context turns, deterministic jargon extraction, per-recording glossary terms, context.json in the library - (2655875) - Jason Weddington, *Claude Opus 5.5*
