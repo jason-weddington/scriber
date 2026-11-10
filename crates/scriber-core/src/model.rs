@@ -214,6 +214,8 @@ pub struct Settings {
     /// registered. The core answers the fallback when the stored value cannot
     /// be used (see [`crate::menubar`]).
     pub pause_shortcut: String,
+    /// Whether the menu bar plays the system's soft sound once the finished transcript lands on the clipboard; on by default. Read leniently from disk and read by [`crate::menubar::sound`]; the shell caches it.
+    pub copy_sound: bool,
 }
 
 /// The input devices the microphone menu offers.

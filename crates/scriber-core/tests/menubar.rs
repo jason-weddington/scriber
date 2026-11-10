@@ -1,16 +1,17 @@
 //! The menu bar's pure decisions: the toggle table, the six items and their
-//! flags, the shortcut grammar, the icon, the notification rule and the log
-//! lines.
+//! flags, the shortcut grammar, the three icons and the busy icon's pulse
+//! frames, the notification rule, the copy sound's rule and the log lines.
 
 #[expect(dead_code, reason = "these tests need only some of the fakes")]
 mod common;
 
 #[cfg(test)]
 mod tests {
-    use scriber_core::dictation::{COPIED, Dictation, DictationError};
+    use scriber_core::dictation::{COPIED, Dictation, DictationError, NOTHING_HEARD};
     use scriber_core::menubar::{
-        DEFAULT_PAUSE_SHORTCUT, DEFAULT_SHORTCUT, Icon, Item, Log, Toggle, accelerator,
-        accelerator_or_default, icon, items, notice, pause, toggle,
+        COPY_SOUND, DEFAULT_PAUSE_SHORTCUT, DEFAULT_SHORTCUT, Icon, Item, Log, PULSE_TICK_MS,
+        Sound, Toggle, accelerator, accelerator_or_default, icon, icon_at, items, notice, pause,
+        sound, toggle,
     };
     use scriber_core::model::{Action, Phase, Snapshot};
 
@@ -272,14 +273,158 @@ mod tests {
     }
 
     #[test]
-    fn only_recording_shows_the_recording_icon() {
+    fn every_phase_has_its_icon() {
         for phase in PHASES {
-            let want = if phase == Phase::Recording {
-                Icon::Recording
-            } else {
-                Icon::Template
+            let want = match phase {
+                Phase::Recording => Icon::Recording,
+                Phase::Transcribing => Icon::Busy,
+                Phase::Idle | Phase::Ready | Phase::Paused | Phase::Finished | Phase::Failed => {
+                    Icon::Template
+                }
             };
             assert_eq!(icon(phase), want, "{phase}");
+        }
+        assert_ne!(
+            icon(Phase::Transcribing),
+            icon(Phase::Finished),
+            "the exit swap fires for finished"
+        );
+        assert_ne!(
+            icon(Phase::Transcribing),
+            icon(Phase::Failed),
+            "the exit swap fires for failed"
+        );
+    }
+
+    #[test]
+    fn the_pulse_tick_is_pinned() {
+        assert_eq!(PULSE_TICK_MS, 500, "two frames a second");
+    }
+
+    #[test]
+    fn the_pulse_frames_alternate_only_while_transcribing() {
+        assert_eq!(
+            icon_at(Phase::Transcribing, 0),
+            Some(icon(Phase::Transcribing)),
+            "the first frame is the busy icon"
+        );
+        assert_eq!(
+            (0..=7)
+                .map(|tick| icon_at(Phase::Transcribing, tick))
+                .collect::<Vec<_>>(),
+            [
+                Some(Icon::Busy),
+                Some(Icon::Template),
+                Some(Icon::Busy),
+                Some(Icon::Template),
+                Some(Icon::Busy),
+                Some(Icon::Template),
+                Some(Icon::Busy),
+                Some(Icon::Template),
+            ],
+            "even ticks busy, odd ticks template"
+        );
+        for phase in PHASES {
+            if phase == Phase::Transcribing {
+                continue;
+            }
+            for tick in 0..=3 {
+                assert_eq!(icon_at(phase, tick), None, "{phase}: tick {tick}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_copy_sound_path_and_the_icon_rules_are_pinned() {
+        assert_eq!(
+            COPY_SOUND, "/System/Library/Sounds/Pop.aiff",
+            "the soft system sound"
+        );
+        for (icon, name, draws_as_template) in [
+            (Icon::Template, "template", true),
+            (Icon::Recording, "recording", false),
+            (Icon::Busy, "busy", true),
+        ] {
+            assert_eq!(icon.name(), name, "{icon:?}: the log's name");
+            assert_eq!(
+                icon.draws_as_template(),
+                draws_as_template,
+                "{icon:?}: tinted by macOS"
+            );
+        }
+    }
+
+    #[test]
+    fn the_copy_sound_rule_is_pinned() {
+        let mut failed = finished(Some(COPIED), 7);
+        failed.phase = Phase::Failed;
+        for (previous, snapshot, copy_sound, want) in [
+            (
+                Phase::Recording,
+                finished(Some(COPIED), 1),
+                true,
+                Sound::Play,
+            ),
+            (
+                Phase::Recording,
+                finished(
+                    Some(
+                        "Copied to the clipboard. Could not keep the exact audio of the parts: nope.",
+                    ),
+                    2,
+                ),
+                true,
+                Sound::Play,
+            ),
+            (
+                Phase::Recording,
+                finished(Some(NOTHING_HEARD), 3),
+                true,
+                Sound::Notice,
+            ),
+            (
+                Phase::Recording,
+                finished(
+                    Some("Could not copy to the clipboard: nope. Use Copy to try again."),
+                    4,
+                ),
+                true,
+                Sound::Notice,
+            ),
+            (Phase::Recording, finished(None, 5), true, Sound::Notice),
+            (
+                Phase::Finished,
+                finished(Some(COPIED), 6),
+                true,
+                Sound::AlreadyFinished,
+            ),
+            (Phase::Recording, failed, true, Sound::NotFinished),
+            (
+                Phase::Recording,
+                finished(Some(COPIED), 8),
+                false,
+                Sound::Off,
+            ),
+        ] {
+            assert_eq!(
+                sound(previous, &snapshot, copy_sound),
+                want,
+                "{previous} -> {}: copy_sound {copy_sound}",
+                snapshot.phase
+            );
+        }
+    }
+
+    #[test]
+    fn the_sound_reasons_are_pinned() {
+        for (sound, want) in [
+            (Sound::Play, "play"),
+            (Sound::Off, "off"),
+            (Sound::NotFinished, "not_finished"),
+            (Sound::AlreadyFinished, "already_finished"),
+            (Sound::Notice, "notice"),
+        ] {
+            assert_eq!(sound.reason(), want, "{sound:?}");
         }
     }
 
@@ -311,6 +456,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one literal and one expected line per variant, kept side by side"
+    )]
     fn each_log_variant_serializes_compact_and_snake_case() {
         let lines = [
             Log::Toggle {
@@ -355,6 +504,40 @@ mod tests {
                 outcome: "shown",
                 error: None,
             },
+            Log::Sound {
+                trigger: "finish",
+                phase: "finished",
+                previous: Some("recording"),
+                copy_sound: true,
+                reason: "play",
+                outcome: "played",
+                error: None,
+            },
+            Log::Sound {
+                trigger: "settings",
+                phase: "idle",
+                previous: None,
+                copy_sound: false,
+                reason: "cached",
+                outcome: "cached",
+                error: None,
+            },
+            Log::Pulse {
+                phase: "transcribing",
+                tick_ms: PULSE_TICK_MS,
+                frames: 0,
+                last: "busy",
+                outcome: "started",
+                error: None,
+            },
+            Log::Pulse {
+                phase: "finished",
+                tick_ms: PULSE_TICK_MS,
+                frames: 7,
+                last: "template",
+                outcome: "stopped",
+                error: None,
+            },
         ];
         let want = [
             r#"{"event":"toggle","phase":"recording","toggle":"act","action":"done","outcome":"ok","error":null,"phase_after":"transcribing"}"#,
@@ -363,6 +546,10 @@ mod tests {
             r#"{"event":"shortcut","chord":"toggle","trigger":"launch","accelerator":"Alt+Super+KeyD","outcome":"registered","error":null}"#,
             r#"{"event":"shortcut","chord":"pause","trigger":"launch","accelerator":"","outcome":"skipped","error":null}"#,
             r#"{"event":"notify","phase":"finished","visible":false,"notice":"Copied to the clipboard.","outcome":"shown","error":null}"#,
+            r#"{"event":"sound","trigger":"finish","phase":"finished","previous":"recording","copy_sound":true,"reason":"play","outcome":"played","error":null}"#,
+            r#"{"event":"sound","trigger":"settings","phase":"idle","previous":null,"copy_sound":false,"reason":"cached","outcome":"cached","error":null}"#,
+            r#"{"event":"pulse","phase":"transcribing","tick_ms":500,"frames":0,"last":"busy","outcome":"started","error":null}"#,
+            r#"{"event":"pulse","phase":"finished","tick_ms":500,"frames":7,"last":"template","outcome":"stopped","error":null}"#,
         ];
         for (line, expected) in lines.iter().zip(want) {
             let json = serde_json::to_string(line).unwrap();

@@ -1365,6 +1365,7 @@ mod tests {
             model_folder: default_model(&dir),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
             pause_shortcut: "Opt+Cmd+P".to_string(),
+            copy_sound: true,
         };
         assert_eq!(engine.settings(), defaults, "the defaults");
         let off = Settings {
@@ -1375,7 +1376,7 @@ mod tests {
         assert_eq!(engine.settings(), off, "read back");
         assert_eq!(
             saved(&dir),
-            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#,
+            r#"{"summaries":false,"library_open":true,"vocabulary":"","cleanup":false,"summary_model":"","cleanup_model":"","library_width":220,"input_device":"","silence_split_ms":0,"keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P","copy_sound":true}"#,
             "snake_case on disk, the default glossary as empty"
         );
         let _report = engine.shutdown();
@@ -1403,7 +1404,7 @@ mod tests {
         assert!(!back.summaries, "the other keys are saved");
         assert!(
             saved(&dir)
-                .ends_with(r#""keep_segments":true,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#),
+                .ends_with(r#""keep_segments":true,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P","copy_sound":true}"#),
             "on disk, before the learned list's default"
         );
     }
@@ -1420,8 +1421,29 @@ mod tests {
         assert!(!engine.settings().keep_segments, "read back");
         assert!(
             saved(&dir)
-                .ends_with(r#""keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P"}"#),
+                .ends_with(r#""keep_segments":false,"learned_vocabulary":"","model_folder":"","toggle_shortcut":"Opt+Cmd+D","pause_shortcut":"Opt+Cmd+P","copy_sound":true}"#),
             "on disk, before the learned list's default"
+        );
+    }
+
+    #[test]
+    fn copy_sound_is_replaced_like_summaries() {
+        let dir = TempDir::new().unwrap();
+        let (engine, _rx) = Fakes::default().open(config(&dir));
+        let off = Settings {
+            copy_sound: false,
+            ..engine.settings()
+        };
+        let _saved = engine.set_settings(off).unwrap();
+        assert!(!engine.settings().copy_sound, "read back");
+        assert!(
+            saved(&dir).ends_with(",\"copy_sound\":false}"),
+            "stored false: {}",
+            saved(&dir)
+        );
+        assert!(
+            !saved(&dir).contains("\"copy_sound\":true"),
+            "the old value is replaced"
         );
     }
 
@@ -1479,6 +1501,7 @@ mod tests {
             model_folder: String::new(),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
             pause_shortcut: "Opt+Cmd+P".to_string(),
+            copy_sound: true,
         });
         assert!(
             matches!(&saved, Err(EngineError::Settings(_))),
@@ -1515,6 +1538,7 @@ mod tests {
             model_folder: default_model(&dir),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
             pause_shortcut: "Opt+Cmd+P".to_string(),
+            copy_sound: true,
         };
         assert_eq!(
             engine.set_settings(elsewhere.clone()),
@@ -1541,6 +1565,7 @@ mod tests {
             model_folder: String::new(),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
             pause_shortcut: "Opt+Cmd+P".to_string(),
+            copy_sound: true,
         };
         let kept = Settings {
             summaries: false,
@@ -1571,6 +1596,7 @@ mod tests {
                 model_folder: String::new(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
                 pause_shortcut: "Opt+Cmd+P".to_string(),
+                copy_sound: true,
             })
             .unwrap();
         let back = engine
@@ -1589,6 +1615,7 @@ mod tests {
                 model_folder: String::new(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
                 pause_shortcut: "Opt+Cmd+P".to_string(),
+                copy_sound: true,
             })
             .unwrap();
         assert_eq!(back.vocabulary, default_vocabulary(&dir), "answered");
@@ -1627,6 +1654,7 @@ mod tests {
                 model_folder: String::new(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
                 pause_shortcut: "Opt+Cmd+P".to_string(),
+                copy_sound: true,
             })
             .unwrap();
         assert!(saved(&dir).contains(r#""vocabulary":"""#), "discarded");
@@ -2028,6 +2056,7 @@ mod tests {
                 model_folder: String::new(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
                 pause_shortcut: "Opt+Cmd+P".to_string(),
+                copy_sound: true,
             })
             .unwrap();
         engine.open_vocabulary().unwrap();
@@ -2160,6 +2189,7 @@ mod tests {
             model_folder: default_model(dir),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
             pause_shortcut: "Opt+Cmd+P".to_string(),
+            copy_sound: true,
         }
     }
 

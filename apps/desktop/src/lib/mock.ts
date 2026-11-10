@@ -36,6 +36,7 @@
 //   ?inputDevice=<name>   the saved input device starts as that name (else '', the Mac default)
 //   ?silenceSplitMs=<n>   the silence split starts as n ms in the settings (else 0, off)
 //   ?keepSegments=1       the hidden keep_segments setting starts true (else false)
+//   ?copySound=off        the menu bar's copy sound starts off (else it is on)
 //   ?learnedVocabulary=<path>  the learned list starts at that absolute path (else DEFAULT_LEARNED_VOCABULARY)
 //   ?modelFolder=<path>   the model folder starts at that absolute path (else DEFAULT_MODEL_FOLDER)
 //   ?toggleShortcut=<value>   the toggle shortcut starts as that Scriber form (else DEFAULT_TOGGLE_SHORTCUT)
@@ -637,6 +638,7 @@ export class Mock {
       toggleShortcut: storedShortcut((params.get('toggleShortcut') ?? '').replaceAll(' ', '+')),
       // Raw; the read rule is applied in resolved(), like the core's load.
       pauseShortcut: (params.get('pauseShortcut') ?? '').replaceAll(' ', '+'),
+      copySound: params.get('copySound') !== 'off',
     };
     const inputs = params.get('inputs');
     this.inputs =

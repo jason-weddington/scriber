@@ -445,8 +445,8 @@ test('summaries off, or Ollama down, keep the excerpt; nothing is archived from 
 
 test('settings round-trip, and the library calls fail on request', async () => {
   const mock = new Mock('?libraryOpen=0&summaries=off');
-  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).toEqual({
+  expect(await mock.settingsGet()).toEqual({ summaries: false, libraryOpen: false, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: MOCK_DEFAULT_MODEL, cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true });
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: '/x/terms.txt',
@@ -458,9 +458,9 @@ test('settings round-trip, and the library calls fail on request', async () => {
     silenceSplitMs: 0,
     keepSegments: false,
     learnedVocabulary: DEFAULT_LEARNED_VOCABULARY,
-    modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT
+    modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true
   });
-  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
+  expect(await mock.settingsGet()).toEqual({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: true, summaryModel: 'gemma3:4b', cleanupModel: MOCK_DEFAULT_MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true });
   await expect(mock.libraryGet('../segments')).rejects.toThrow(NOT_IN_LIBRARY);
   for (const call of ['library_list', 'library_get', 'library_copy', 'settings_get', 'settings_set'] as const) {
     const failing = new Mock(`?fail=${call}&library=1`);
@@ -469,7 +469,7 @@ test('settings round-trip, and the library calls fail on request', async () => {
       library_get: () => failing.libraryGet('20261026-090000'),
       library_copy: () => failing.libraryCopy('20261026-090000'),
       settings_get: () => failing.settingsGet(),
-      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT }),
+      settings_set: () => failing.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true }),
     }[call];
     await expect(attempt(), call).rejects.toThrow(`Mock failure: ${call}`);
   }
@@ -481,12 +481,21 @@ test('settings round-trip, and the library calls fail on request', async () => {
   );
 });
 
+test('the copy sound starts on, and ?copySound=off turns it off', async () => {
+  expect((await new Mock('').settingsGet()).copySound, 'on by default').toBe(true);
+  expect((await new Mock('?copySound=off').settingsGet()).copySound, '?copySound=off').toBe(false);
+  // A plain bool, like cleanup: settings_set carries it through as sent.
+  const mock = new Mock('');
+  expect((await mock.settingsSet({ ...(await mock.settingsGet()), copySound: false })).copySound).toBe(false);
+  expect(mock.handle.saved.map((s) => s.copySound), 'saved as sent').toEqual([false]);
+});
+
 test('the vocabulary file is kept like the engine keeps it', async () => {
   const mock = new Mock('');
   expect((await mock.settingsGet()).vocabulary, 'the default, as a path').toBe(MOCK_VOCABULARY);
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
-  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
-  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).toEqual({
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true });
+  expect((await mock.settingsSet({ summaries: false, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true })).vocabulary, "'' keeps it").toBe('/x/terms.txt');
+  expect(await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: MOCK_VOCABULARY, cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true })).toEqual({
     summaries: true,
     libraryOpen: true,
     vocabulary: MOCK_VOCABULARY,
@@ -498,10 +507,10 @@ test('the vocabulary file is kept like the engine keeps it', async () => {
     silenceSplitMs: 0,
     keepSegments: false,
     learnedVocabulary: DEFAULT_LEARNED_VOCABULARY,
-    modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT
+    modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true
   });
   // Stored as '': a later '' keeps the default rather than an old path.
-  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT })).vocabulary).toBe(MOCK_VOCABULARY);
+  expect((await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true })).vocabulary).toBe(MOCK_VOCABULARY);
   expect(mock.handle.saved.map((s) => s.vocabulary), 'saved as sent').toEqual(['/x/terms.txt', '', MOCK_VOCABULARY, '']);
 });
 
@@ -636,7 +645,7 @@ test('the model folder panel picks ?picked=, a default, or nothing, and fails on
 test('opening the vocabulary file records the resolved path, or fails like the engine', async () => {
   const mock = new Mock('');
   await mock.vocabularyOpen();
-  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
+  await mock.settingsSet({ summaries: true, libraryOpen: true, vocabulary: '/x/terms.txt', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true });
   await mock.vocabularyOpen();
   expect(mock.handle.opened).toEqual([MOCK_VOCABULARY, '/x/terms.txt']);
   const failing = new Mock('?fail=vocabulary_open');
@@ -650,7 +659,7 @@ test('the models are kept like the engine keeps them', async () => {
   expect([got.summaryModel, got.cleanupModel], 'the defaults, by name').toEqual([MOCK_DEFAULT_MODEL, MOCK_DEFAULT_MODEL]);
   expect((await new Mock('?summaryModel=llama3:70b').settingsGet()).summaryModel).toBe('llama3:70b');
   expect((await new Mock('?cleanupModel=llama3:70b').settingsGet()).cleanupModel).toBe('llama3:70b');
-  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT };
+  const base = { summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED_VOCABULARY, modelFolder: DEFAULT_MODEL_FOLDER, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true };
   await mock.settingsSet({ ...base, summaryModel: 'gemma3:4b', cleanupModel: 'llama3:8b' });
   const kept = await mock.settingsSet({ ...base, summaryModel: '', cleanupModel: '' });
   expect([kept.summaryModel, kept.cleanupModel], "'' keeps them").toEqual(['gemma3:4b', 'llama3:8b']);

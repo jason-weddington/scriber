@@ -15,8 +15,9 @@
 //! the window's waveform, [`download`] fetches and verifies a missing speech
 //! model, and [`sync`] holds the model that loads once for every caller.
 //! [`menubar`] decides the menu bar's six items and the phase each enables,
-//! what a press of each of the two global shortcuts does, the two icons, the finished
-//! session's notification and the menu bar's log lines.
+//! what a press of each of the two global shortcuts does, the three icons and
+//! the busy icon's pulse frames, the finished session's notification, the copy
+//! sound's rule and the menu bar's log lines.
 //! With the library on, [`library`] keeps every finished session (titled by
 //! its start, summarized by a local model or an excerpt, its audio
 //! compressed) and [`settings`] holds the user's settings. [`cleanup`] is

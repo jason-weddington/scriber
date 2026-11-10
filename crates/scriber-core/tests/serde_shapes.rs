@@ -187,6 +187,7 @@ mod tests {
                 model_folder: "/data/models".to_string(),
                 toggle_shortcut: "Opt+Cmd+D".to_string(),
                 pause_shortcut: "Opt+Cmd+P".to_string(),
+                copy_sound: true,
             },
         );
         let settings = Settings {
@@ -204,11 +205,12 @@ mod tests {
             model_folder: "/data/models".to_string(),
             toggle_shortcut: "Opt+Cmd+D".to_string(),
             pause_shortcut: "Opt+Cmd+P".to_string(),
+            copy_sound: true,
         };
         assert!(
             serde_json::to_string(&settings)
                 .unwrap()
-                .ends_with(r#""keepSegments":true,"learnedVocabulary":"/data/learned.txt","modelFolder":"/data/models","toggleShortcut":"Opt+Cmd+D","pauseShortcut":"Opt+Cmd+P"}"#),
+                .ends_with(r#""keepSegments":true,"learnedVocabulary":"/data/learned.txt","modelFolder":"/data/models","toggleShortcut":"Opt+Cmd+D","pauseShortcut":"Opt+Cmd+P","copySound":true}"#),
             "camelCase, last key"
         );
     }

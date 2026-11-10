@@ -248,7 +248,8 @@ for (const colorScheme of ['light', 'dark'] as const) {
     test('the settings modal open', async ({ page }) => {
       await open(page, { library: '3' });
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await expect(page.getByRole('switch')).toHaveCount(2);
+      await expect(page.getByRole('switch')).toHaveCount(3);
+      await expect(page.getByRole('switch', { name: 'Play a sound when the transcript is copied' })).toBeVisible();
       await expect(page.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' })).toBeVisible();
       await expect(page.getByText('Version 0.0.0-mock')).toBeVisible();
       await expectNoViolations(page);
@@ -289,7 +290,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await open(page);
       await press(page, 'New', 'Record');
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await expect(page.getByRole('switch')).toHaveCount(2);
+      await expect(page.getByRole('switch')).toHaveCount(3);
       await expectNoViolations(page);
     });
 

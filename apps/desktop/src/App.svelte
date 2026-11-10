@@ -82,7 +82,7 @@
     'textarea, select, input:not([type=button], [type=checkbox], [type=radio], [type=submit], [type=reset]), input[role=switch]';
 
   // The settings, as last read or chosen; the defaults until they load.
-  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: '', modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT });
+  let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: '', modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true });
   let settingsOpen = $state(false);
   let settingsButton = $state<HTMLButtonElement>();
   let settingsFromPointer = false;
@@ -185,6 +185,18 @@
 
   function setCleanup(on: boolean): void {
     settings = { ...settings, cleanup: on };
+    settingsSet(settings).then(
+      () => {
+        settingsError = null;
+      },
+      (e: unknown) => {
+        settingsError = errorText(e);
+      },
+    );
+  }
+
+  function setCopySound(on: boolean): void {
+    settings = { ...settings, copySound: on };
     settingsSet(settings).then(
       () => {
         settingsError = null;
@@ -791,6 +803,7 @@
     onsilencesplit={setSilenceSplit}
     onshortcut={setShortcut}
     onpauseshortcut={setPauseShortcut}
+    oncopysound={setCopySound}
     onclose={settingsClosed}
   />
 </div>

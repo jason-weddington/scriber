@@ -7,8 +7,10 @@
   // Browse… on all three, Open in Text Editor on the two text files (which
   // creates it empty when missing); then the
   // silence split, "Split into parts at a pause" (Off, 1.5 s, 2.5 s or 4 s; a
-  // saved value outside those four is shown first, so it is never lost); then two
-  // switches, each followed by its model: post-processing of each transcript
+  // saved value outside those four is shown first, so it is never lost); then
+  // the "Play a sound when the transcript is copied" switch, which turns the
+  // menu bar's copy sound on and off; then two more switches, each followed by
+  // its model: post-processing of each transcript
   // by the local model (glossary fixes and spoken self-corrections), and
   // summaries by the local model. The models are chosen from the ones Ollama
   // has installed, listed each time the modal opens (`models` is null while
@@ -44,6 +46,7 @@
     onsilencesplit: (ms: number) => void;
     onshortcut: (value: string) => void;
     onpauseshortcut: (value: string) => void;
+    oncopysound: (on: boolean) => void;
     onclose: () => void;
   }
 
@@ -67,6 +70,7 @@
     onsilencesplit,
     onshortcut,
     onpauseshortcut,
+    oncopysound,
     onclose,
   }: Props = $props();
 
@@ -257,6 +261,17 @@
       </button>
     </div>
   </div>
+  <label class="switch">
+    <input
+      type="checkbox"
+      role="switch"
+      checked={settings.copySound}
+      onchange={(e) => {
+        oncopysound(e.currentTarget.checked);
+      }}
+    />
+    Play a sound when the transcript is copied
+  </label>
   <label class="switch">
     <input
       type="checkbox"

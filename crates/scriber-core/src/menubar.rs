@@ -1,7 +1,8 @@
 //! The menu bar's decisions, with no I/O: the tray menu's six items and which
 //! of them each phase enables, what a press of each of the two global
-//! shortcuts does in each phase, the two icons, the notification rule, the
-//! shortcut grammar and the log line every decision writes. The desktop shell
+//! shortcuts does in each phase, the three icons and the busy icon's pulse
+//! frames, the notification rule, the copy sound's rule, the shortcut grammar
+//! and the log line every decision writes. The desktop shell
 //! (`apps/desktop/src-tauri`) only applies them; every rule lives here.
 //!
 //! A shortcut is Scriber's canonical form: `+`-joined tokens, zero to four
@@ -210,18 +211,65 @@ pub enum Icon {
     Template,
     /// `tray-recording.png`: the red recording icon.
     Recording,
+    /// `tray-busy.png`: the dimmed template, shown while the transcript is on its way.
+    Busy,
 }
 
-/// The icon for `phase`: the recording one only while recording, so the shell
-/// swaps on a plain `icon(previous) != icon(now)`.
-#[must_use]
-pub fn icon(phase: Phase) -> Icon {
-    if phase == Phase::Recording {
-        Icon::Recording
-    } else {
-        Icon::Template
+impl Icon {
+    /// Whether macOS should tint this icon for the light and dark menu bars (the two template-style images do).
+    #[must_use]
+    pub fn draws_as_template(self) -> bool {
+        matches!(self, Self::Template | Self::Busy)
+    }
+
+    /// The image's name as `menubar-log.jsonl` spells it: `"template"`, `"recording"` or `"busy"`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Template => "template",
+            Self::Recording => "recording",
+            Self::Busy => "busy",
+        }
     }
 }
+
+/// The icon for `phase`: the recording one only while recording, the dimmed
+/// busy one only while the transcript is on its way, and the template one in
+/// every other phase.
+///
+/// The shell swaps on a plain `icon(previous) != icon(now)`: the three icons
+/// differ, so every entry into and exit from recording or transcribing swaps.
+#[must_use]
+pub fn icon(phase: Phase) -> Icon {
+    match phase {
+        Phase::Recording => Icon::Recording,
+        Phase::Transcribing => Icon::Busy,
+        Phase::Idle | Phase::Ready | Phase::Paused | Phase::Finished | Phase::Failed => {
+            Icon::Template
+        }
+    }
+}
+
+/// How long one pulse frame shows: two frames a second, so the menu bar alternates while the transcript is on its way.
+pub const PULSE_TICK_MS: u64 = 500;
+
+/// The pulse frame for `tick` in `phase`: `None` outside `transcribing`, and
+/// while transcribing `Icon::Busy` on an even tick and `Icon::Template` on an
+/// odd one.
+#[must_use]
+pub fn icon_at(phase: Phase, tick: u64) -> Option<Icon> {
+    if phase != Phase::Transcribing {
+        return None;
+    }
+    if tick.checked_rem(2) == Some(0) {
+        Some(Icon::Busy)
+    } else {
+        Some(Icon::Template)
+    }
+}
+
+/// The soft system sound the shell plays once the finished transcript lands on the clipboard.
+pub const COPY_SOUND: &str = "/System/Library/Sounds/Pop.aiff";
 
 /// The sentence to notify when the session has just finished: the snapshot's
 /// own `notice`, and only on the transition into `finished` from another
@@ -234,6 +282,61 @@ pub fn notice(previous: Phase, now: &Snapshot) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// What the copy sound should do, one variant per clause of the rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sound {
+    /// The system sound is due.
+    Play,
+    /// The setting is off.
+    Off,
+    /// The snapshot is not finished.
+    NotFinished,
+    /// The finish transition already happened.
+    AlreadyFinished,
+    /// The notice is not a successful copy.
+    Notice,
+}
+
+impl Sound {
+    /// The `menubar-log.jsonl` reason: `"play"`, `"off"`, `"not_finished"`,
+    /// `"already_finished"` or `"notice"`.
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Play => "play",
+            Self::Off => "off",
+            Self::NotFinished => "not_finished",
+            Self::AlreadyFinished => "already_finished",
+            Self::Notice => "notice",
+        }
+    }
+}
+
+/// Whether the copy sound is due when `now` arrives after `previous`, with the
+/// setting at `copy_sound`: only on the transition into `finished` and only
+/// when the notice is a successful copy, so an empty transcript, a clipboard
+/// failure and a later Copy in finished stay silent.
+#[must_use]
+pub fn sound(previous: Phase, now: &Snapshot, copy_sound: bool) -> Sound {
+    if now.phase != Phase::Finished {
+        return Sound::NotFinished;
+    }
+    if previous == Phase::Finished {
+        return Sound::AlreadyFinished;
+    }
+    if !copy_sound {
+        return Sound::Off;
+    }
+    if now
+        .notice
+        .as_deref()
+        .is_some_and(|notice| notice.starts_with(crate::dictation::COPIED))
+    {
+        return Sound::Play;
+    }
+    Sound::Notice
 }
 
 /// One line of `menubar-log.jsonl`: what each decision did, in the compact
@@ -306,6 +409,39 @@ pub enum Log<'a> {
         /// `"shown"`, `"skipped"` or `"failed"`.
         outcome: &'a str,
         /// The plugin's error text, when the send failed.
+        error: Option<&'a str>,
+    },
+    /// One copy-sound decision, never carrying a notice text.
+    Sound {
+        /// `"finish"` in `refresh` or `"settings"` after a save.
+        trigger: &'a str,
+        /// The phase that produced the decision.
+        phase: &'a str,
+        /// The phase before it, when the line comes from a finish.
+        previous: Option<&'a str>,
+        /// The setting the decision read.
+        copy_sound: bool,
+        /// A `Sound::reason` value, or `"cached"` after a save.
+        reason: &'a str,
+        /// `"played"`, `"skipped"`, `"failed"` or `"cached"`.
+        outcome: &'a str,
+        /// Why the sound failed, when it did.
+        error: Option<&'a str>,
+    },
+    /// One transcribing episode's pulse: a start or a stop line, never one per tick.
+    Pulse {
+        /// The phase that produced the line: `"transcribing"` on the start line.
+        phase: &'a str,
+        /// [`PULSE_TICK_MS`]: how long one frame shows.
+        tick_ms: u64,
+        /// The frames drawn, 0 on the start line.
+        frames: u64,
+        /// An `Icon::name` value: `"busy"` on the start line, and on a stop
+        /// line `"busy"` means the exit swap failed and the menu bar is stuck.
+        last: &'a str,
+        /// `"started"`, `"stopped"` or `"failed"`.
+        outcome: &'a str,
+        /// Why the last frame failed, when it did.
         error: Option<&'a str>,
     },
 }

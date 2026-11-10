@@ -86,6 +86,8 @@ export interface Settings {
   toggleShortcut: string;
   /** The global shortcut that pauses and resumes a dictation, in Scriber's form (`Opt+Cmd+P`); '' when no second shortcut is registered, and the engine answers the fallback when the stored value cannot be used. */
   pauseShortcut: string;
+  /** Whether the menu bar plays the system's soft Pop once the finished transcript lands on the clipboard. */
+  copySound: boolean;
 }
 
 /** The input devices the microphone menu offers. */

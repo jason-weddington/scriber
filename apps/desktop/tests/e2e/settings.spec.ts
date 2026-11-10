@@ -6,7 +6,8 @@ import { button, copied, nextFrame, open, press, release, status } from './helpe
 
 // The settings panel's vocabulary file: its file name (the default one in the
 // data folder until another is picked), Browse… (the native open panel,
-// answered by the mock's ?pick=) and Open in Text Editor; then the
+// answered by the mock's ?pick=) and Open in Text Editor; then the copy-sound
+// switch, which plays Pop when the transcript lands on the clipboard; then the
 // post-processing switch, which cleans up each transcript with the local model;
 // and the two model dropdowns, filled from the installed Ollama models each
 // time the panel opens.
@@ -108,7 +109,7 @@ test('Browse picks another file and saves it', async ({ page }) => {
   await expect(path(page)).toHaveValue(PICKED_NAME);
   await expect(path(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current file').toEqual([DEFAULT]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: PICKED, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P', copySound: true });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -157,7 +158,7 @@ test('Browse picks another learned vocabulary file and saves it', async ({ page 
   await expect(learnedPath(page)).toHaveValue(PICKED_NAME);
   await expect(learnedPath(page)).toHaveAttribute('title', PICKED);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current learned file').toEqual([DEFAULT_LEARNED]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: PICKED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: PICKED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P', copySound: true });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -205,7 +206,7 @@ test('Browse picks another model folder and saves it', async ({ page }) => {
   await expect(modelPath(page)).toHaveValue('Models');
   await expect(modelPath(page)).toHaveAttribute('title', PICKED_MODEL);
   expect(await page.evaluate(() => [...(window.__mockBridge?.browsed ?? [])]), 'the panel starts at the current folder').toEqual([DEFAULT_MODEL]);
-  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: PICKED_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
+  await expect.poll(async () => (await saved(page)).at(-1)).toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: PICKED_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P', copySound: true });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -263,7 +264,7 @@ test('post-processing starts off and turning it on saves it', async ({ page }) =
   await expect(cleanupSwitch(page)).toBeChecked();
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: true, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P', copySound: true });
   await expect(alert(page)).toHaveCount(0);
 });
 
@@ -271,6 +272,32 @@ test('a post-processing switch that cannot be saved says why', async ({ page }) 
   await openSettings(page, { fail: 'settings_set' });
   await cleanupSwitch(page).click();
   await expect(alert(page)).toHaveText('Mock failure: settings_set');
+});
+
+function copySoundSwitch(page: Page) {
+  return page.getByRole('switch', { name: 'Play a sound when the transcript is copied' });
+}
+
+test('the copy sound starts on and turning it off saves it', async ({ page }) => {
+  await openSettings(page);
+  await expect(copySoundSwitch(page)).toBeChecked();
+  await copySoundSwitch(page).click();
+  await expect(copySoundSwitch(page)).not.toBeChecked();
+  await expect
+    .poll(async () => (await saved(page)).at(-1))
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'qwen3.8:27b-mlx', cleanupModel: 'qwen3.8:27b-mlx', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P', copySound: false });
+  await expect(alert(page)).toHaveCount(0);
+});
+
+test('a copy-sound switch that cannot be saved says why', async ({ page }) => {
+  await openSettings(page, { fail: 'settings_set' });
+  await copySoundSwitch(page).click();
+  await expect(alert(page)).toHaveText('Mock failure: settings_set');
+});
+
+test('?copySound=off starts the copy-sound switch unchecked', async ({ page }) => {
+  await openSettings(page, { copySound: 'off' });
+  await expect(copySoundSwitch(page)).not.toBeChecked();
 });
 
 test('with post-processing on, the transcript waits for the cleanup', async ({ page }) => {
@@ -321,11 +348,11 @@ test('choosing a model saves it', async ({ page }) => {
   await summaryModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: MODEL, libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P', copySound: true });
   await cleanupModel(page).selectOption('gemma3:4b');
   await expect
     .poll(async () => (await saved(page)).at(-1))
-    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P' });
+    .toEqual({ summaries: true, libraryOpen: true, vocabulary: DEFAULT, cleanup: false, summaryModel: 'gemma3:4b', cleanupModel: 'gemma3:4b', libraryWidth: 220, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: DEFAULT_LEARNED, modelFolder: DEFAULT_MODEL, toggleShortcut: 'Opt+Cmd+D', pauseShortcut: 'Opt+Cmd+P', copySound: true });
   await expect(alert(page)).toHaveCount(0);
 });
 

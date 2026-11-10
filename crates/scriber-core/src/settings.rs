@@ -3,14 +3,14 @@
 //! On disk the file is a JSON object with the `snake_case` keys `summaries`,
 //! `library_open`, `vocabulary`, `cleanup`, `summary_model`,
 //! `cleanup_model`, `library_width`, `input_device`, `silence_split_ms`,
-//! `keep_segments`, `learned_vocabulary`, `model_folder`, `toggle_shortcut`
-//! and `pause_shortcut`. Reading is lenient: a missing, unreadable or invalid file
+//! `keep_segments`, `learned_vocabulary`, `model_folder`, `toggle_shortcut`,
+//! `pause_shortcut` and `copy_sound`. Reading is lenient: a missing, unreadable or invalid file
 //! means the defaults (`summaries` and `library_open` true, `vocabulary`
 //! empty, `cleanup` false, both models `""`, meaning the engine's default
 //! model, `library_width` 220, `input_device` `""`, meaning the Mac's default
 //! input device, `silence_split_ms` 0, meaning no split, `keep_segments` false,
 //! `learned_vocabulary` empty, meaning `learned.txt` in the data folder,
-//! `model_folder` empty, meaning `models` in the data folder),
+//! `model_folder` empty, meaning `models` in the data folder, `copy_sound` true),
 //! and each key is taken on its own, so a missing key or one of another type
 //! takes its default and unknown keys are ignored. `vocabulary` is kept only
 //! when it is an absolute path (it starts with `/`); anything else means `""`,
@@ -21,7 +21,7 @@
 //! kept exactly as stored when it is a string, else `""`.
 //! `silence_split_ms` is kept when it is a non-negative integer that is 0 or
 //! in [`SILENCE_SPLIT_MIN_MS`]..=[`SILENCE_SPLIT_MAX_MS`]; anything else (out
-//! of range, negative, a fraction, another type) means 0. `keep_segments` is true only for the JSON boolean true; anything else means false. `learned_vocabulary` is kept only when it is an absolute path (it starts with `/`); anything else means `""`, the default learned list in the data folder. `model_folder` is kept only when it is an absolute path (it starts with `/`); anything else means `""`, the default `models` folder in the data folder. `toggle_shortcut` is kept only when `crate::menubar::accelerator` accepts it; anything else (missing, not a string, not Scriber's form, or no ⌥/⌘) means `Opt+Cmd+D`. Saving writes the file beside itself and renames it
+//! of range, negative, a fraction, another type) means 0. `keep_segments` is true only for the JSON boolean true; anything else means false. `learned_vocabulary` is kept only when it is an absolute path (it starts with `/`); anything else means `""`, the default learned list in the data folder. `model_folder` is kept only when it is an absolute path (it starts with `/`); anything else means `""`, the default `models` folder in the data folder. `toggle_shortcut` is kept only when `crate::menubar::accelerator` accepts it; anything else (missing, not a string, not Scriber's form, or no ⌥/⌘) means `Opt+Cmd+D`. `copy_sound` is true only for the JSON boolean true; anything else (missing, another type) means true. Saving writes the file beside itself and renames it
 //! into place.
 
 use serde::Serialize;
@@ -72,6 +72,7 @@ struct Disk {
     model_folder: String,
     toggle_shortcut: String,
     pause_shortcut: String,
+    copy_sound: bool,
 }
 
 /// The saved settings, or the defaults where there are none.
@@ -154,6 +155,7 @@ pub fn load(files: &dyn Files) -> Settings {
             .to_string(),
         toggle_shortcut,
         pause_shortcut,
+        copy_sound: flag("copy_sound", true),
     }
 }
 
@@ -178,6 +180,7 @@ pub fn save(files: &dyn Files, s: &Settings) -> Result<(), PortError> {
         model_folder: s.model_folder.clone(),
         toggle_shortcut: s.toggle_shortcut.clone(),
         pause_shortcut: s.pause_shortcut.clone(),
+        copy_sound: s.copy_sound,
     };
     let bytes = serde_json::to_vec(&disk).map_err(fail)?;
     files.write(SETTINGS_PARTIAL, &bytes)?;

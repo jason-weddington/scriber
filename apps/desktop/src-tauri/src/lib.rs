@@ -1,8 +1,9 @@
 //! Scriber's Tauri 2 shell: a thin client over `scriber-engine`, with the clipboard adapter, the bridge's commands, the tray and the global shortcut (see `docs/design.md`).
 #![forbid(unsafe_code)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use scriber_engine::{
     Action, Clipboard, Engine, EngineConfig, EngineError, Event, InputDevices, LibraryEntry, Phase,
@@ -10,7 +11,7 @@ use scriber_engine::{
 };
 use tauri::image::Image;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutEvent, ShortcutState};
@@ -22,9 +23,10 @@ pub const DICTATION_EVENT: &str = "dictation-changed";
 /// Event name for the input level while recording (`scriber_core::level`).
 pub const LEVEL_EVENT: &str = "dictation-level";
 
-/// The menu bar's template and recording icons (`image-png` decodes them).
+/// The menu bar's template, recording and busy icons (`image-png` decodes them).
 const TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-template.png");
 const RECORDING_PNG: &[u8] = include_bytes!("../icons/tray-recording.png");
+const BUSY_PNG: &[u8] = include_bytes!("../icons/tray-busy.png");
 /// The system clipboard, through Tauri's clipboard plugin.
 struct SystemClipboard(AppHandle);
 
@@ -37,7 +39,10 @@ impl Clipboard for SystemClipboard {
 /// The bridge's commands, in a module: `#[tauri::command]` code trips a lint.
 #[expect(clippy::unreachable, reason = "macro expansion")]
 mod commands {
-    use super::{Action, AppHandle, Engine, InputDevices, LibraryEntry, Settings, Snapshot, State};
+    use super::{
+        Action, AppHandle, Engine, InputDevices, LibraryEntry, Manager, Ordering, Settings, Shown,
+        Snapshot, State, menubar,
+    };
 
     /// `dictation_state`: the session as it stands (never an error).
     #[tauri::command]
@@ -92,6 +97,14 @@ mod commands {
         settings: Settings,
     ) -> Result<Settings, String> {
         let saved = engine.set_settings(settings).map_err(|e| e.to_string())?;
+        // The cached setting is why a change takes effect without a relaunch, and this line is its only proof.
+        #[rustfmt::skip]
+        let (outcome, error) = match app.try_state::<Shown>() {
+            Some(shown) => { shown.copy_sound.store(saved.copy_sound, Ordering::SeqCst); ("cached", None) }
+            None => ("failed", Some("no cached setting")),
+        };
+        #[rustfmt::skip]
+        engine.log_menubar(&menubar::Log::Sound { trigger: "settings", phase: &engine.state().phase.to_string(), previous: None, copy_sound: saved.copy_sound, reason: "cached", outcome, error });
         super::register_shortcuts(&app, engine.inner(), "settings");
         Ok(saved)
     }
@@ -121,18 +134,81 @@ mod commands {
     }
 }
 
-/// The window's visibility (for the notification rule) and the phase the tray last showed.
+/// The window's visibility (for the notification rule), the phase the tray last showed, the frames the pulse drew in this episode and the cached copy-sound setting.
 struct Shown {
     visible: AtomicBool,
     phase: Mutex<Phase>,
+    pulse_frames: AtomicU64,
+    copy_sound: AtomicBool,
 }
-/// The tray's image for `icon`, decoded from the two checked-in images.
+/// The tray's image for `icon`, decoded from the three checked-in images.
 fn tray_image(icon: menubar::Icon) -> Option<Image<'static>> {
     let bytes = match icon {
         menubar::Icon::Template => TEMPLATE_PNG,
         menubar::Icon::Recording => RECORDING_PNG,
+        menubar::Icon::Busy => BUSY_PNG,
     };
     Image::from_bytes(bytes).ok()
+}
+
+/// Sets the tray's image for `icon` and, on macOS, whether it draws as a template; the error says why it could not.
+fn set_icon(tray: &TrayIcon<tauri::Wry>, icon: menubar::Icon) -> Result<(), String> {
+    #[rustfmt::skip]
+    let Some(image) = tray_image(icon) else { return Err("no image for the icon".to_string()); };
+    tray.set_icon(Some(image)).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    tray.set_icon_as_template(icon.draws_as_template())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Starts the menu bar's pulse: one thread for the app's life, which posts a frame twice a second.
+fn spawn_pulse(app: &AppHandle) {
+    let handle = app.clone();
+    #[rustfmt::skip]
+    let _spawned = std::thread::Builder::new().name("scriber-pulse".to_string()).spawn(move || pulse(&handle));
+}
+
+/// Posts one pulse frame per tick, on the main thread; the core says which frame is due and when none is.
+fn pulse(app: &AppHandle) {
+    let mut tick: u64 = 0;
+    loop {
+        std::thread::sleep(Duration::from_millis(menubar::PULSE_TICK_MS));
+        tick = tick.wrapping_add(1);
+        let posted = app.clone();
+        #[rustfmt::skip]
+        let _posted = app.clone().run_on_main_thread(move || pulse_frame(&posted, tick));
+    }
+}
+
+/// Draws one frame of the pulse on the main thread, counting it only when the tray took it: nothing while not transcribing.
+fn pulse_frame(app: &AppHandle, tick: u64) {
+    #[rustfmt::skip]
+    let Some(shown) = app.try_state::<Shown>() else { return; };
+    #[rustfmt::skip]
+    let Some(tray) = app.tray_by_id("main") else { return; };
+    let phase = *shown.phase.lock().unwrap_or_else(PoisonError::into_inner);
+    #[rustfmt::skip]
+    let Some(icon) = menubar::icon_at(phase, tick) else { return; };
+    if set_icon(&tray, icon).is_ok() {
+        let _frames = shown.pulse_frames.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Plays the system's soft pop once and logs the outcome, on a `scriber-tray` thread so the main thread never waits for audio.
+fn play_copy_sound(engine: Engine, phase: String, previous: String) {
+    on_tray_thread(move || {
+        #[rustfmt::skip]
+        let played = std::process::Command::new("afplay").arg(menubar::COPY_SOUND).status();
+        #[rustfmt::skip]
+        let (outcome, error) = match played {
+            Ok(status) if status.success() => ("played", None),
+            Ok(status) => ("failed", Some(format!("afplay exited with {:?}", status.code()))),
+            Err(e) => ("failed", Some(e.to_string())),
+        };
+        #[rustfmt::skip]
+        engine.log_menubar(&menubar::Log::Sound { trigger: "finish", phase: &phase, previous: Some(&previous), copy_sound: true, reason: "play", outcome, error: error.as_deref() });
+    });
 }
 
 /// The tray menu for `phase`: [`menubar::items`] in order, a separator after Show Scriber.
@@ -218,13 +294,11 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
 
 /// The only writer of tray state: on the main thread for every snapshot, so it takes no session lock.
 fn refresh(app: &AppHandle, snapshot: &Snapshot) {
-    let Some(shown) = app.try_state::<Shown>() else {
-        return;
-    };
-    let previous = std::mem::replace(
-        &mut *shown.phase.lock().unwrap_or_else(PoisonError::into_inner),
-        snapshot.phase,
-    );
+    #[rustfmt::skip]
+    let Some(shown) = app.try_state::<Shown>() else { return; };
+    #[rustfmt::skip]
+    let previous = std::mem::replace(&mut *shown.phase.lock().unwrap_or_else(PoisonError::into_inner), snapshot.phase);
+    let mut icon_error = None;
     if let Some(tray) = app.tray_by_id("main") {
         if previous != snapshot.phase
             && let Ok(menu) = tray_menu(app, snapshot.phase)
@@ -232,17 +306,39 @@ fn refresh(app: &AppHandle, snapshot: &Snapshot) {
             let _set = tray.set_menu(Some(menu));
         }
         if menubar::icon(previous) != menubar::icon(snapshot.phase) {
-            if let Some(image) = tray_image(menubar::icon(snapshot.phase)) {
-                let _icon = tray.set_icon(Some(image));
-            }
-            #[cfg(target_os = "macos")]
-            let _flag =
-                tray.set_icon_as_template(menubar::icon(snapshot.phase) == menubar::Icon::Template);
+            icon_error = set_icon(&tray, menubar::icon(snapshot.phase)).err();
         }
     }
-    let Some(notice) = menubar::notice(previous, snapshot) else {
-        return;
-    };
+    // At most two pulse lines per transcribing episode: a start, then a stop with its frames and its last image.
+    if let Some(engine) = app.try_state::<Engine>() {
+        if previous != Phase::Transcribing && snapshot.phase == Phase::Transcribing {
+            let _frames = shown.pulse_frames.swap(0, Ordering::SeqCst);
+            #[rustfmt::skip]
+            engine.log_menubar(&menubar::Log::Pulse { phase: &snapshot.phase.to_string(), tick_ms: menubar::PULSE_TICK_MS, frames: 0, last: menubar::icon(Phase::Transcribing).name(), outcome: "started", error: None });
+        } else if previous == Phase::Transcribing && snapshot.phase != Phase::Transcribing {
+            let frames = shown.pulse_frames.swap(0, Ordering::SeqCst);
+            #[rustfmt::skip]
+            let (last, outcome) = if icon_error.is_none() { (menubar::icon(snapshot.phase).name(), "stopped") } else { (menubar::icon(previous).name(), "failed") };
+            #[rustfmt::skip]
+            engine.log_menubar(&menubar::Log::Pulse { phase: &snapshot.phase.to_string(), tick_ms: menubar::PULSE_TICK_MS, frames, last, outcome, error: icon_error.as_deref() });
+        }
+    }
+    // The copy sound is decided before the notice's early return: every finish is judged here.
+    if snapshot.phase == Phase::Finished
+        && let Some(engine) = app.try_state::<Engine>()
+    {
+        let on = shown.copy_sound.load(Ordering::SeqCst);
+        let decision = menubar::sound(previous, snapshot, on);
+        if decision == menubar::Sound::Play {
+            #[rustfmt::skip]
+            play_copy_sound(engine.inner().clone(), snapshot.phase.to_string(), previous.to_string());
+        } else {
+            #[rustfmt::skip]
+            engine.log_menubar(&menubar::Log::Sound { trigger: "finish", phase: &snapshot.phase.to_string(), previous: Some(&previous.to_string()), copy_sound: on, reason: decision.reason(), outcome: "skipped", error: None });
+        }
+    }
+    #[rustfmt::skip]
+    let Some(notice) = menubar::notice(previous, snapshot) else { return; };
     let visible = shown.visible.load(Ordering::SeqCst);
     let (outcome, error) = if visible {
         ("skipped", None)
@@ -376,7 +472,10 @@ pub fn run() -> Result<(), tauri::Error> {
             let _shown = app.manage(Shown {
                 visible: AtomicBool::new(true),
                 phase: Mutex::new(phase),
+                pulse_frames: AtomicU64::new(0),
+                copy_sound: AtomicBool::new(engine.settings().copy_sound),
             });
+            spawn_pulse(app.handle());
             install_tray(app.handle())?;
             register_shortcuts(app.handle(), &engine, "launch");
             Ok(())
