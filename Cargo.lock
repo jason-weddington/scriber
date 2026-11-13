@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "scriber-core"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "scriber-engine"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "chrono",
  "cpal",

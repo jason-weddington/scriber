@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.11.1 - 2026-11-13
+#### Bug Fixes
+- retain troubleshooting WAVs without the recording library - (4f128f6) - Jason Weddington
+
+- - -
+
 ## v0.11.0 - 2026-11-10
 #### Features
 - (**70081546**) menu bar: pulse the icon from Done until the transcript is copied, and play a soft Pop when it is (Settings switch, on by default) - (3408654) - Jason Weddington, *Claude Opus 5.5*
