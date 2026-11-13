@@ -419,3 +419,5 @@ Paused resumes because Pause can be pressed in the window or in the menu, and th
 ## Bundle
 
 `src-tauri/Info.plist` (merged into the bundle's) carries `NSMicrophoneUsageDescription`, so macOS asks for the microphone the first time Record is clicked. `src-tauri/Entitlements.plist` grants `com.apple.security.device.audio-input`, which the hardened runtime requires for microphone input.
+
+With `EngineConfig.library = false`, the existing hidden `keep_segments = true` setting copies only completed sessions’ stored segment WAVs to `kept-segments/<number>/segment-NNNN.wav`, including empty-transcript completions with audio. Numbers increase past existing numeric folders in the single-writer data directory. Canceled partials are excluded. These pre-trim 16 kHz mono PCM16 files survive normal recovery cleanup; no transcript, manifest, summary, compressed audio or library entry is created there. Copy errors append a notice and never fail the transcript; partial copies may remain. The default is off; library-on retention is unchanged. `settings.json` remains the toggle’s existing persistence seam and `Engine::set_settings` preserves its saved value.

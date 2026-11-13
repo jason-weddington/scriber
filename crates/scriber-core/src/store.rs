@@ -24,6 +24,43 @@ use crate::ports::{Files, PortError};
 /// The folder that holds the current session's segments.
 pub const SEGMENTS: &str = "segments";
 
+/// WAV-only troubleshooting copies, independent of the recording library.
+pub const KEPT_SEGMENTS: &str = "kept-segments";
+
+/// Copies the current segment WAVs into a fresh numbered troubleshooting folder.
+/// Recovery files are left untouched. An empty session writes nothing.
+///
+/// # Errors
+/// Listing, reading or copying fails, or the folder number is exhausted.
+/// Number allocation assumes a single writer to the data folder.
+pub fn keep_segments(files: &dyn Files) -> Result<(), PortError> {
+    let indexes = stored(files)?;
+    if indexes.is_empty() {
+        return Ok(());
+    }
+    let last = files
+        .list(KEPT_SEGMENTS)?
+        .iter()
+        .filter_map(|name| name.split('/').next()?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    let next = last
+        .checked_add(1)
+        .ok_or_else(|| crate::ports::fail("Troubleshooting folder numbers exhausted."))?;
+    for index in indexes {
+        let bytes = load(files, index)?;
+        files.write(
+            &format!("{KEPT_SEGMENTS}/{next}/{}", name_segment(index)),
+            &bytes,
+        )?;
+    }
+    Ok(())
+}
+
+fn name_segment(index: u32) -> String {
+    format!("segment-{index:04}.wav")
+}
+
 /// The finished session's transcript, kept beside its audio so a relaunch
 /// shows it rather than offering to transcribe it again.
 pub const TRANSCRIPT: &str = "segments/transcript.txt";

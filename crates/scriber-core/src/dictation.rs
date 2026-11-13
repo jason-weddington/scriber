@@ -1285,6 +1285,12 @@ impl Dictation {
     /// entry cannot be written the segments stay and nothing else changes.
     fn archive(&mut self, ports: &Ports<'_>, record: &CleanupRecord) {
         let Some(lib) = ports.library else {
+            if settings::load(ports.files).keep_segments
+                && let Err(e) = store::keep_segments(ports.files)
+                && let Some(notice) = self.notice.as_mut()
+            {
+                let _written = write!(notice, " Could not keep troubleshooting audio: {e}.");
+            }
             return;
         };
         if self.text.is_empty() {

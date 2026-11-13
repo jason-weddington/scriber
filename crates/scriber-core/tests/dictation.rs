@@ -4343,4 +4343,66 @@ mod tests {
         w.recorder.on_split(std::sync::Arc::new(|| {}));
         assert_eq!(*w.recorder.calls.borrow(), ["on_split"], "kept");
     }
+    #[test]
+    fn library_off_keeps_only_completed_audio_when_requested() {
+        for heard in ["A useful sentence.", ""] {
+            let w = World::default();
+            w.files
+                .write(SETTINGS, br#"{"keep_segments":true}"#)
+                .unwrap();
+            let (mut d, got) = heard_with(&w, &w.ports(), heard);
+            assert_eq!(got.phase, Phase::Finished, "completed even when empty");
+            let original = w.files.segment(0).unwrap();
+            assert_eq!(
+                w.files.read("kept-segments/1/segment-0000.wav").unwrap(),
+                original,
+                "original WAV copied"
+            );
+            d.new_session(&w.ports()).unwrap();
+            assert!(w.files.segment(0).is_none(), "normal recovery clearing");
+            assert_eq!(
+                w.files.read("kept-segments/1/segment-0000.wav").unwrap(),
+                original,
+                "diagnostic copy survives"
+            );
+            assert!(list(&w.files).is_empty(), "no library entry");
+        }
+        let w = World::default();
+        w.files
+            .write(SETTINGS, br#"{"keep_segments":true}"#)
+            .unwrap();
+        let (mut d, _) = at(&w, Phase::Paused);
+        d.discard(&w.ports()).unwrap();
+        assert!(
+            w.files.list("kept-segments").unwrap().is_empty(),
+            "canceled partial excluded"
+        );
+        let disabled = World::default();
+        let _completed = heard_with(&disabled, &disabled.ports(), "Hello.");
+        assert!(
+            disabled.files.list("kept-segments").unwrap().is_empty(),
+            "default off"
+        );
+    }
+
+    #[test]
+    fn troubleshooting_failure_keeps_the_transcript_and_reports_the_error() {
+        let w = World::default();
+        w.files
+            .write(SETTINGS, br#"{"keep_segments":true}"#)
+            .unwrap();
+        let (mut d, jobs) = at(&w, Phase::Transcribing);
+        w.files.fail_list.set(true);
+        finish(&mut d, &w, &jobs[0]);
+        let got = snap(&d, &w);
+        assert_eq!(got.phase, Phase::Finished, "copy cannot fail dictation");
+        assert_eq!(
+            got.notice.as_deref(),
+            Some(
+                "Copied to the clipboard. Could not keep troubleshooting audio: permission denied."
+            ),
+            "actionable notice"
+        );
+        assert!(!got.text.is_empty(), "usable text remains");
+    }
 }

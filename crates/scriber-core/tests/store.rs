@@ -482,4 +482,89 @@ mod tests {
         assert_eq!(lines.first().copied(), Some("line 1"), "the oldest dropped");
         assert_eq!(lines.last().copied(), Some("new"), "the newest last");
     }
+    #[test]
+    fn troubleshooting_copies_only_wavs_without_overwriting_previous_takes() {
+        let files = FakeFiles::default();
+        scriber_core::store::keep_segments(&files).unwrap();
+        assert!(
+            files.files.borrow().is_empty(),
+            "empty session writes nothing"
+        );
+        files
+            .write("kept-segments/9/segment-0000.wav", b"older")
+            .unwrap();
+        files.write("kept-segments/no-number", b"ignore").unwrap();
+        save(&files, 0, b"zero").unwrap();
+        save(&files, 3, b"three").unwrap();
+        save_transcript(&files, "not copied").unwrap();
+        scriber_core::store::keep_segments(&files).unwrap();
+        assert_eq!(
+            files.read("kept-segments/10/segment-0000.wav").unwrap(),
+            b"zero",
+            "first part"
+        );
+        assert_eq!(
+            files.read("kept-segments/10/segment-0003.wav").unwrap(),
+            b"three",
+            "sparse part"
+        );
+        clear(&files).unwrap();
+        save(&files, 0, b"next").unwrap();
+        scriber_core::store::keep_segments(&files).unwrap();
+        assert_eq!(
+            files.read("kept-segments/11/segment-0000.wav").unwrap(),
+            b"next",
+            "next take"
+        );
+        assert_eq!(
+            files.read("kept-segments/9/segment-0000.wav").unwrap(),
+            b"older",
+            "old take intact"
+        );
+        assert!(
+            !files
+                .files
+                .borrow()
+                .contains_key("kept-segments/10/transcript.txt"),
+            "no text history"
+        );
+        assert_eq!(load(&files, 0).unwrap(), b"next", "recovery unchanged");
+    }
+
+    #[test]
+    fn troubleshooting_copy_errors_are_reported() {
+        let files = FakeFiles::default();
+        save(&files, 0, b"wav").unwrap();
+        files.fail_list.set(true);
+        assert!(
+            scriber_core::store::keep_segments(&files).is_err(),
+            "list failed"
+        );
+        files.fail_list.set(false);
+        files.fail_read.set(true);
+        assert!(
+            scriber_core::store::keep_segments(&files).is_err(),
+            "read failed"
+        );
+        files.fail_read.set(false);
+        files.fail_write.set(true);
+        assert!(
+            scriber_core::store::keep_segments(&files).is_err(),
+            "copy failed"
+        );
+        files.fail_write.set(false);
+        files
+            .write(
+                "kept-segments/18446744073709551615/segment-0000.wav",
+                b"old",
+            )
+            .unwrap();
+        assert_eq!(
+            scriber_core::store::keep_segments(&files)
+                .unwrap_err()
+                .to_string(),
+            "Troubleshooting folder numbers exhausted.",
+            "overflow cannot overwrite"
+        );
+    }
 }
