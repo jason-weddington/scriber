@@ -2624,10 +2624,14 @@ mod tests {
             assert!(started.elapsed() < PATIENCE, "the thread let go in time");
             thread::sleep(Duration::from_millis(5));
         }
-        assert!(
-            fakes.warmer.seen().iter().all(|(kind, _)| kind == "warm"),
-            "no release: {:?}",
-            fakes.warmer.seen()
+        // Drop can overlap a warm call; that call releases its model when
+        // it observes stopped. Once the thread is gone, no renewal follows.
+        let stopped = fakes.warmer.seen();
+        thread::sleep(QUIET);
+        assert_eq!(
+            fakes.warmer.seen(),
+            stopped,
+            "no calls after the thread stops"
         );
     }
 
