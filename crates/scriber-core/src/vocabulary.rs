@@ -84,3 +84,34 @@ pub fn prompt_for(terms: &[String]) -> String {
     prompt.push('.');
     prompt
 }
+
+/// Prioritizes app spellings within their fixed share, retaining the user's
+/// spelling for duplicates and giving unused space back to user terms.
+#[must_use]
+pub fn prompt_with_app(app: &[crate::app_terms::AppTerm], user: &[String]) -> String {
+    let mut remaining = user.to_vec();
+    let mut prefix = Vec::new();
+    let mut length: usize = 0;
+    for a in app {
+        let found = remaining
+            .iter()
+            .position(|t| t.to_lowercase() == a.term.to_lowercase());
+        let text = found
+            .and_then(|i| remaining.get(i))
+            .unwrap_or(&a.term)
+            .clone();
+        let grown = length
+            .saturating_add(if prefix.is_empty() { 0 } else { 2 })
+            .saturating_add(text.chars().count());
+        if grown > crate::app_terms::PROMPT_SHARE {
+            break;
+        }
+        if let Some(i) = found {
+            let _removed = remaining.remove(i);
+        }
+        prefix.push(text);
+        length = grown;
+    }
+    prefix.extend(remaining);
+    prompt_for(&prefix)
+}

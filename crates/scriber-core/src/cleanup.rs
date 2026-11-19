@@ -13,6 +13,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::app_terms::AppTerm;
+
 use serde::{Deserialize, Serialize};
 
 /// The most glossary terms sent with a request.
@@ -83,6 +85,8 @@ pub const PROMPT: &str = concat!(
     " ",
     "First, where a word or phrase was misheard and sounds closely like one of the glossary terms (and fits the sentence), replace it with that term spelled exactly as in the glossary; never replace an unrelated name or foreign word just because it starts with a similar sound.",
     " ",
+    "A glossary line of the form \"TERM (spoken: WORDS)\" means the speaker says WORDS aloud for TERM, so where the transcript has WORDS, or something that sounds closely like them, write TERM spelled exactly as it appears before the parenthesis; never write \"(spoken:\" or the parenthesis in the transcript.",
+    " ",
     "Second, where the speaker explicitly spells out a word or name inside the transcript (for example, \"X is spelled A-B-C\"), use that spelling in normal title case (not all-caps unless it is an acronym) everywhere that word or name appears in the transcript (fixing any phonetic mishearing, including when joined to another word), while keeping the speaker's spelling sentence intact unless they were correcting a false start.",
     " ",
     "Third, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words.",
@@ -96,14 +100,28 @@ pub const PROMPT: &str = concat!(
 
 /// The user message for transcript `text` with glossary `terms`: the terms
 /// one per line (or `none`), then the transcript. The caller passes at most
-/// [`MAX_TERMS`] user terms followed by at most [`crate::context::MAX_TERMS`]
-/// context terms; they are used as given.
+/// [`MAX_TERMS`] user terms, then 50 app terms, then at most
+/// [`crate::context::MAX_TERMS`] context terms. App terms with spoken forms
+/// render as `TERM (spoken: WORDS)`; written terms are otherwise used as given.
 #[must_use]
-pub fn request(text: &str, terms: &[String]) -> String {
+pub fn request(text: &str, terms: &[String], app_terms: &[AppTerm]) -> String {
     if terms.is_empty() {
         format!("Glossary: none\n\nTranscript:\n{text}")
     } else {
-        format!("Glossary:\n{}\n\nTranscript:\n{text}", terms.join("\n"))
+        format!(
+            "Glossary:\n{}\n\nTranscript:\n{text}",
+            terms
+                .iter()
+                .map(|term| {
+                    app_terms
+                        .iter()
+                        .find(|a| a.term.to_lowercase() == term.to_lowercase())
+                        .and_then(|a| a.spoken.as_ref())
+                        .map_or_else(|| term.clone(), |s| format!("{term} (spoken: {s})"))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
     }
 }
 
@@ -265,7 +283,7 @@ fn titled(word: &str) -> String {
 /// keys differ is bogus when its source is a spelled word or its target is
 /// neither grounded in a spelled word nor within 40% of its source.
 #[must_use]
-pub fn filter(raw: &str, reply: &Reply) -> Reply {
+pub fn filter(raw: &str, reply: &Reply, app_terms: &[AppTerm]) -> Reply {
     let spelled = spelled(raw);
     let mut transcript = reply.transcript.clone();
     let mut kept: Vec<Replacement> = Vec::new();
@@ -276,7 +294,12 @@ pub fn filter(raw: &str, reply: &Reply) -> Reply {
             && (1..=3).contains(&tw.len())
             && !r.from.chars().any(|c: char| c.is_ascii_digit())
             && !r.to.chars().any(|c: char| c.is_ascii_digit());
-        let bogus = short && {
+        let spoken = app_terms.iter().any(|a| {
+            a.spoken
+                .as_ref()
+                .is_some_and(|s| tokens(&r.from) == tokens(s) && tokens(&r.to) == tokens(&a.term))
+        });
+        let bogus = !spoken && short && {
             let fk = fw.join("");
             let tk = tw.join("");
             if fk == tk {
@@ -423,8 +446,9 @@ pub fn accept_reply(
     raw: &str,
     reply: &Reply,
     terms: &[String],
+    app_terms: &[AppTerm],
 ) -> Result<(String, Vec<String>), Reject> {
-    let filtered = filter(raw, reply);
+    let filtered = filter(raw, reply, app_terms);
     let spelled = spelled(raw);
     let mut augmented = terms.to_vec();
     augmented.extend(spelled.iter().cloned());
@@ -437,5 +461,7 @@ pub fn accept_reply(
         }
     }
     let clean = accept(raw, &filtered.transcript, &augmented)?;
-    Ok((clean, learned_terms(raw, &filtered, terms)))
+    let mut excluded = terms.to_vec();
+    excluded.extend(app_terms.iter().filter_map(|a| a.spoken.clone()));
+    Ok((clean, learned_terms(raw, &filtered, &excluded)))
 }

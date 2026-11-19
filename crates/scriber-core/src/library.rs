@@ -6,7 +6,7 @@
 //! library/20261026-140309/transcript.txt      the transcript
 //! library/20261026-140309/transcript.raw.txt  Whisper's transcript as spoken, when an accepted cleanup or the shortcut glyphs changed the text
 //! library/20261026-140309/cleanup.reply.txt   the rejected reply's `transcript` field as the adapter returned it (after its `</think>` cut)
-//! library/20261026-140309/context.json        the embedder's conversation turns and the context terms appended to the cleanup glossary, when it supplied any
+//! library/20261026-140309/context.json        the embedder's turns, context terms and app terms, when it supplied turns or app terms
 //! library/20261026-140309/segments/segment-NNNN.wav  with keep_segments on: each part's WAV exactly as stored; a segment that cannot be kept is reported in `keep_error` and never fails the archive
 //! library/20261026-140309/audio.m4a          the session's audio (audio.wav until encoded, or when encoding fails)
 //! ```
@@ -26,6 +26,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::app_terms::AppTerm;
 use crate::audio::{decode_wav, duration_ms, encode_wav};
 use crate::model::LibraryEntry;
 use crate::ports::{Files, LocalTime, PortError, fail};
@@ -196,19 +197,20 @@ pub(crate) struct RecordedContext {
     pub(crate) turns: Vec<String>,
     /// The terms the turns contributed and the glossary did not already hold.
     pub(crate) terms: Vec<String>,
+    /// All normalized embedder terms at finish or cleanup-job creation.
+    pub(crate) app_terms: Vec<AppTerm>,
 }
 
 impl RecordedContext {
-    /// What to record for `turns`, or `None` when the embedder supplied no
-    /// turn at all (so a session without a context writes no `context.json`,
-    /// whatever `terms` holds).
-    pub(crate) fn of(turns: &[String], terms: Vec<String>) -> Option<Self> {
-        if turns.is_empty() {
+    /// Records turns and app terms; returns `None` only when both are empty.
+    pub(crate) fn of(turns: &[String], terms: Vec<String>, app_terms: &[AppTerm]) -> Option<Self> {
+        if turns.is_empty() && app_terms.is_empty() {
             return None;
         }
         Some(Self {
             turns: turns.to_vec(),
             terms,
+            app_terms: app_terms.to_vec(),
         })
     }
 }
@@ -219,12 +221,14 @@ impl RecordedContext {
 struct ContextFile<'a> {
     turns: &'a [String],
     terms: &'a [String],
+    #[serde(skip_serializing_if = "<[AppTerm]>::is_empty")]
+    app_terms: &'a [AppTerm],
 }
 
 /// Keeps the finished session titled `title`, with transcript `text`, as a
 /// new entry: its stored segments joined into `audio.wav`, its transcript,
 /// then `transcript.raw.txt` and `cleanup.reply.txt` when `cleanup` has them,
-/// then `context.json` when the embedder supplied conversation turns, and
+/// then `context.json` when the embedder supplied conversation turns or app terms, and
 /// last its entry.json, so an entry without one never lists. The
 /// segments themselves are left for the caller to remove. With
 /// `keep_segments`, each stored segment is also copied unchanged to
@@ -274,6 +278,7 @@ pub(crate) fn archive(
         let bytes = serde_json::to_vec(&ContextFile {
             turns: &context.turns,
             terms: &context.terms,
+            app_terms: &context.app_terms,
         })
         .map_err(fail)?;
         files.write(&entry_path(&id, "context.json"), &bytes)?;
@@ -376,4 +381,46 @@ pub fn transcript(files: &dyn Files, id: &str) -> Option<String> {
         return None;
     }
     String::from_utf8(files.read(&entry_path(id, "transcript.txt")).ok()?).ok()
+}
+
+#[cfg(test)]
+mod app_tests {
+    use super::{ContextFile, RecordedContext};
+    use crate::app_terms::AppTerm;
+
+    #[test]
+    fn recorded_context_serializes_app_terms_after_terms_and_omits_empty_apps() {
+        let apps = vec![
+            AppTerm {
+                term: "tightbeam-lead".into(),
+                spoken: Some("tightbeam lead".into()),
+            },
+            AppTerm {
+                term: "Zed".into(),
+                spoken: None,
+            },
+        ];
+        let context = RecordedContext::of(&["Use X".into()], vec!["X".into()], &apps).unwrap();
+        let bytes = serde_json::to_string(&ContextFile {
+            turns: &context.turns,
+            terms: &context.terms,
+            app_terms: &context.app_terms,
+        })
+        .unwrap();
+        assert_eq!(
+            bytes,
+            r#"{"turns":["Use X"],"terms":["X"],"app_terms":[{"term":"tightbeam-lead","spoken":"tightbeam lead"},{"term":"Zed"}]}"#
+        );
+        let without_apps = RecordedContext::of(&["Use X".into()], vec!["X".into()], &[]).unwrap();
+        assert_eq!(
+            serde_json::to_string(&ContextFile {
+                turns: &without_apps.turns,
+                terms: &without_apps.terms,
+                app_terms: &without_apps.app_terms
+            })
+            .unwrap(),
+            r#"{"turns":["Use X"],"terms":["X"]}"#
+        );
+        assert!(RecordedContext::of(&[], vec![], &[]).is_none());
+    }
 }

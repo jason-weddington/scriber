@@ -3152,4 +3152,81 @@ mod tests {
             "no event"
         );
     }
+
+    #[test]
+    fn app_terms_survive_new_and_discard_and_only_setters_replace_them() {
+        use scriber_engine::AppTerm;
+        let dir = TempDir::new().unwrap();
+        write(&dir, "settings.json", br#"{"cleanup":true}"#);
+        let fakes = cleaning(Ok("hello world"));
+        let (engine, _rx) = fakes.open(library_config(&dir));
+        let app = || {
+            vec![AppTerm {
+                term: "tightbeam-lead".into(),
+                spoken: Some("tightbeam lead".into()),
+            }]
+        };
+        engine.set_terms(app());
+        let _new = engine.act(Action::New, "").unwrap();
+        let _discarded = engine.discard().unwrap();
+        let _recording1 = engine.record().unwrap();
+        assert_eq!(engine.stop_and_wait(PATIENCE).unwrap(), "hello world");
+        assert!(
+            fakes.cleaner.requests.lock().unwrap()[0]
+                .starts_with("Glossary:\ntightbeam-lead (spoken: tightbeam lead)\n\nTranscript:\n")
+        );
+        engine.set_terms(vec![]);
+        let _recording2 = engine.record().unwrap();
+        let _text1 = engine.stop_and_wait(PATIENCE).unwrap();
+        assert!(
+            fakes.cleaner.requests.lock().unwrap()[1]
+                .starts_with("Glossary: none\n\nTranscript:\n")
+        );
+        engine.set_terms(app());
+        engine.clear_terms();
+        let _recording3 = engine.record().unwrap();
+        let _text2 = engine.stop_and_wait(PATIENCE).unwrap();
+        assert!(
+            fakes.cleaner.requests.lock().unwrap()[2]
+                .starts_with("Glossary: none\n\nTranscript:\n")
+        );
+    }
+
+    #[test]
+    fn app_setters_after_shutdown_change_no_snapshot_files_or_events() {
+        use scriber_engine::AppTerm;
+        let dir = TempDir::new().unwrap();
+        let fakes = Fakes::default();
+        let (engine, rx) = fakes.open(config(&dir));
+        let _warm = until(&rx, |_| true).unwrap();
+        let before_shutdown = engine.state();
+        engine.set_terms(vec![AppTerm {
+            term: "Before".into(),
+            spoken: None,
+        }]);
+        engine.clear_terms();
+        assert_eq!(engine.state(), before_shutdown);
+        assert!(rx.try_recv().is_err());
+        let _report = engine.shutdown();
+        let before = engine.state();
+        let files = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        engine.set_terms(vec![AppTerm {
+            term: "Zed".into(),
+            spoken: None,
+        }]);
+        assert_eq!(engine.state(), before);
+        engine.clear_terms();
+        assert_eq!(engine.state(), before);
+        assert_eq!(
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<std::collections::BTreeSet<_>>(),
+            files
+        );
+        assert!(rx.try_recv().is_err());
+    }
 }

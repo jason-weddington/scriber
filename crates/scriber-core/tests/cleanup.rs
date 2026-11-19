@@ -22,6 +22,7 @@ mod tests {
     fn the_constants_are_pinned() {
         const S1: &str = "You correct a dictated transcript. Make only four kinds of change.";
         const S2: &str = "First, where a word or phrase was misheard and sounds closely like one of the glossary terms (and fits the sentence), replace it with that term spelled exactly as in the glossary; never replace an unrelated name or foreign word just because it starts with a similar sound.";
+        const S_APP: &str = "A glossary line of the form \"TERM (spoken: WORDS)\" means the speaker says WORDS aloud for TERM, so where the transcript has WORDS, or something that sounds closely like them, write TERM spelled exactly as it appears before the parenthesis; never write \"(spoken:\" or the parenthesis in the transcript.";
         const S3: &str = "Second, where the speaker explicitly spells out a word or name inside the transcript (for example, \"X is spelled A-B-C\"), use that spelling in normal title case (not all-caps unless it is an acronym) everywhere that word or name appears in the transcript (fixing any phonetic mishearing, including when joined to another word), while keeping the speaker's spelling sentence intact unless they were correcting a false start.";
         const S4: &str = "Third, where the speaker corrected themselves while speaking (a false start, a repeated phrase, or words such as \"I mean\" or \"what I actually meant was\"), work out what they were trying to say. If their final restatement says it cleanly, keep that restatement exactly as spoken. If it does not, write what they were trying to say in words that match the rest of the transcript, its vocabulary and its tone, adding as few words they did not say as you can. Either way, delete the abandoned words.";
         const S5: &str = "Fourth, where a clock time followed by a.m. or p.m. has a dot between the hour and the minutes, change the dot to a colon: 9.43 a.m. becomes 9:43 a.m. Leave every other number unchanged, including version numbers and decimals.";
@@ -36,7 +37,11 @@ mod tests {
             ["off", "cleaned", "unchanged", "failed"],
             "labels"
         );
-        assert_eq!(PROMPT, [S1, S2, S3, S4, S5, S6, S7].join(" "), "prompt");
+        assert_eq!(
+            PROMPT,
+            [S1, S2, S_APP, S3, S4, S5, S6, S7].join(" "),
+            "prompt"
+        );
         assert!(
             PROMPT
                 .starts_with("You correct a dictated transcript. Make only four kinds of change."),
@@ -129,7 +134,7 @@ mod tests {
             ("", "x"),
         ] {
             let reply = reply_with(vec![replacement(from_to.0, from_to.1)], raw);
-            assert_eq!(filter(raw, &reply), reply, "{from_to:?}");
+            assert_eq!(filter(raw, &reply, &[]), reply, "{from_to:?}");
         }
     }
 
@@ -138,7 +143,7 @@ mod tests {
         let spelled_raw = "I want CLAUDE spelled C-L-A-U-D-E.";
         let spelled_reply = reply_with(vec![replacement("Claude", "CLAUDE")], spelled_raw);
         assert_eq!(
-            filter(spelled_raw, &spelled_reply).transcript,
+            filter(spelled_raw, &spelled_reply, &[]).transcript,
             "I want Claude spelled C-L-A-U-D-E.",
             "spelled out"
         );
@@ -148,7 +153,7 @@ mod tests {
             vec![replacement("Claude", "CLAUDE")],
             "I want CLAUDE on the board.",
         );
-        let filtered = filter(plain_raw, &plain_reply);
+        let filtered = filter(plain_raw, &plain_reply, &[]);
         assert_eq!(filtered, plain_reply, "not spelled out");
         assert_eq!(
             filtered.transcript, "I want CLAUDE on the board.",
@@ -158,14 +163,18 @@ mod tests {
         let short_raw = "I filed it in Gtd, spelled G-T-D.";
         let short_reply = reply_with(vec![replacement("Gtd", "GTD")], short_raw);
         assert_eq!(
-            filter(short_raw, &short_reply),
+            filter(short_raw, &short_reply, &[]),
             short_reply,
             "three letters"
         );
 
         let caps_raw = "I want CLAUDE spelled C-L-A-U-D-E.";
         let caps_reply = reply_with(vec![replacement("CLAUDE", "CLAUDE")], caps_raw);
-        assert_eq!(filter(caps_raw, &caps_reply), caps_reply, "already caps");
+        assert_eq!(
+            filter(caps_raw, &caps_reply, &[]),
+            caps_reply,
+            "already caps"
+        );
     }
 
     #[test]
@@ -173,29 +182,29 @@ mod tests {
         let raw = "Ask Clawed to check the board.";
         let distant = reply_with(vec![replacement("Yukara", "Chie")], raw);
         assert_eq!(
-            filter(raw, &distant).replacements,
+            filter(raw, &distant, &[]).replacements,
             Vec::<Replacement>::new(),
             "distant"
         );
-        assert_eq!(filter(raw, &distant).transcript, raw, "reverted");
+        assert_eq!(filter(raw, &distant, &[]).transcript, raw, "reverted");
 
         let threshold = reply_with(vec![replacement("Yagura", "YAGNI")], raw);
         assert_eq!(
-            filter(raw, &threshold).replacements,
+            filter(raw, &threshold, &[]).replacements,
             Vec::<Replacement>::new(),
             "threshold"
         );
 
         let close = reply_with(vec![replacement("Talus", "Talos")], raw);
-        assert_eq!(filter(raw, &close), close, "close");
+        assert_eq!(filter(raw, &close, &[]), close, "close");
 
         let boundary = reply_with(vec![replacement("Talus", "Tolas")], raw);
-        assert_eq!(filter(raw, &boundary), boundary, "at 40% boundary");
+        assert_eq!(filter(raw, &boundary, &[]), boundary, "at 40% boundary");
 
         let spelled_raw = "I want Yagura spelled Y-A-G-U-R-A.";
         let spelled_reply = reply_with(vec![replacement("Yagura", "Yakura")], spelled_raw);
         assert_eq!(
-            filter(spelled_raw, &spelled_reply).replacements,
+            filter(spelled_raw, &spelled_reply, &[]).replacements,
             Vec::<Replacement>::new(),
             "spelled word"
         );
@@ -203,7 +212,7 @@ mod tests {
         let grounded_raw = "Spell it A-I-J-U.";
         let grounded_reply = reply_with(vec![replacement("Clawed", "Aijulabs")], grounded_raw);
         assert_eq!(
-            filter(grounded_raw, &grounded_reply),
+            filter(grounded_raw, &grounded_reply, &[]),
             grounded_reply,
             "grounded"
         );
@@ -218,7 +227,7 @@ mod tests {
             transcript: "Chie met Chie at nine.".to_string(),
         };
         assert_eq!(
-            filter(twice_raw, &twice),
+            filter(twice_raw, &twice, &[]),
             Reply {
                 replacements: vec![],
                 learned: vec!["Kept".to_string()],
@@ -234,7 +243,7 @@ mod tests {
             transcript: "Chie says Talos is up.".to_string(),
         };
         assert_eq!(
-            filter(mixed_raw, &mixed),
+            filter(mixed_raw, &mixed, &[]),
             Reply {
                 replacements: vec![replacement("Talus", "Talos")],
                 learned: vec!["Aiju".to_string()],
@@ -395,11 +404,11 @@ mod tests {
             "Ask Chie to check the board.",
         );
         assert_eq!(
-            accept_reply(raw, &reply, &[]),
+            accept_reply(raw, &reply, &[], &[]),
             Ok((raw.to_string(), Vec::new())),
             "reverted"
         );
-        let filtered = filter(raw, &reply);
+        let filtered = filter(raw, &reply, &[]);
         assert_eq!(
             accept(raw, &filtered.transcript, &[]),
             Ok(raw.to_string()),
@@ -422,7 +431,7 @@ mod tests {
             "over budget alone"
         );
         assert_eq!(
-            accept_reply(raw, &reply, &[]),
+            accept_reply(raw, &reply, &[], &[]),
             Ok((transcript.to_string(), strings(&["Aiju"]))),
             "the spelled term is exempt"
         );
@@ -457,12 +466,12 @@ mod tests {
     #[test]
     fn the_request_lists_the_terms_then_the_transcript() {
         assert_eq!(
-            request("a b", &terms(&["X", "Y"])),
+            request("a b", &terms(&["X", "Y"]), &[]),
             "Glossary:\nX\nY\n\nTranscript:\na b",
             "terms"
         );
         assert_eq!(
-            request("a b", &[]),
+            request("a b", &[], &[]),
             "Glossary: none\n\nTranscript:\na b",
             "no terms"
         );
@@ -610,7 +619,7 @@ mod tests {
             "only the run outside raw's own tail is stripped"
         );
         assert_eq!(
-            accept_reply("Ship it.", &Reply::new("Ship it.\"}"), &[]),
+            accept_reply("Ship it.", &Reply::new("Ship it.\"}"), &[], &[]),
             Ok(("Ship it.".to_string(), Vec::new())),
             "the same stripping through accept_reply"
         );
@@ -847,6 +856,156 @@ mod tests {
             ),
             Err(Reject::CutOff),
             "cut off"
+        );
+    }
+}
+
+#[cfg(test)]
+mod app_tests {
+    #[test]
+    fn spoken_app_forms_render_and_authorize_only_the_named_replacement() {
+        use scriber_core::app_terms::AppTerm;
+        use scriber_core::cleanup::{Replacement, Reply, filter, request};
+        let app = AppTerm {
+            term: "SQL".into(),
+            spoken: Some("sequel".into()),
+        };
+        let raw = "Run the sequel query.";
+        let reply = Reply {
+            transcript: "Run the SQL query.".into(),
+            replacements: vec![Replacement {
+                from: "sequel".into(),
+                to: "SQL".into(),
+            }],
+            learned: vec![],
+        };
+        assert_eq!(filter(raw, &reply, &[]), Reply::new(raw));
+        assert_eq!(filter(raw, &reply, std::slice::from_ref(&app)), reply);
+        assert_eq!(
+            filter(
+                raw,
+                &reply,
+                &[AppTerm {
+                    spoken: None,
+                    ..app.clone()
+                }]
+            ),
+            Reply::new(raw)
+        );
+        assert_eq!(
+            request(
+                raw,
+                &["sql".into(), "Other".into()],
+                std::slice::from_ref(&app)
+            ),
+            "Glossary:\nsql (spoken: sequel)\nOther\n\nTranscript:\nRun the sequel query."
+        );
+        assert_eq!(
+            request(
+                raw,
+                &["SQL".into()],
+                &[AppTerm {
+                    spoken: None,
+                    ..app
+                }]
+            ),
+            "Glossary:\nSQL\n\nTranscript:\nRun the sequel query."
+        );
+    }
+
+    #[test]
+    fn spoken_exemption_requires_both_source_and_target_to_match() {
+        use scriber_core::app_terms::AppTerm;
+        use scriber_core::cleanup::{Replacement, Reply, filter};
+        let app = AppTerm {
+            term: "SQL".into(),
+            spoken: Some("sequel".into()),
+        };
+        for (from, to) in [("sequel", "Java"), ("unrelated", "SQL")] {
+            let raw = format!("Run the {from} query.");
+            let reply = Reply {
+                transcript: format!("Run the {to} query."),
+                replacements: vec![Replacement {
+                    from: from.into(),
+                    to: to.into(),
+                }],
+                learned: vec![],
+            };
+            assert_eq!(
+                filter(&raw, &reply, std::slice::from_ref(&app)),
+                Reply::new(raw)
+            );
+        }
+        let raw = "Run the SeQuEl query.";
+        let reply = Reply {
+            transcript: "Run the sql query.".into(),
+            replacements: vec![Replacement {
+                from: "SeQuEl".into(),
+                to: "sql".into(),
+            }],
+            learned: vec![],
+        };
+        assert_eq!(filter(raw, &reply, &[app]), reply);
+    }
+
+    #[test]
+    fn app_terms_exclude_learning_but_only_written_terms_exempt_new_words() {
+        use scriber_core::app_terms::AppTerm;
+        use scriber_core::cleanup::{Reject, Reply, accept_reply};
+        let spelled_raw = "Zedd is spelled Z-E-D-D";
+        let spelled_reply = Reply {
+            learned: vec!["Zedd".into()],
+            ..Reply::new(spelled_raw)
+        };
+        assert_eq!(
+            accept_reply(spelled_raw, &spelled_reply, &[], &[])
+                .unwrap()
+                .1,
+            ["Zedd"]
+        );
+        assert_eq!(
+            accept_reply(spelled_raw, &spelled_reply, &["Zedd".into()], &[])
+                .unwrap()
+                .1,
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            accept_reply(
+                spelled_raw,
+                &spelled_reply,
+                &[],
+                &[AppTerm {
+                    term: "ZedName".into(),
+                    spoken: Some("Zedd".into())
+                }]
+            )
+            .unwrap()
+            .1,
+            Vec::<String>::new()
+        );
+        let budget_raw = "ask the tightbeam lead about the deploy today";
+        let budget_reply = Reply::new("ask the alpha beta gamma delta about the deploy today");
+        let budget_app = AppTerm {
+            term: "alpha beta gamma delta".into(),
+            spoken: None,
+        };
+        assert_eq!(
+            accept_reply(
+                budget_raw,
+                &budget_reply,
+                &[],
+                std::slice::from_ref(&budget_app)
+            ),
+            Err(Reject::NewWords)
+        );
+        assert!(
+            accept_reply(
+                budget_raw,
+                &budget_reply,
+                std::slice::from_ref(&budget_app.term),
+                std::slice::from_ref(&budget_app)
+            )
+            .is_ok()
         );
     }
 }

@@ -86,6 +86,7 @@ pub use ollama::{
     CLEANUP_TIMEOUT, KEEP_ALIVE, KEEP_WARM_INTERVAL, Ollama, RELEASE_TIMEOUT, SUMMARY_TIMEOUT,
     SYSTEM_PROMPT, TAGS_TIMEOUT, WARM_TIMEOUT, installed_models,
 };
+pub use scriber_core::app_terms::AppTerm;
 pub use scriber_core::dictation::DictationError;
 pub use scriber_core::download::Source;
 pub use scriber_core::menubar;
@@ -844,6 +845,17 @@ impl Engine {
     /// [`EngineError::Refused`] while idle or transcribing.
     pub fn discard(&self) -> Result<Snapshot, EngineError> {
         self.act(Action::Discard, "")
+    }
+
+    /// Replaces priority-ordered embedder terms; legal in every phase, even after shutdown.
+    /// Changes no revision, emits no event and writes no files or logs.
+    pub fn set_terms(&self, terms: Vec<AppTerm>) {
+        lock(&self.0.dictation).set_terms(terms);
+    }
+
+    /// Forgets embedder terms without changing session state.
+    pub fn clear_terms(&self) {
+        lock(&self.0.dictation).clear_terms();
     }
 
     /// Replaces the embedder's conversation turns with `turns`, oldest first

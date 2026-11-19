@@ -46,7 +46,7 @@
 //!
 //! `scriber_commit` is the `SCRIBER_COMMIT` environment variable when set and non-empty (then `scriber_dirty` is null), else `git rev-parse HEAD` in this crate's directory, with `scriber_dirty` from `git status --porcelain`; with neither, the run fails with exit 1. `whisper_rs_version` is pinned and checked against Cargo.lock by a test. Model and audio SHA-256s are streamed in 64 KiB chunks.
 //!
-//! The prompt is `vocabulary::prompt` of the configured vocabulary file, or none. Production instead always prompts with `vocabulary::prompt_for` of its glossary (the style sentence plus learned terms), and no prompt and the style sentence alone give different output, so every report says `prompt_matches_production: false`.
+//! The prompt is `vocabulary::prompt` of the configured vocabulary file, or none. Production instead always prompts with `vocabulary::prompt_with_app` of the embedder’s app terms and user glossary (`prompt_for` alone when no app terms are set), and no prompt and the style sentence alone give different output, so every report says `prompt_matches_production: false`.
 //!
 //! Every run also writes `manifest.json`: the mode, provenance, model, the parsed config, start and finish times (RFC 3339 UTC), and each recording's status ("ok", "error" with its message, or "skipped" for a stage-2 recording whose every piece is skipped) and output files.
 

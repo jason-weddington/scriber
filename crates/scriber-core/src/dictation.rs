@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Mutex;
 
+use crate::app_terms::{self, AppTerm};
 use crate::audio::{decode_wav, duration_ms, encode_wav, to_mono_16k};
 use crate::cleanup;
 use crate::context;
@@ -138,11 +139,13 @@ enum Work {
     Encode { id: String },
     /// Summarize library entry `id`, whose transcript is `text`.
     Summary { id: String, text: String },
-    /// Clean up session `session`'s transcript `text` with glossary `terms`.
+    /// Clean up session `session`'s transcript `text` with written glossary
+    /// `terms` and the included app terms snapshotted for spoken rendering.
     Cleanup {
         session: u64,
         text: String,
         terms: Vec<String>,
+        app_terms: Vec<AppTerm>,
     },
 }
 
@@ -242,13 +245,18 @@ impl Job {
             Work::Summary { id, text } => {
                 summarize(id, text, ports).map(|summary| Some(cleanup::Reply::new(summary)))
             }
-            Work::Cleanup { text, terms, .. } => match ports.cleaner {
+            Work::Cleanup {
+                text,
+                terms,
+                app_terms,
+                ..
+            } => match ports.cleaner {
                 None => Err(CLEANUP_OFF.to_string()),
                 Some(cleaner) => cleaner
                     .clean(
                         &settings::load(ports.files).cleanup_model,
                         cleanup::PROMPT,
-                        &cleanup::request(text, terms),
+                        &cleanup::request(text, terms, app_terms),
                     )
                     .map(Some)
                     .map_err(|e| e.to_string()),
@@ -453,11 +461,6 @@ fn vocabulary_terms(ports: &Ports<'_>) -> Vec<String> {
     vocabulary::terms(&store::vocabulary(ports.files).unwrap_or_default())
 }
 
-/// The transcriber's prompt for the glossary.
-fn prompt(ports: &Ports<'_>) -> String {
-    vocabulary::prompt_for(&glossary(ports))
-}
-
 /// Appends the context terms of `turns` to `terms` — skipping any the user's
 /// terms already hold, ignoring case — and answers the ones appended, in the
 /// order [`context::terms`] put them.
@@ -509,6 +512,9 @@ pub struct Dictation {
     /// The length of the audio of every closed segment.
     recorded_ms: u64,
     prompt: Option<String>,
+    prompt_user_terms: Vec<String>,
+    prompt_app_terms: Vec<String>,
+    app_terms: Vec<AppTerm>,
     text: String,
     /// Whisper's joined transcript of the finished session, before cleanup, the shortcut glyphs and the learned spellings.
     raw: Option<String>,
@@ -528,7 +534,7 @@ pub struct Dictation {
     source: Option<Source>,
     /// While the cleanup model works on the transcript: Whisper's
     /// transcript and the glossary terms sent with it.
-    cleaning: Option<(String, Vec<String>)>,
+    cleaning: Option<(String, Vec<String>, Vec<AppTerm>)>,
     /// The input device opened for the session's latest segment.
     microphone: Option<String>,
     /// The terms the last learning Copy added to the learned list
@@ -676,7 +682,8 @@ impl Dictation {
                 .iter()
                 .map(|i| (*i, Slot::Failed("interrupted".to_string())))
                 .collect();
-            this.prompt = Some(prompt(ports));
+            this.prompt_user_terms = glossary(ports);
+            this.prompt = Some(vocabulary::prompt_with_app(&[], &this.prompt_user_terms));
             this.phase = Phase::Failed;
             this.error = Some(format!(
                 "The last session was not transcribed. Retry to transcribe its {} recorded {}, or start a new session.",
@@ -785,7 +792,12 @@ impl Dictation {
         self.slots.clear();
         self.next_index = 0;
         self.recorded_ms = 0;
-        self.prompt = Some(prompt(ports));
+        self.prompt_user_terms = glossary(ports);
+        self.prompt_app_terms = self.app_terms.iter().map(|a| a.term.clone()).collect();
+        self.prompt = Some(vocabulary::prompt_with_app(
+            &self.app_terms,
+            &self.prompt_user_terms,
+        ));
         self.text.clear();
         self.raw = None;
         self.error = None;
@@ -836,6 +848,16 @@ impl Dictation {
         }
         self.reset(ports);
         Ok(())
+    }
+
+    /// Replaces process-local app terms, without changing session state or files.
+    pub fn set_terms(&mut self, terms: Vec<AppTerm>) {
+        self.app_terms = app_terms::normalize(terms);
+    }
+
+    /// Clears process-local app terms without changing session state.
+    pub fn clear_terms(&mut self) {
+        self.app_terms.clear();
     }
 
     /// Replaces the embedder's conversation turns with `turns`, oldest first
@@ -926,6 +948,14 @@ impl Dictation {
     /// Illegal unless ready; the model is missing; the microphone fails.
     pub fn record(&mut self, ports: &Ports<'_>) -> Result<(), DictationError> {
         self.start(Action::Record, Phase::Ready, ports)?;
+        let written: Vec<String> = self.app_terms.iter().map(|a| a.term.clone()).collect();
+        if written != self.prompt_app_terms {
+            self.prompt = Some(vocabulary::prompt_with_app(
+                &self.app_terms,
+                &self.prompt_user_terms,
+            ));
+            self.prompt_app_terms = written;
+        }
         if let Some(lib) = ports.library
             && self.started.is_none()
         {
@@ -1119,7 +1149,7 @@ impl Dictation {
         if session != self.session || self.phase != Phase::Transcribing {
             return;
         }
-        let Some((raw, terms)) = self.cleaning.take() else {
+        let Some((raw, terms, app_terms)) = self.cleaning.take() else {
             return;
         };
         self.revision = self.revision.wrapping_add(1);
@@ -1132,7 +1162,7 @@ impl Dictation {
         let (text, record) = match result {
             Ok(reply) => {
                 let reply = reply.unwrap_or_default();
-                match cleanup::accept_reply(&raw, &reply, &terms) {
+                match cleanup::accept_reply(&raw, &reply, &terms, &app_terms) {
                     Ok((clean, learned)) => {
                         if !learned.is_empty() {
                             self.learn_terms(&learned, &learned, ports);
@@ -1221,13 +1251,25 @@ impl Dictation {
         if !text.is_empty() && ports.cleaner.is_some() && settings::load(ports.files).cleanup {
             let mut terms = glossary(ports);
             terms.truncate(cleanup::MAX_TERMS);
+            let mut app_terms = Vec::new();
+            for app in &self.app_terms {
+                if !terms
+                    .iter()
+                    .any(|t| t.to_lowercase() == app.term.to_lowercase())
+                {
+                    terms.push(app.term.clone());
+                    app_terms.push(app.clone());
+                }
+            }
             let appended = append_context(&self.context, ports, &mut terms);
-            self.recorded_context = library::RecordedContext::of(&self.context, appended);
-            self.cleaning = Some((text.clone(), terms.clone()));
+            self.recorded_context =
+                library::RecordedContext::of(&self.context, appended, &self.app_terms);
+            self.cleaning = Some((text.clone(), terms.clone(), app_terms.clone()));
             let job = Job(Work::Cleanup {
                 session: self.session,
                 text,
                 terms,
+                app_terms,
             });
             self.queue(vec![job], ports);
             return;
@@ -1238,7 +1280,8 @@ impl Dictation {
             reply: None,
             error: None,
         };
-        self.recorded_context = library::RecordedContext::of(&self.context, Vec::new());
+        self.recorded_context =
+            library::RecordedContext::of(&self.context, Vec::new(), &self.app_terms);
         self.finish(text, &record, ports);
     }
 

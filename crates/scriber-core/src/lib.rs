@@ -28,6 +28,7 @@
 //! separators, acronyms and words no word list knows), and [`shortcuts`]
 //! writes spoken keyboard shortcuts as Mac glyphs in the finished transcript.
 
+pub mod app_terms;
 pub mod audio;
 pub mod cleanup;
 pub mod context;

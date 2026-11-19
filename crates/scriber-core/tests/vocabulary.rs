@@ -145,3 +145,51 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod app_tests {
+    #[test]
+    fn app_terms_share_is_a_prefix_and_user_duplicates_keep_their_spelling() {
+        use scriber_core::app_terms::AppTerm;
+        use scriber_core::vocabulary::{prompt_for, prompt_with_app};
+        let app = |term: String| AppTerm {
+            term,
+            spoken: Some("never spoken here".into()),
+        };
+        let short: Vec<_> = (0..25).map(|i| app(format!("t{i}"))).collect();
+        let written: Vec<_> = short.iter().map(|a| a.term.clone()).collect();
+        assert_eq!(prompt_with_app(&short, &[]), prompt_for(&written));
+        assert_eq!(prompt_with_app(&[], &written), prompt_for(&written));
+        let boundary = vec![
+            app("a".repeat(64)),
+            app("b".repeat(64)),
+            app("c".repeat(64)),
+            app("dd".into()),
+        ];
+        let boundary_user = "u".repeat(202);
+        let prompt = prompt_with_app(&boundary, std::slice::from_ref(&boundary_user));
+        assert_eq!(prompt.chars().count(), 500);
+        assert!(prompt.contains(&boundary_user));
+        assert!(!prompt.contains("never spoken"));
+        assert!(prompt_with_app(&boundary, &["u".repeat(203)]).ends_with("dd."));
+        let overflow = vec![
+            app("a".repeat(64)),
+            app("b".repeat(64)),
+            app("c".repeat(64)),
+            app("ddd".into()),
+            app("z".into()),
+        ];
+        assert!(prompt_with_app(&overflow, &[]).ends_with(&format!("{}.", "c".repeat(64))));
+        for count in [40, 60] {
+            let mut user: Vec<_> = (0..count).map(|i| format!("user{i:08}")).collect();
+            user[count - 1] = "vortac".into();
+            let duplicate_prompt = prompt_with_app(&[app("Vortac".into())], &user);
+            assert_eq!(duplicate_prompt.matches("vortac").count(), 1);
+            assert!(duplicate_prompt.contains("Glossary: vortac, user00000000"));
+        }
+        assert!(
+            prompt_with_app(&[app("a".repeat(201)), app("z".into())], &["User".into()])
+                .ends_with("Glossary: User.")
+        );
+    }
+}

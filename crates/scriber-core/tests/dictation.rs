@@ -4405,4 +4405,271 @@ mod tests {
         );
         assert!(!got.text.is_empty(), "usable text remains");
     }
+
+    fn app(term: &str, spoken: Option<&str>) -> scriber_core::app_terms::AppTerm {
+        scriber_core::app_terms::AppTerm {
+            term: term.into(),
+            spoken: spoken.map(str::to_string),
+        }
+    }
+
+    /// Transcribes one segment and closes the supplied session.
+    fn app_heard(d: &mut Dictation, w: &World, p: &Ports<'_>, text: &str) {
+        let job = d.pause(p).unwrap().unwrap();
+        assert!(d.done(p).unwrap().is_none());
+        w.transcriber
+            .answers
+            .borrow_mut()
+            .push_back(Ok(text.into()));
+        let _snapshot = d.complete(w.run(&job), p);
+    }
+
+    fn last_prompt(w: &World) -> String {
+        w.transcriber
+            .calls
+            .borrow()
+            .last()
+            .unwrap()
+            .1
+            .clone()
+            .unwrap()
+    }
+
+    #[test]
+    fn app_prompt_changes_at_record_without_rereading_user_files() {
+        let w = World::default();
+        let p = w.ports();
+        let mut d = idle(&w);
+        w.files.set_vocabulary(Some("Before"));
+        let _new = d.apply(Action::New, "", &p).unwrap();
+        w.files.set_vocabulary(Some("After"));
+        d.set_terms(vec![app("First", Some("say first"))]);
+        let _recording = d.apply(Action::Record, "", &p).unwrap();
+        app_heard(&mut d, &w, &p, "Hello.");
+        assert_eq!(last_prompt(&w), format!("{STYLE} Glossary: First, Before."));
+        d.new_session(&p).unwrap();
+        d.set_terms(vec![app("Second", None)]);
+        d.record(&p).unwrap();
+        let first = d.pause(&p).unwrap().unwrap();
+        d.set_terms(vec![app("Third", None)]);
+        d.resume(&p).unwrap();
+        let second = d.done(&p).unwrap().unwrap();
+        finish(&mut d, &w, &first);
+        finish(&mut d, &w, &second);
+        let prompts: Vec<_> = w
+            .transcriber
+            .calls
+            .borrow()
+            .iter()
+            .map(|(_, prompt)| prompt.clone().unwrap())
+            .collect();
+        assert_eq!(
+            prompts,
+            [
+                format!("{STYLE} Glossary: First, Before."),
+                format!("{STYLE} Glossary: Second, After."),
+                format!("{STYLE} Glossary: Second, After.")
+            ]
+        );
+        d.new_session(&p).unwrap();
+        d.clear_terms();
+        d.record(&p).unwrap();
+        app_heard(&mut d, &w, &p, "Hello.");
+        assert_eq!(last_prompt(&w), scriber_core::vocabulary::prompt("After"));
+        d.set_terms(vec![app("Fourth", Some("say fourth"))]);
+        d.new_session(&p).unwrap();
+        d.set_terms(vec![app("Fourth", Some("different spoken"))]);
+        d.record(&p).unwrap();
+        app_heard(&mut d, &w, &p, "Hello.");
+        assert_eq!(last_prompt(&w), format!("{STYLE} Glossary: Fourth, After."));
+    }
+
+    #[test]
+    fn app_setters_are_silent_in_every_phase_and_replace_the_list() {
+        for phase in PHASES {
+            let w = World::default();
+            let (mut d, _jobs) = at(&w, phase);
+            let before = snap(&d, &w);
+            let files = w.files.files.borrow().clone();
+            d.set_terms(vec![app("First", None)]);
+            d.set_terms(vec![app("Second", None)]);
+            assert_eq!(snap(&d, &w), before);
+            d.set_terms(vec![]);
+            d.clear_terms();
+            assert_eq!(snap(&d, &w), before);
+            assert_eq!(*w.files.files.borrow(), files);
+        }
+    }
+
+    /// A recording with app terms, context and cleanup, ready for its queued cleanup job.
+    fn app_cleanup(
+        w: &World,
+        apps: Vec<scriber_core::app_terms::AppTerm>,
+        turns: &[&str],
+        raw: &str,
+    ) -> (Dictation, Job) {
+        cleanup_on(w);
+        let p = w.context_ports();
+        let mut d = idle(w);
+        d.set_terms(vec![app("Replaced", None)]);
+        d.set_terms(apps);
+        d.set_context(strings(turns));
+        d.new_session(&p).unwrap();
+        d.discard(&p).unwrap();
+        d.record(&p).unwrap();
+        app_heard(&mut d, w, &p, raw);
+        let job = w.queue.jobs.borrow_mut().pop().unwrap();
+        assert!(format!("{job:?}").contains("Cleanup"));
+        (d, job)
+    }
+
+    #[test]
+    fn app_glossary_and_context_file_are_snapshotted_together() {
+        let w = World::default();
+        w.lexicon.set(&["use"]);
+        let (mut d, job) = app_cleanup(
+            &w,
+            vec![
+                app("tightbeam-lead", Some("tightbeam lead")),
+                app("Zed", None),
+            ],
+            &["Use StreamRecorder"],
+            CLAWED,
+        );
+        d.set_terms(vec![app("Later", None)]);
+        let s = cleaned(&w, &mut d, &job, Ok(CLAWED));
+        assert_eq!(s.phase, Phase::Finished);
+        assert_eq!(
+            glossary_block(&w.cleaner.calls.borrow()[0].1),
+            "tightbeam-lead (spoken: tightbeam lead)\nZed\nStreamRecorder"
+        );
+        assert_eq!(
+            entry_file(&w, "context.json").as_deref(),
+            Some(
+                r#"{"turns":["Use StreamRecorder"],"terms":["StreamRecorder"],"app_terms":[{"term":"tightbeam-lead","spoken":"tightbeam lead"},{"term":"Zed"}]}"#
+            )
+        );
+    }
+
+    #[test]
+    fn app_only_context_is_written_with_cleanup_on_and_off() {
+        for cleanup in [true, false] {
+            let w = World::default();
+            if cleanup {
+                cleanup_on(&w);
+            }
+            let p = w.library_cleaner_ports();
+            let mut d = idle(&w);
+            d.set_terms(vec![app("Zed", Some("zed"))]);
+            d.new_session(&p).unwrap();
+            d.record(&p).unwrap();
+            app_heard(&mut d, &w, &p, CLAWED);
+            if cleanup {
+                let job = w.queue.jobs.borrow_mut().pop().unwrap();
+                let _s = cleaned(&w, &mut d, &job, Ok(CLAWED));
+            }
+            assert_eq!(
+                entry_file(&w, "context.json").as_deref(),
+                Some(r#"{"turns":[],"terms":[],"app_terms":[{"term":"Zed"}]}"#)
+            );
+        }
+    }
+
+    #[test]
+    fn app_caps_are_independent_of_user_and_context_caps() {
+        for app_count in [25, 51] {
+            let w = World::default();
+            let users: Vec<_> = (0..200).map(|i| format!("User{i}")).collect();
+            w.files.set_vocabulary(Some(&users.join("\n")));
+            let apps: Vec<_> = (0..app_count)
+                .map(|i| app(&format!("App{i}"), None))
+                .collect();
+            let context: Vec<_> = (0..40).map(|i| format!("Context{i}")).collect();
+            let turn = context.join(" ");
+            let (mut d, job) = app_cleanup(&w, apps, &[&turn], CLAWED);
+            let _s = cleaned(&w, &mut d, &job, Ok(CLAWED));
+            let block = glossary_block(&w.cleaner.calls.borrow()[0].1);
+            let lines: Vec<_> = block.lines().collect();
+            let count = app_count.min(50);
+            assert_eq!(lines.len(), 200 + count + 30);
+            assert_eq!(&lines[..200], users);
+            for i in 0..count {
+                assert_eq!(lines[200 + i], format!("App{i}"));
+            }
+            assert_eq!(lines[200 + count], "Context0");
+            assert_eq!(lines.last(), Some(&"Context29"));
+            let file: Value =
+                serde_json::from_str(&entry_file(&w, "context.json").unwrap()).unwrap();
+            assert_eq!(file["app_terms"].as_array().unwrap().len(), count);
+            assert_eq!(file["terms"].as_array().unwrap().len(), 30);
+        }
+    }
+
+    #[test]
+    fn app_dedupe_uses_retained_users_then_precedes_context() {
+        let w = World::default();
+        let mut users: Vec<_> = (0..200).map(|i| format!("User{i}")).collect();
+        users.push("LateUser".into());
+        w.files.set_vocabulary(Some(&users.join("\n")));
+        let (mut d, job) = app_cleanup(
+            &w,
+            vec![
+                app("user0", Some("say zero")),
+                app("LateUser", Some("late user")),
+                app("StreamRecorder", Some("stream recorder")),
+                app("streamrecorder", None),
+            ],
+            &["StreamRecorder"],
+            CLAWED,
+        );
+        let _s = cleaned(&w, &mut d, &job, Ok(CLAWED));
+        let block = glossary_block(&w.cleaner.calls.borrow()[0].1);
+        let lines: Vec<_> = block.lines().collect();
+        assert_eq!(lines.len(), 202);
+        assert_eq!(lines[0], "User0");
+        assert_eq!(lines[200], "LateUser (spoken: late user)");
+        assert_eq!(lines[201], "StreamRecorder (spoken: stream recorder)");
+        let file: Value = serde_json::from_str(&entry_file(&w, "context.json").unwrap()).unwrap();
+        assert_eq!(file["terms"], json!([]));
+        assert_eq!(file["app_terms"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn recovered_retry_keeps_launch_prompt_but_uses_current_app_cleanup_terms() {
+        let w = World::default();
+        cleanup_on(&w);
+        w.files.put_segment(0, encode_wav(&speech(16_000)));
+        let p = w.library_cleaner_ports();
+        let mut d = Dictation::recover(&p);
+        d.set_terms(vec![app("SQL", Some("sequel"))]);
+        let jobs = d.retry(&p).unwrap();
+        let _transcribed = d.complete(w.run(&jobs[0]), &p);
+        assert_eq!(last_prompt(&w), STYLE);
+        let job = w.queue.jobs.borrow_mut().pop().unwrap();
+        let _s = cleaned(&w, &mut d, &job, Ok("hello world"));
+        assert_eq!(
+            glossary_block(&w.cleaner.calls.borrow()[0].1),
+            "SQL (spoken: sequel)"
+        );
+    }
+
+    #[test]
+    fn app_written_and_spoken_terms_are_never_learned_or_written_to_user_files() {
+        let w = World::default();
+        w.files.set_vocabulary(Some("Rust\n"));
+        let raw = "Zed is spelled Z-E-D. Sequel is spelled S-E-Q-U-E-L. Run the sequel query.";
+        let (mut d, job) = app_cleanup(
+            &w,
+            vec![app("Zed", None), app("SQL", Some("sequel"))],
+            &[],
+            raw,
+        );
+        let reply = json!({"transcript": "Zed is spelled Z-E-D. Sequel is spelled S-E-Q-U-E-L. Run the SQL query.", "learned": ["Zed", "sequel", "SQL"], "replacements": [{"from":"sequel", "to":"SQL"}]}).to_string();
+        let s = cleaned(&w, &mut d, &job, Ok(&reply));
+        assert_eq!(s.phase, Phase::Finished);
+        assert!(s.text.contains("SQL query"));
+        assert_eq!(learned_file(&w), None);
+        assert_eq!(s.learned, Vec::<String>::new());
+        assert_eq!(w.files.read("vocabulary.txt").unwrap(), b"Rust\n");
+    }
 }
