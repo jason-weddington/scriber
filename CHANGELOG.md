@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.12.0 - 2026-11-19
+#### Features
+- Engine app terms: always-included embedder terms with spoken forms, outside the 30 context cap, in Whisper's prompt and the cleanup glossary - (10a650e) - vortac-dispatch
+#### Tests
+- check warmer termination without forbidding in-flight release - (4958b54) - Jason Weddington
+#### Miscellaneous Chores
+- (**deny**) ignore RUSTSEC-2026-0543 (chrono is unmaintained, no safe upgrade) in both workspaces - (983192b) - Jason Weddington, *Claude Sonnet 5.5*
+
+- - -
+
 ## v0.11.1 - 2026-11-13
 #### Bug Fixes
 - retain troubleshooting WAVs without the recording library - (4f128f6) - Jason Weddington
