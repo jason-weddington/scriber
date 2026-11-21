@@ -66,7 +66,7 @@ export async function nextFrame(page: Page): Promise<void> {
   await page.evaluate(() => new Promise((r) => { requestAnimationFrame(r); }));
 }
 
-/** The box must not move or resize across the action (CLAUDE.md: no layout shift within a screen state). */
+/** The box must not move or resize across the action (AGENTS.md: no layout shift within a screen state). */
 export async function expectNoShift(page: Page, locator: Locator, action: () => Promise<void>): Promise<void> {
   const before = await locator.boundingBox();
   expect(before).not.toBeNull();
@@ -76,7 +76,7 @@ export async function expectNoShift(page: Page, locator: Locator, action: () => 
   expect(after).toEqual(before);
 }
 
-/** The two boxes must be equal (CLAUDE.md: no layout shift within a screen state). */
+/** The two boxes must be equal (AGENTS.md: no layout shift within a screen state). */
 export async function expectSameBox(a: Locator, b: Locator): Promise<void> {
   const [boxA, boxB] = [await a.boundingBox(), await b.boundingBox()];
   expect(boxA).not.toBeNull();

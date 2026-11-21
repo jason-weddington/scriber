@@ -88,7 +88,7 @@ export function statusText(s: Snapshot): string {
   }
 }
 
-/** The status row's text: the status, plus what a Copy learned. No layout shift: see CLAUDE.md. */
+/** The status row's text: the status, plus what a Copy learned. No layout shift: see AGENTS.md. */
 export function statusLine(s: Snapshot): string {
   return s.phase === 'finished' && s.learned.length > 0
     ? `${statusText(s)} Learned: ${s.learned.join(', ')}.`

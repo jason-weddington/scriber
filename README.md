@@ -144,7 +144,7 @@ Two calls help the AI cleanup pass when your app knows more than the microphone 
 - `docs/design.md`: the app's spec and the bridge contract between the webview and Rust.
 - `docs/quality-gates.md`: what each gate catches and why it exists.
 - `docs/tauri-design-notes.md`: patterns for Tauri 2 apps on macOS.
-- `CLAUDE.md`: how an AI coding agent should work in this repository.
+- `AGENTS.md`: how an AI coding agent should work in this repository.
 
 ## License
 

@@ -2,7 +2,7 @@ import { expect, test } from './fixtures';
 
 import { button, expectNoShift, expectSameBox, hold, nextFrame, open, press, release, status } from './helpers';
 
-// No layout shift within a screen state (CLAUDE.md). Left alone, with reasons:
+// No layout shift within a screen state (AGENTS.md). Left alone, with reasons:
 // CopyButton is position: absolute and 28x28, and its check swaps one 16x16 svg
 // for another. The microphone popover is position: fixed, outside main's flow,
 // and its trigger name is nowrap/ellipsis. The band's .time grows into
