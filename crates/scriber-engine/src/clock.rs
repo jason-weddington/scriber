@@ -1,6 +1,6 @@
-//! The Mac's local wall-clock time, over chrono.
+//! The Mac's local wall-clock time, over jiff.
 
-use chrono::{Datelike as _, Local, Timelike as _};
+use jiff::Zoned;
 use scriber_core::ports::{Clock, LocalTime};
 
 /// The system clock in the machine's time zone.
@@ -8,14 +8,14 @@ pub struct LocalClock;
 
 impl Clock for LocalClock {
     fn now(&self) -> LocalTime {
-        let now = Local::now();
+        let now = Zoned::now();
         LocalTime {
-            year: now.year(),
-            month: now.month(),
-            day: now.day(),
-            hour: now.hour(),
-            minute: now.minute(),
-            second: now.second(),
+            year: i32::from(now.year()),
+            month: u32::from(now.month().unsigned_abs()),
+            day: u32::from(now.day().unsigned_abs()),
+            hour: u32::from(now.hour().unsigned_abs()),
+            minute: u32::from(now.minute().unsigned_abs()),
+            second: u32::from(now.second().unsigned_abs()),
         }
     }
 }

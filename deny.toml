@@ -9,10 +9,7 @@ all-features = true
 targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
 
 [advisories]
-# An unmaintained crate (not a vulnerability): every chrono version is flagged and there is no safe upgrade. The engine uses it for the local wall-clock time (clock.rs) and one UTC timestamp (extract.rs). Drop this entry when the engine moves to jiff or time.
-ignore = [
-    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, with no safe upgrade; scriber-engine uses it for local time and one timestamp" },
-]
+ignore = []
 
 [licenses]
 # Licenses a dependency may use.

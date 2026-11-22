@@ -3580,8 +3580,8 @@ dependencies = [
 name = "scriber-engine"
 version = "0.12.0"
 dependencies = [
- "chrono",
  "cpal",
+ "jiff",
  "scriber-core",
  "serde",
  "serde_json",

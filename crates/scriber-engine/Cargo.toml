@@ -11,10 +11,10 @@ publish = false
 # The logic. A group of its own, so `cargo sort --grouped` keeps it first.
 scriber-core = { path = "../scriber-core" }
 
-# The local time a library entry is named after.
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Audio capture from the chosen input device.
 cpal = "0.18.2"
+# The local time a library entry is named after, and the extractor's UTC timestamp.
+jiff = "0.2.38"
 # The study-104 extractor's config and reports (src/extract.rs).
 serde = { version = "1", features = ["derive"] }
 # The Ollama request and reply, for a library entry's summary, and the

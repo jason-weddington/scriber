@@ -269,11 +269,44 @@ mod tests {
 
     #[test]
     fn now_is_rfc3339_utc() {
+        let before = std::time::SystemTime::now();
         let now = now_rfc3339();
-        assert!(now.ends_with('Z'), "UTC: {now}");
+        let after = std::time::SystemTime::now();
+
+        assert!(now.is_ascii(), "expected ASCII RFC 3339 UTC: {now:?}");
+        let bytes = now.as_bytes();
+        assert_eq!(
+            bytes.len(),
+            20,
+            "expected exact 20-byte YYYY-MM-DDTHH:MM:SSZ: {now:?}"
+        );
+        for i in [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18] {
+            assert!(
+                bytes[i].is_ascii_digit(),
+                "expected ASCII digit at byte {i} in {now:?}"
+            );
+        }
+        assert_eq!(bytes[4], b'-', "expected '-' at byte 4 in {now:?}");
+        assert_eq!(bytes[7], b'-', "expected '-' at byte 7 in {now:?}");
+        assert_eq!(bytes[10], b'T', "expected 'T' at byte 10 in {now:?}");
+        assert_eq!(bytes[13], b':', "expected ':' at byte 13 in {now:?}");
+        assert_eq!(bytes[16], b':', "expected ':' at byte 16 in {now:?}");
+        assert_eq!(bytes[19], b'Z', "expected 'Z' at byte 19 in {now:?}");
+
+        let actual: jiff::Timestamp = now
+            .parse()
+            .unwrap_or_else(|e| panic!("failed to parse {now:?} as jiff::Timestamp: {e}"));
+        let before_ts = jiff::Timestamp::try_from(before)
+            .unwrap_or_else(|e| panic!("failed to convert before SystemTime {before:?}: {e}"));
+        let after_ts = jiff::Timestamp::try_from(after)
+            .unwrap_or_else(|e| panic!("failed to convert after SystemTime {after:?}: {e}"));
+        let lower = jiff::Timestamp::from_second(before_ts.as_second())
+            .unwrap_or_else(|e| panic!("invalid lower bound second: {e}"));
+        let upper = jiff::Timestamp::from_second(after_ts.as_second())
+            .unwrap_or_else(|e| panic!("invalid upper bound second: {e}"));
         assert!(
-            chrono::DateTime::parse_from_rfc3339(&now).is_ok(),
-            "parses: {now}"
+            (lower..=upper).contains(&actual),
+            "now_rfc3339() instant {actual} ({now}) outside inclusive whole-second bounds [{lower}, {upper}]"
         );
     }
 

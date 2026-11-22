@@ -2054,7 +2054,11 @@ impl Manifest {
 /// Now, as RFC 3339 in UTC to the second.
 #[must_use]
 pub fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    format_rfc3339(jiff::Timestamp::now())
+}
+
+fn format_rfc3339(timestamp: jiff::Timestamp) -> String {
+    format!("{timestamp:.0}")
 }
 
 /// A file name's final component, for the reports.
@@ -2063,4 +2067,21 @@ pub fn file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
         .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use jiff::Timestamp;
+
+    use super::format_rfc3339;
+
+    #[test]
+    fn format_rfc3339_truncates_subseconds_above_half_a_second() {
+        let instant: Timestamp = "2026-11-02T00:00:05.876543210Z".parse().unwrap();
+        assert_eq!(
+            format_rfc3339(instant),
+            "2026-11-02T00:00:05Z",
+            "subseconds above half a second must truncate rather than round"
+        );
+    }
 }
