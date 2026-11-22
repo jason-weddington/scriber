@@ -784,12 +784,16 @@ export async function startStandInServer(options) {
       for (const conn of connections.values()) {
         conn.ws.terminate();
       }
+      for (const client of wss.clients) {
+        client.terminate();
+      }
       connections.clear();
       await new Promise((/** @type {(value: void) => void} */ done) => {
         wss.close(() => {
           httpServer.close(() => {
             done();
           });
+          httpServer.closeAllConnections();
         });
       });
     },

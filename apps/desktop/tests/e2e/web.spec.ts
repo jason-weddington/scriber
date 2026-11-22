@@ -360,12 +360,28 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
     ).toBe(true);
 
     // Hello failure modes: invalid JSON, bad platform, close before hello, hello timeout, 1009 close.
-    for (const mode of ['invalid_json', 'bad_platform', 'close_before_hello', 'hang'] as const) {
+    const countHelloObs = async (outcome: WebObservation['outcome'], reason: string): Promise<number> =>
+      (await readObservations(page)).filter(
+        (o) => o.category === 'connection' && o.event === 'hello' && o.outcome === outcome && o.reason === reason,
+      ).length;
+
+    const helloModes: Array<
+      readonly ['invalid_json' | 'bad_platform' | 'close_before_hello' | 'hang', WebObservation['outcome'], string]
+    > = [
+      ['invalid_json', 'failed', 'invalid_hello'],
+      ['bad_platform', 'failed', 'invalid_hello'],
+      ['close_before_hello', 'failed', 'closed_before_hello'],
+      ['hang', 'timeout', 'hello_timeout'],
+    ];
+    for (const [mode, outcome, reason] of helloModes) {
+      const before = await countHelloObs(outcome, reason);
       server.setHelloMode(mode);
       server.disconnectAll(1001, 'test');
-      await page.waitForTimeout(mode === 'hang' ? 350 : 200);
+      await expect.poll(() => countHelloObs(outcome, reason)).toBeGreaterThan(before);
+      const authBefore = await countHelloObs('ok', 'authenticated');
+      server.setHelloMode('ok');
+      await expect.poll(() => countHelloObs('ok', 'authenticated')).toBeGreaterThan(authBefore);
     }
-    server.setHelloMode('ok');
     await expect(status(page)).toHaveText('Click New to start a dictation.');
 
     // 1009 close + RPC timeout + retirement rejects pending RPCs without replay.
@@ -390,6 +406,7 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
     expect(stalledRpcCount).toBe(1);
 
     // Pending RPC rejected on 1009 disconnect and NOT replayed on reconnect.
+    const authBefore1009 = await countHelloObs('ok', 'authenticated');
     const retireErrPromise = page.evaluate(async () => {
       const b = window.__scriberWebTest?.bridge as { ollamaModels: () => Promise<string[]> };
       try {
@@ -399,10 +416,11 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
         return e instanceof Error ? e.message : String(e);
       }
     });
-    await page.waitForTimeout(50);
+    await expect.poll(() => stalledRpcCount).toBe(2);
     server.disconnectAll(1009, 'message too big');
     const retireErr = await retireErrPromise;
     expect(retireErr).toContain('server size limit');
+    await expect.poll(() => countHelloObs('ok', 'authenticated')).toBeGreaterThan(authBefore1009);
     await expect(status(page)).toHaveText('Click New to start a dictation.');
     expect(stalledRpcCount).toBe(2); // Not replayed on reconnect!
 
@@ -414,8 +432,9 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
         window.__scriberWebTest.timeouts = { helloMs: 600, reconnectMs: 120, rpcMs: 100 };
       }
     });
+    const totalConnsBeforeHang = server.totalConnections();
     server.disconnectAll(1001, 'hang next');
-    await page.waitForTimeout(160);
+    await expect.poll(() => server.totalConnections()).toBeGreaterThan(totalConnsBeforeHang);
     const preHelloTimeout = await page.evaluate(async () => {
       const b = window.__scriberWebTest?.bridge as { appVersion: () => Promise<string> };
       try {
@@ -433,6 +452,7 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
     });
 
     // Exercise wss:// -> https:// -> wss:// origin path and immediate reconnect-timer cancellation.
+    const authBeforeReconfig = await countHelloObs('ok', 'authenticated');
     server.setHelloMode('ok');
     await page.evaluate(
       ([endpoint, token]) => {
@@ -444,6 +464,7 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
       },
       [server.url, nextToken] as const,
     );
+    await expect.poll(() => countHelloObs('ok', 'authenticated')).toBeGreaterThan(authBeforeReconfig);
     await expect(status(page)).toHaveText('Click New to start a dictation.');
 
     // Exercise bounded observation ring buffer cap (200 entries).
@@ -1605,8 +1626,18 @@ test('enforces Done clipboard association rules, feedback projection, early/late
       }
       return false;
     });
+    const authBeforeDrop = (await readObservations(page)).filter(
+      (o) => o.category === 'connection' && o.event === 'hello' && o.outcome === 'ok',
+    ).length;
     await press(page, 'Done');
-    await page.waitForTimeout(160);
+    await expect
+      .poll(
+        async () =>
+          (await readObservations(page)).filter(
+            (o) => o.category === 'connection' && o.event === 'hello' && o.outcome === 'ok',
+          ).length,
+      )
+      .toBeGreaterThan(authBeforeDrop);
 
     // Association timeout.
     setPaused(95, 2);
@@ -1619,9 +1650,13 @@ test('enforces Done clipboard association rules, feedback projection, early/late
       return false;
     });
     await press(page, 'Done');
-    await page.waitForTimeout(260);
-    const obsTimeout = await readObservations(page);
-    expect(obsTimeout.some((o) => o.category === 'clipboard' && o.outcome === 'timeout' && o.reason === 'association_timeout')).toBe(true);
+    await expect
+      .poll(async () =>
+        (await readObservations(page)).some(
+          (o) => o.category === 'clipboard' && o.outcome === 'timeout' && o.reason === 'association_timeout',
+        ),
+      )
+      .toBe(true);
 
     // Early rejection & late rejection + Copy fallback with edited draft + learning RPC failure.
     setPaused(100, 2);
@@ -2241,7 +2276,7 @@ test('Connect UI handles validation, cancel, repeated refusal, reload persistenc
   page.on('console', (m) => consoleLines.push(m.text()));
 
   try {
-    await attachWebTestHook(page, { helloMs: 250, reconnectMs: 100, rpcMs: 500 });
+    await attachWebTestHook(page, { helloMs: 2000, reconnectMs: 100, rpcMs: 500 });
     await openWeb(page, server.url);
 
     const connectDialog = page.getByRole('dialog', { name: 'Connect' });
@@ -2403,6 +2438,12 @@ test('Connect UI handles validation, cancel, repeated refusal, reload persistenc
     await expect(connectDialog).toBeVisible();
     await expect(tokenField).toHaveValue('');
     // Explicit same-origin configure failure after prior auth reports Could not connect and keeps Connect open.
+    // Keep the background reconnect delay wide so the explicit retry click below cannot race a 100 ms auto-reconnect.
+    await page.evaluate(() => {
+      if (window.__scriberWebTest !== undefined) {
+        window.__scriberWebTest.timeouts = { helloMs: 2000, reconnectMs: 5000, rpcMs: 500 };
+      }
+    });
     server.setHelloMode('close_before_hello');
     await submitBtn.click();
     await expect(connectDialog.getByRole('alert')).toHaveText('Could not connect to the Scriber server.');
@@ -2625,7 +2666,7 @@ test('handles post-auth 4401 interrupting Settings, transient reconnect suppress
   const serverA = await startStandInServer({ distDir: testDistDir, version: '1.0.0-server-A' });
   const serverB = await startStandInServer({ distDir: testDistDir, version: '2.0.0-server-B', helloMode: 'hold' });
   try {
-    await attachWebTestHook(page, { helloMs: 250, reconnectMs: 80, rpcMs: 500 });
+    await attachWebTestHook(page, { helloMs: 2000, reconnectMs: 80, rpcMs: 500 });
     // Spy on WebSocket instances and retain original handlers even after retire() nulls them.
     await page.addInitScript(() => {
       interface SpyRecord {
