@@ -25,7 +25,16 @@ const parserOptions = {
 
 export default defineConfig(
   {
-    ignores: ['dist/', 'target/', 'coverage/', 'test-results/', 'playwright-report/', 'src-tauri/', '.svelte-check/'],
+    ignores: [
+      'dist/',
+      'dist-web/',
+      'target/',
+      'coverage/',
+      'test-results/',
+      'playwright-report/',
+      'src-tauri/',
+      '.svelte-check/',
+    ],
   },
   ...tseslint.configs.strictTypeChecked,
   ...svelte.configs['flat/recommended'],
@@ -44,6 +53,15 @@ export default defineConfig(
     files: ['**/*.svelte', '**/*.svelte.ts'],
     languageOptions: {
       parserOptions: { ...parserOptions, parser: tseslint.parser },
+    },
+  },
+  {
+    files: ['public/capture-worklet.js'],
+    languageOptions: {
+      globals: {
+        AudioWorkletProcessor: 'readonly',
+        registerProcessor: 'readonly',
+      },
     },
   },
   {

@@ -3,6 +3,7 @@
 target/
 node_modules/
 dist/
+apps/desktop/dist-web/
 test-results/
 playwright-report/
 apps/desktop/coverage/

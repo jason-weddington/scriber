@@ -4,10 +4,13 @@ import { defineConfig, devices } from '@playwright/test';
 // runtime, a webview or a Mac. The webServer block starts Vite itself, so the
 // runner is self-contained.
 //
-// Two projects. `unit` exercises pure modules (format, the mock's rules, the
-// CSP string) with no page; `e2e` drives the real screens in a browser
-// against the mock bridge. A unit failure reads as "the rule is wrong" rather
-// than as a flaky browser run.
+// Three disjoint projects:
+// - `unit` exercises pure modules (format, pcm16, the mock's rules, the CSP
+//   string) with no page;
+// - `e2e` drives the real screens in a browser against the mock bridge (plus
+//   contract.spec.ts and csp.spec.ts);
+// - `web` drives the production-built web bundle (VITE_SCRIBER_BACKEND=web)
+//   against an isolated localhost Node stand-in server with a fake microphone.
 export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
@@ -34,12 +37,33 @@ export default defineConfig({
     {
       name: 'e2e',
       testDir: './tests/e2e',
+      testIgnore: ['**/web.spec.ts'],
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 960, height: 640 },
         timezoneId: 'UTC',
         locale: 'en-US',
         colorScheme: 'light',
+      },
+    },
+    {
+      name: 'web',
+      testDir: './tests/e2e',
+      testMatch: ['**/web.spec.ts'],
+      fullyParallel: false,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 960, height: 640 },
+        timezoneId: 'UTC',
+        locale: 'en-US',
+        colorScheme: 'light',
+        permissions: ['microphone'],
+        launchOptions: {
+          args: [
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+          ],
+        },
       },
     },
   ],

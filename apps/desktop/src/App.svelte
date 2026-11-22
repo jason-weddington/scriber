@@ -12,7 +12,9 @@
     appVersion,
     dictationState,
     errorText,
+    INITIAL_WEB_UI_STATE,
     inputDevices,
+    isWebBackend,
     libraryCopy,
     libraryGet,
     libraryList,
@@ -21,12 +23,18 @@
     ollamaModels,
     onFullscreenChanged,
     onLevel,
+    onWebRebind,
+    onWebUiStateChanged,
     pickModelFolder,
     pickVocabularyFile,
+    projectWebSnapshot,
+    retryWebConnection,
     settingsGet,
     settingsSet,
     vocabularyOpen,
+    WebCopyError,
     windowFullscreen,
+    type WebUiState,
   } from './lib/bridge';
   import {
     activeMicrophone,
@@ -114,17 +122,26 @@
   let entryError = $state<string | null>(null);
   let entryCopied = $state(false);
 
+  const webBackend = isWebBackend();
+  let webUi = $state<WebUiState>(INITIAL_WEB_UI_STATE);
+  let sessionGeneration = 0;
+  let resetSnapshotBaseline = false;
+
   const elapsed = $derived(
     snapshot === null ? 0 : snapshot.recordedMs + (recordingSince === null ? 0 : Math.max(0, now - recordingSince)),
   );
   const metering = $derived(snapshot?.phase === 'recording' || snapshot?.phase === 'paused');
-  const line = $derived(snapshot === null ? '' : statusLine(snapshot));
+  const displaySnapshot = $derived(
+    snapshot === null ? null : webBackend ? projectWebSnapshot(snapshot, webUi) : snapshot,
+  );
+  const line = $derived(displaySnapshot === null ? '' : statusLine(displaySnapshot));
   const alert = $derived(snapshot === null ? null : statusAlert(snapshot, actionError));
   const latest = $derived(levels.at(-1) ?? 0);
 
   /** Takes a snapshot unless a newer one has already arrived (commands and events race). */
   function accept(next: Snapshot): void {
-    if (snapshot !== null && next.revision < snapshot.revision) return;
+    if (!resetSnapshotBaseline && snapshot !== null && next.revision < snapshot.revision) return;
+    resetSnapshotBaseline = false;
     // A part closed at a silence moves time into recordedMs while recording
     // goes on: shift the running start by as much, so the shown time stays continuous.
     const t = Date.now();
@@ -145,13 +162,14 @@
     listedRevision = Math.max(listedRevision, revision);
     listing += 1;
     const mine = listing;
+    const gen = sessionGeneration;
     try {
       const got = await libraryList();
-      if (mine !== listing) return;
+      if (mine !== listing || gen !== sessionGeneration) return;
       entries = got;
       libraryError = null;
     } catch (e) {
-      if (mine === listing) libraryError = errorText(e);
+      if (mine === listing && gen === sessionGeneration) libraryError = errorText(e);
     }
   }
 
@@ -243,14 +261,15 @@
   function listInputs(): void {
     inputListing += 1;
     const n = inputListing;
+    const gen = sessionGeneration;
     inputDevices().then(
       (got) => {
-        if (n !== inputListing) return;
+        if (n !== inputListing || gen !== sessionGeneration) return;
         inputs = got;
         inputsError = null;
       },
       (e: unknown) => {
-        if (n === inputListing) inputsError = errorText(e);
+        if (n === inputListing && gen === sessionGeneration) inputsError = errorText(e);
       },
     );
   }
@@ -466,22 +485,68 @@
   }
 
   async function load(): Promise<void> {
+    if (webBackend) retryWebConnection();
+    const gen = sessionGeneration;
     loadError = null;
     try {
-      accept(await dictationState());
+      const next = await dictationState();
+      if (gen !== sessionGeneration) return;
+      accept(next);
     } catch (e) {
-      loadError = errorText(e);
+      if (gen === sessionGeneration) loadError = errorText(e);
     }
+  }
+
+  function refreshAll(): void {
+    const gen = sessionGeneration;
+    void list(0);
+    listInputs();
+    // Unreadable settings leave the defaults, silently.
+    settingsGet().then(
+      (s) => {
+        if (gen === sessionGeneration) settings = s;
+      },
+      () => undefined,
+    );
+    void load();
+    // Settings shows no version line when the version cannot be read.
+    appVersion().then(
+      (v) => {
+        if (gen === sessionGeneration) version = v;
+      },
+      () => undefined,
+    );
+  }
+
+  function rebind(): void {
+    sessionGeneration += 1;
+    loadError = null;
+    resetSnapshotBaseline = true;
+    listedRevision = -1;
+    refreshAll();
   }
 
   async function run(action: Action): Promise<boolean> {
     busy = true;
+    const gen = sessionGeneration;
     try {
-      accept(await act(action, action === 'copy' ? draft : ''));
-      actionError = null;
+      const next = await act(action, action === 'copy' ? draft : '');
+      if (gen === sessionGeneration) {
+        accept(next);
+        actionError = null;
+      }
       return true;
     } catch (e) {
-      actionError = errorText(e);
+      if (gen === sessionGeneration) {
+        if (e instanceof WebCopyError && e.stage === 'clipboard') {
+          actionError = null;
+          return false;
+        }
+        actionError = errorText(e);
+        if (e instanceof WebCopyError && e.stage === 'learning') {
+          return true;
+        }
+      }
       return false;
     } finally {
       busy = false;
@@ -496,6 +561,14 @@
     void onFullscreenChanged((on) => {
       fullscreen = on;
     });
+    if (webBackend) {
+      onWebUiStateChanged((state) => {
+        webUi = state;
+      });
+      onWebRebind(() => {
+        rebind();
+      });
+    }
     // An unreadable state leaves the windowed inset, silently.
     windowFullscreen().then(
       (on) => {
@@ -503,23 +576,7 @@
       },
       () => undefined,
     );
-    void list(0);
-    listInputs();
-    // Unreadable settings leave the defaults, silently.
-    settingsGet().then(
-      (s) => {
-        settings = s;
-      },
-      () => undefined,
-    );
-    void load();
-    // Settings shows no version line when the version cannot be read.
-    appVersion().then(
-      (v) => {
-        version = v;
-      },
-      () => undefined,
-    );
+    refreshAll();
   });
 
   $effect(() => {
