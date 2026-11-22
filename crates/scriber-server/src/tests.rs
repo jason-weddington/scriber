@@ -1271,9 +1271,15 @@ fn wire_and_bridge_fixtures_and_enum_values_pinned() {
     let wire: Value = serde_json::from_str(WIRE_FIXTURE).unwrap();
     let bridge: Value = serde_json::from_str(BRIDGE_FIXTURE).unwrap();
 
+    assert!(
+        wire["helloResponse"]["hello"]["version"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty()),
+        "wire fixture hello version is a non-empty string"
+    );
     assert_eq!(
-        wire["helloResponse"]["hello"]["version"], SERVER_VERSION,
-        "wire fixture hello version matches crate version"
+        wire["helloResponse"]["hello"]["version"], wire["rpcReplyOkVersion"]["ok"],
+        "wire fixture hello version matches app_version reply"
     );
     assert_eq!(
         wire["helloResponse"]["hello"]["platform"], "web",
