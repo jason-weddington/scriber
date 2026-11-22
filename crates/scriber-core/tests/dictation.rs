@@ -1862,6 +1862,35 @@ mod tests {
         d.undo_learn(&p).unwrap();
         assert_eq!(learned_file(&w), Some(Vec::new()), "undone");
         assert!(d.snapshot(&p).learned.is_empty(), "forgotten");
+
+        // With Ports.lexicon attached, an accepted cleanup with an ordinary
+        // sentence-initial proposal keeps the cleaned transcript without
+        // persisting or logging the ordinary word.
+        let w2 = World::default();
+        w2.lexicon.set(&["lead"]);
+        w2.files.write(LEARNED, b"TightBeam\n").unwrap();
+        let raw2 = "Leed the team.";
+        let reply2 = r#"{"replacements":[{"from":"Leed","to":"Lead"}],"learned":["Lead"],"transcript":"Lead the team."}"#;
+        let (mut d2, job2) = to_cleanup_with(&w2, &[], raw2);
+        let p2 = w2.context_ports();
+        w2.cleaner
+            .answers
+            .borrow_mut()
+            .push_back(Ok(reply2.to_string()));
+        let s2 = d2.complete(w2.run_with(&job2, &p2), &p2);
+        assert_eq!(s2.text, "Lead the team.", "cleaned transcript kept");
+        assert_eq!(
+            entry_json(&w2).get("cleanup"),
+            Some(&json!("cleaned")),
+            "cleanup accepted"
+        );
+        assert!(s2.learned.is_empty(), "ordinary proposal vetoed");
+        assert_eq!(
+            learned_file(&w2),
+            Some(b"TightBeam\n".to_vec()),
+            "prior learned.txt unchanged"
+        );
+        assert!(learning_log(&w2).is_empty(), "nothing logged");
     }
 
     #[test]
@@ -4013,6 +4042,73 @@ mod tests {
         let copied = d.apply(Action::Copy, TIGHTBEAM_FIXED, &p).unwrap();
         assert_eq!(copied.learned, ["tightbeam"], "kept");
         assert_eq!(learned_file(&w).unwrap(), b"tightbeam\n", "file");
+    }
+
+    #[test]
+    fn lexicon_vetoes_dictionary_only_edits_through_copy_and_accept() {
+        for action in [Action::Copy, Action::Accept] {
+            let w = World::default();
+            w.lexicon.set(&["lead", "leads"]);
+            w.files.write(LEARNED, b"TightBeam\n").unwrap();
+            let p = w.ports().with_lexicon(&w.lexicon);
+            let (mut d, before) = heard_with(&w, &p, "Check leads now.");
+            let writes_before = w.clipboard.writes.borrow().len();
+
+            let edited = "Check lead's now.";
+            let got = d.apply(action, edited, &p).unwrap();
+            assert_eq!(got.text, edited, "{action:?}: edited text kept");
+            assert!(got.learned.is_empty(), "{action:?}: ordinary edit vetoed");
+            assert_eq!(
+                learned_file(&w),
+                Some(b"TightBeam\n".to_vec()),
+                "{action:?}: prior learned bytes unchanged"
+            );
+            assert!(
+                learning_log(&w).is_empty(),
+                "{action:?}: nothing logged on all-filtered edit"
+            );
+            if action == Action::Copy {
+                assert_eq!(
+                    w.clipboard.writes.borrow().len(),
+                    writes_before + 1,
+                    "Copy still writes clipboard"
+                );
+                assert_eq!(
+                    w.clipboard.writes.borrow().last().map(String::as_str),
+                    Some(edited),
+                    "Copy wrote edited text"
+                );
+                assert_eq!(got.notice.as_deref(), Some(COPIED), "Copy notice");
+            } else {
+                assert_eq!(
+                    w.clipboard.writes.borrow().len(),
+                    writes_before,
+                    "Accept does not touch clipboard"
+                );
+                assert_eq!(got.notice, before.notice, "Accept keeps notice");
+            }
+
+            // No undo state was created, so UndoLearn leaves prior learned.txt untouched.
+            let undone = d.apply(Action::UndoLearn, "", &p).unwrap();
+            assert!(undone.learned.is_empty(), "{action:?}: still empty");
+            assert_eq!(
+                learned_file(&w),
+                Some(b"TightBeam\n".to_vec()),
+                "{action:?}: UndoLearn did not disturb prior learned.txt"
+            );
+            assert!(
+                learning_log(&w).is_empty(),
+                "{action:?}: UndoLearn wrote no log"
+            );
+        }
+
+        // Legacy learned.txt entries (even ordinary words) are still loaded and enforced.
+        let w = World::default();
+        w.lexicon.set(&["lead"]);
+        w.files.write(LEARNED, b"Lead\n").unwrap();
+        let p = w.ports().with_lexicon(&w.lexicon);
+        let (_, s) = heard_with(&w, &p, "check lead now.");
+        assert_eq!(s.text, "check Lead now.", "legacy enforcement preserved");
     }
 
     // The silence split: segments the recorder closed at a silence.

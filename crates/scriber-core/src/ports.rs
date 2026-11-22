@@ -286,9 +286,11 @@ pub trait Cleaner {
     ) -> Result<crate::cleanup::Reply, PortError>;
 }
 
-/// A word list, for telling an ordinary word from the jargon of an embedder's
-/// conversation ([`crate::context`]). The real adapter is the engine's
-/// `WordList`.
+/// A word list of ordinary English words, consulted both to distinguish
+/// ordinary words from the jargon of an embedder's conversation
+/// ([`crate::context`]) and to prevent ordinary-word edits or proposals from
+/// entering the learned vocabulary ([`crate::learn`], [`crate::cleanup`],
+/// [`crate::dictation`]). The real adapter is the engine's `WordList`.
 pub trait Lexicon {
     /// Whether `word` is an ordinary word of the language. `word` arrives
     /// lowercased, so a case-sensitive list is out of contract.
@@ -326,8 +328,9 @@ pub struct Ports<'a> {
     pub library: Option<Library<'a>>,
     /// The transcript's cleanup model; `None` never cleans up.
     pub cleaner: Option<&'a dyn Cleaner>,
-    /// The word list that tells ordinary words from the jargon of the
-    /// embedder's conversation turns; `None` disables that rule.
+    /// The ordinary-word dictionary consulted by context jargon extraction
+    /// ([`crate::context`]) and vocabulary learning ([`crate::learn`],
+    /// [`crate::cleanup`]); `None` disables those dictionary checks.
     pub lexicon: Option<&'a dyn Lexicon>,
 }
 
@@ -375,7 +378,8 @@ impl<'a> Ports<'a> {
         }
     }
 
-    /// These ports, telling ordinary words from jargon with `lexicon`.
+    /// These ports, attaching `lexicon` for context jargon extraction and
+    /// vocabulary learning.
     #[must_use]
     pub fn with_lexicon(self, lexicon: &'a dyn Lexicon) -> Self {
         Self {

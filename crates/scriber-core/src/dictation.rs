@@ -1162,7 +1162,13 @@ impl Dictation {
         let (text, record) = match result {
             Ok(reply) => {
                 let reply = reply.unwrap_or_default();
-                match cleanup::accept_reply(&raw, &reply, &terms, &app_terms) {
+                match cleanup::accept_reply_with_lexicon(
+                    &raw,
+                    &reply,
+                    &terms,
+                    &app_terms,
+                    ports.lexicon,
+                ) {
                     Ok((clean, learned)) => {
                         if !learned.is_empty() {
                             self.learn_terms(&learned, &learned, ports);
@@ -1417,8 +1423,9 @@ impl Dictation {
     /// Nothing happens when there is no correction; the learned terms and
     /// the undo list change only when the list is saved.
     fn learn_from(&mut self, edited: &str, ports: &Ports<'_>) {
-        let found = learn::candidates(&self.text, edited);
-        self.learn_terms(&found, &learn::learn(&self.text, edited), ports);
+        let found = learn::candidates_with_lexicon(&self.text, edited, ports.lexicon);
+        let terms = learn::select_terms(&found);
+        self.learn_terms(&found, &terms, ports);
     }
 
     /// Learns `found` (the terms the edit qualified for) under `terms` (the

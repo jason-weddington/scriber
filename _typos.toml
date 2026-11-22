@@ -5,8 +5,8 @@
 extend-ignore-re = ["`[0-9a-f]{7,40}`", "`msg_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`"]
 
 [files]
-# Machine-written files.
-extend-exclude = ["CHANGELOG.md", "*.lock", "pnpm-lock.yaml", "apps/desktop/src-tauri/icons/"]
+# Machine-written and third-party dictionary files.
+extend-exclude = ["CHANGELOG.md", "*.lock", "pnpm-lock.yaml", "apps/desktop/src-tauri/icons/", "crates/scriber-engine/data/"]
 
 [default.extend-words]
 # Deliberate misspellings in the learning corpus (crates/scriber-core/tests/learn.rs, mock.spec.ts).

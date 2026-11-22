@@ -13,8 +13,8 @@ use std::time::Duration;
 use scriber_core::cleanup;
 use scriber_core::sync::LoadOnce;
 use scriber_engine::{
-    Adapters, Cleaner, Clock, Downloader, Encoder, Engine, EngineConfig, Event, LocalTime,
-    ModelSource, Phrase, PortError, StreamRecorder, Summarizer, Transcriber, Warmer,
+    Adapters, Cleaner, Clock, Downloader, Encoder, Engine, EngineConfig, Event, LexiconSource,
+    LocalTime, ModelSource, Phrase, PortError, StreamRecorder, Summarizer, Transcriber, Warmer,
 };
 use serde_json::Value;
 use tokio::io::{
@@ -207,7 +207,7 @@ impl FakeEngineBundle {
             recorder: Some(recorder.clone()),
             clipboard: None,
             library: true,
-            context_lexicon: None,
+            lexicon: LexiconSource::None,
             ..EngineConfig::new(data_dir)
         };
         if let Some(source) = &self.model_source {

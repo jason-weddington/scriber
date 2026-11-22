@@ -413,15 +413,35 @@ function levenshtein(a: string[], b: string[]): number {
   return row.at(-1) ?? 0;
 }
 
-/** The core's learn::qualifies. */
-function qualifies(o: LearnWord[], e: LearnWord[]): boolean {
+/** A predicate that answers whether a lowercased word is an ordinary dictionary word. */
+export type Lexicon = (word: string) => boolean;
+
+/** Builds a lazy case-insensitive word-list predicate from whitespace-separated text. */
+export function wordList(text: string): Lexicon {
+  let words: Set<string> | null = null;
+  return (word: string): boolean => {
+    if (words === null) {
+      words = new Set<string>();
+      for (const token of text.split(/\s+/)) {
+        if (token !== '') words.add(token.toLowerCase());
+      }
+    }
+    return words.has(word);
+  };
+}
+
+type Qualification = 'case' | 'structural' | 'spelling';
+
+/** The core's learn::qualify. */
+function qualify(o: LearnWord[], e: LearnWord[]): Qualification | null {
   if (o.length === e.length && o.every((w, k) => w.text.toLowerCase() === e[k]?.text.toLowerCase())) {
-    return o.some((w, k) => {
+    const intentional = o.some((w, k) => {
       const a = Array.from(w.text);
       const b = Array.from(e[k]?.text ?? '');
       if (a.length !== b.length) return true;
       return a.some((c, n) => c !== b[n] && (n !== 0 || !w.start));
     });
+    return intentional ? 'case' : null;
   }
   const key = (ws: LearnWord[]): string =>
     Array.from(
@@ -432,29 +452,46 @@ function qualifies(o: LearnWord[], e: LearnWord[]): boolean {
     )
       .filter((c) => c !== ' ' && c !== '-')
       .join('');
-  if (key(o) === key(e)) return true;
+  if (key(o) === key(e)) return 'structural';
   const [a] = o;
   const [b] = e;
   if (o.length === 1 && e.length === 1 && a !== undefined && b !== undefined) {
-    if (Array.from(b.text).length < MIN_FIX_CHARS) return false;
+    if (Array.from(b.text).length < MIN_FIX_CHARS) return null;
     const la = Array.from(a.text.toLowerCase());
     const lb = Array.from(b.text.toLowerCase());
-    return levenshtein(la, lb) <= Math.max(1, Math.floor(Math.max(la.length, lb.length) / 3));
+    return levenshtein(la, lb) <= Math.max(1, Math.floor(Math.max(la.length, lb.length) / 3)) ? 'spelling' : null;
   }
-  return false;
+  return null;
 }
 
-/** The core's learn::candidates: every qualifying term, in document order. */
-export function learnCandidates(original: string, edited: string): string[] {
+/** Whether `text` has no intentional capitalization: all non-uppercase, or title case at sentence start. */
+function isPlainCase(text: string, sentenceStart: boolean): boolean {
+  return Array.from(text).every((c, i) => !/\p{Uppercase}/u.test(c) || (i === 0 && sentenceStart));
+}
+
+/** Whether a qualifying run is vetoed as an ordinary singleton target under `lexicon`. */
+function ordinarySingleton(e: LearnWord[], kind: Qualification, lexicon?: Lexicon): boolean {
+  if (lexicon === undefined || kind === 'structural' || e.length !== 1) return false;
+  const [target] = e;
+  return target !== undefined && isPlainCase(target.text, target.start) && lexicon(target.text.toLowerCase());
+}
+
+/** The core's learn::candidates_with_lexicon: every qualifying term, in document order. */
+export function learnCandidates(original: string, edited: string, lexicon?: Lexicon): string[] {
   const inRange = (n: number): boolean => n >= 1 && n <= MAX_RUN_WORDS;
-  return learnRuns(learnWords(original), learnWords(edited))
-    .filter(([o, e]) => inRange(o.length) && inRange(e.length) && qualifies(o, e))
-    .map(([, e]) => e.map((w) => w.text).join(' '));
+  const out: string[] = [];
+  for (const [o, e] of learnRuns(learnWords(original), learnWords(edited))) {
+    if (!inRange(o.length) || !inRange(e.length)) continue;
+    const kind = qualify(o, e);
+    if (kind === null || ordinarySingleton(e, kind, lexicon)) continue;
+    out.push(e.map((w) => w.text).join(' '));
+  }
+  return out;
 }
 
-/** The core's learn::learn: nothing past MAX_RUNS, else the candidates de-duplicated case-insensitively. */
-export function learnTerms(original: string, edited: string): string[] {
-  const found = learnCandidates(original, edited);
+/** The core's learn::learn_with_lexicon: nothing past MAX_RUNS, else the candidates de-duplicated case-insensitively. */
+export function learnTerms(original: string, edited: string, lexicon?: Lexicon): string[] {
+  const found = learnCandidates(original, edited, lexicon);
   if (found.length > MAX_RUNS) return [];
   const out: string[] = [];
   for (const term of found) if (!out.some((t) => t.toLowerCase() === term.toLowerCase())) out.push(term);
@@ -606,8 +643,10 @@ export class Mock {
   private readonly fullscreenListeners = new Set<(on: boolean) => void>();
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private levelCount = 0;
+  private readonly lexicon: Lexicon | undefined;
 
-  constructor(search: string) {
+  constructor(search: string, lexicon?: string | Lexicon) {
+    this.lexicon = typeof lexicon === 'string' ? wordList(lexicon) : lexicon;
     const params = new URLSearchParams(search);
     // ?hold=<name> holds a call from the start, before launch's download can begin.
     for (const name of params.getAll('hold')) this.handle.hold(name);
@@ -1005,9 +1044,11 @@ export class Mock {
 
   /** The core's learn_from: learns the corrections from the shown transcript to `edited`. */
   private learnFrom(edited: string): void {
-    const found = learnCandidates(this.text, edited);
+    const found = learnCandidates(this.text, edited, this.lexicon);
     if (found.length === 0 || found.length > MAX_RUNS) return;
-    const [next, added] = rememberTerms(this.learnedList, learnTerms(this.text, edited), []);
+    const terms: string[] = [];
+    for (const term of found) if (!terms.some((t) => t.toLowerCase() === term.toLowerCase())) terms.push(term);
+    const [next, added] = rememberTerms(this.learnedList, terms, []);
     if (added.length === 0) return;
     this.undo = this.learnedList;
     this.learnedList = next;

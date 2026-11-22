@@ -2,11 +2,36 @@
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use scriber_core::cleanup::{
         CLEANED, FAILED, MAX_TERMS, MIN_WORDS_FOR_RATIO, NEW_WORDS_MIN, NEW_WORDS_PER, OFF, PROMPT,
-        Reject, Replacement, Reply, UNCHANGED, accept, accept_reply, filter, learned_terms,
-        request, spelled,
+        Reject, Replacement, Reply, UNCHANGED, accept, accept_reply, accept_reply_with_lexicon,
+        filter, learned_terms, learned_terms_with_lexicon, request, spelled,
     };
+    use scriber_core::ports::Lexicon;
+
+    struct FakeLexicon(BTreeSet<String>);
+
+    impl FakeLexicon {
+        fn new(words: &[&str]) -> Self {
+            Self(words.iter().map(|w| w.to_lowercase()).collect())
+        }
+    }
+
+    impl Lexicon for FakeLexicon {
+        fn is_word(&self, word: &str) -> bool {
+            self.0.contains(word)
+        }
+    }
+
+    struct AlwaysLexicon;
+
+    impl Lexicon for AlwaysLexicon {
+        fn is_word(&self, _word: &str) -> bool {
+            true
+        }
+    }
 
     const RAW30: &str = "Tell the team I mean, I mean, what they really meant was, but what I actually meant was the deploy moves to Wednesday and the release notes go out Thursday.";
 
@@ -275,6 +300,20 @@ mod tests {
             ["Aiju", "Aiju-Core"],
             "kept"
         );
+
+        // Explicit speaker spelling bypasses the ordinary-word lexicon veto.
+        let lex = FakeLexicon::new(&["lead"]);
+        let spelled_ordinary_raw = "Lead is spelled L-E-A-D.";
+        let spelled_ordinary = Reply {
+            replacements: vec![],
+            learned: strings(&["Lead"]),
+            transcript: "Lead is spelled L-E-A-D.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon(spelled_ordinary_raw, &spelled_ordinary, &[], Some(&lex)),
+            ["Lead"],
+            "explicit spelling bypasses lexicon veto"
+        );
     }
 
     fn strings(items: &[&str]) -> Vec<String> {
@@ -393,6 +432,190 @@ mod tests {
             learned_terms(clawed_raw, &clawed, &[]),
             Vec::<String>::new(),
             "too distant"
+        );
+
+        let lex = FakeLexicon::new(&["lead"]);
+        let some: Option<&dyn Lexicon> = Some(&lex);
+        let start_reply = Reply {
+            replacements: vec![replacement("Leed", "Lead")],
+            learned: strings(&["Lead"]),
+            transcript: "Lead the team.".to_string(),
+        };
+        assert_eq!(learned_terms("Leed the team.", &start_reply, &[]), ["Lead"]);
+        assert_eq!(
+            learned_terms_with_lexicon("Leed the team.", &start_reply, &[], some),
+            Vec::<String>::new(),
+            "lexicon vetoes sentence-initial ordinary Lead from both sources"
+        );
+        let mid_reply = Reply {
+            replacements: vec![replacement("Leed", "Lead")],
+            learned: strings(&["Lead"]),
+            transcript: "Please Lead the team.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon("Please Leed the team.", &mid_reply, &[], some),
+            ["Lead"],
+            "unambiguous mid-sentence Lead is kept"
+        );
+    }
+
+    #[test]
+    fn learned_terms_lexicon_bypasses_and_unpaired_rules() {
+        let lex = FakeLexicon::new(&["lead", "rerun", "paypal"]);
+        let some: Option<&dyn Lexicon> = Some(&lex);
+        let mid_raw = "Please Leed the team.";
+        let start_reply = Reply {
+            replacements: vec![replacement("Leed", "Lead")],
+            learned: strings(&["Lead"]),
+            transcript: "Lead the team.".to_string(),
+        };
+        assert_eq!(
+            accept_reply_with_lexicon("Leed the team.", &start_reply, &[], &[], some),
+            Ok(("Lead the team.".to_string(), Vec::new())),
+            "accept_reply_with_lexicon passes lexicon through"
+        );
+
+        // Unpaired unspelled Lead stays ineligible regardless of position.
+        let unpaired = Reply {
+            replacements: vec![],
+            learned: strings(&["Lead"]),
+            transcript: "Please Lead the team.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon(mid_raw, &unpaired, &[], some),
+            Vec::<String>::new(),
+            "unpaired unspelled Lead stays ineligible"
+        );
+        let unnominated = Reply {
+            replacements: vec![replacement("Leed", "Lead")],
+            learned: vec![],
+            transcript: "Please Lead the team.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon(mid_raw, &unnominated, &[], some),
+            Vec::<String>::new(),
+            "replacement without nomination stays ineligible"
+        );
+
+        // Absent or mixed-position evidence does not bypass for title-case ordinary words.
+        for (label, body) in [
+            ("mixed start then mid", "Lead the team. Please Lead now."),
+            ("mixed mid then start", "Please Lead the team. Lead now."),
+            ("lowercase only in transcript", "Please lead the team."),
+            ("substring not whole token", "Please Leader the team."),
+        ] {
+            let reply = Reply {
+                replacements: vec![replacement("Leed", "Lead")],
+                learned: strings(&["Lead"]),
+                transcript: body.to_string(),
+            };
+            assert_eq!(
+                learned_terms_with_lexicon("Please Lead the team.", &reply, &[], some),
+                Vec::<String>::new(),
+                "{label}"
+            );
+        }
+
+        // Internal caps bypasses even at sentence start.
+        let caps_reply = Reply {
+            replacements: vec![replacement("Paypel", "PayPal")],
+            learned: strings(&["PayPal"]),
+            transcript: "PayPal works.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon("Paypel works.", &caps_reply, &[], some),
+            ["PayPal"],
+            "internal caps bypasses lexicon veto"
+        );
+
+        // Unknown singleton bypasses even at sentence start.
+        let unknown_reply = Reply {
+            replacements: vec![replacement("Yakura", "Yagura")],
+            learned: strings(&["Yagura"]),
+            transcript: "Yagura works.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon("Yakura works.", &unknown_reply, &[], some),
+            ["Yagura"],
+            "unknown word bypasses lexicon veto"
+        );
+
+        // Already-eligible unequal-key structural replacement bypasses even at sentence start.
+        let structural_reply = Reply {
+            replacements: vec![replacement("Re-run", "Rerun")],
+            learned: strings(&["Rerun"]),
+            transcript: "Rerun the job.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon("Re-run the job.", &structural_reply, &[], some),
+            ["Rerun"],
+            "unequal-key structural replacement bypasses lexicon veto"
+        );
+
+        // Multi-word candidate bypasses singleton veto even with an always-true lexicon.
+        let multi_reply = Reply {
+            replacements: vec![replacement("New Yark", "New York")],
+            learned: strings(&["New York"]),
+            transcript: "New York works.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon("New Yark works.", &multi_reply, &[], Some(&AlwaysLexicon)),
+            ["New York"],
+            "multi-word candidate bypasses singleton veto"
+        );
+    }
+
+    #[test]
+    fn learned_terms_lexicon_applies_before_cap_and_dedup() {
+        let lex = FakeLexicon::new(&["lead"]);
+        let some: Option<&dyn Lexicon> = Some(&lex);
+
+        // Cap-before-dedup with six surviving duplicate proposals.
+        let many_raw = "I want A-I-J-U on the board.";
+        let six_dupes = Reply {
+            replacements: vec![],
+            learned: strings(&["Aiju", "Aiju", "Aiju", "Aiju", "Aiju", "Aiju"]),
+            transcript: "I want Aiju on the board.".to_string(),
+        };
+        assert_eq!(
+            learned_terms_with_lexicon(many_raw, &six_dupes, &[], some),
+            Vec::<String>::new(),
+            "six surviving duplicate proposals cap before dedup"
+        );
+
+        // Veto bringing six proposals down to five (single replacement target for lowercase nomination).
+        let six_to_five_raw = "Leed the team. I want A-I-J-U on the board.";
+        let six_to_five = Reply {
+            replacements: vec![replacement("Leed", "Lead")],
+            learned: strings(&["Aiju", "Aijua", "Aijub", "Aijuc", "Aijud", "lead"]),
+            transcript: "Lead the team. Aiju Aijua Aijub Aijuc Aijud.".to_string(),
+        };
+        assert_eq!(
+            learned_terms(six_to_five_raw, &six_to_five, &[]),
+            Vec::<String>::new(),
+            "without lexicon, six proposals cap to empty"
+        );
+        assert_eq!(
+            learned_terms_with_lexicon(six_to_five_raw, &six_to_five, &[], some),
+            strings(&["Aiju", "Aijua", "Aijub", "Aijuc", "Aijud"]),
+            "lexicon veto reduces six proposals to five"
+        );
+
+        // Both nomination and replacement target vetoed together (7 -> 5).
+        let both_sources = Reply {
+            replacements: vec![replacement("Leed", "Lead")],
+            learned: strings(&["Aiju", "Aijua", "Aijub", "Aijuc", "Aijud", "Lead"]),
+            transcript: "Lead the team. Aiju Aijua Aijub Aijuc Aijud.".to_string(),
+        };
+        assert_eq!(
+            learned_terms(six_to_five_raw, &both_sources, &[]),
+            Vec::<String>::new(),
+            "without lexicon, seven proposals cap to empty"
+        );
+        assert_eq!(
+            learned_terms_with_lexicon(six_to_five_raw, &both_sources, &[], some),
+            strings(&["Aiju", "Aijua", "Aijub", "Aijuc", "Aijud"]),
+            "both Lead sources are vetoed together, leaving five"
         );
     }
 

@@ -50,6 +50,7 @@ import {
   rememberTerms,
   syntheticLevel,
   title,
+  wordList,
 } from '../../src/lib/mock';
 import type { Action, Phase, Snapshot } from '../../src/lib/types';
 
@@ -951,6 +952,67 @@ test('learning follows the core rule (learn.rs)', () => {
   }
   for (const [terms, text, expected] of ENFORCE) {
     expect(enforceTerms(text, terms), `${String(terms)}: ${text}`).toEqual(expected);
+  }
+});
+
+test('mock learning uses the checked-in SCOWL dictionary to veto ordinary singletons', async () => {
+  const scowlPath = resolve(process.cwd(), '../../crates/scriber-engine/data/scowl-en-60.txt');
+  const scowlText = readFileSync(scowlPath, 'utf8');
+  const lex = wordList(scowlText);
+
+  for (const [original, edited] of [
+    ['Check leads now.', "Check lead's now."],
+    ['Leads are here.', 'Lead\u2019s are here.'],
+    ['It will affect us.', 'It will effect us.'],
+    ['We deployed it.', 'We deploy it.'],
+    ['Swyft works here.', 'Swift works here.'],
+  ] as const) {
+    expect(learnTerms(original, edited, lex), `vetoed: ${original} => ${edited}`).toEqual([]);
+    expect(learnTerms(original, edited).length, `kept without lexicon: ${original} => ${edited}`).toBeGreaterThan(0);
+  }
+  for (const [original, edited] of [
+    ['Check there now.', 'Check their now.'],
+    ['Keep testing now.', 'Keep tested now.'],
+  ] as const) {
+    expect(learnTerms(original, edited, lex), `not learned: ${original} => ${edited}`).toEqual([]);
+  }
+
+  for (const [original, edited, expected] of [
+    ['Ask swift now.', 'Ask Swift now.', ['Swift']],
+    ['Ipone is here.', 'iPhone is here.', ['iPhone']],
+    ['Ask scribe now.', 'Ask Scriber now.', ['Scriber']],
+    ['Open note book now.', 'Open notebook now.', ['notebook']],
+    ['Send e-mail now.', 'Send email now.', ['email']],
+    ['Visit lead team now.', 'Visit Lead Team now.', ['Lead Team']],
+  ] as const) {
+    expect(learnTerms(original, edited, lex), `retained: ${original} => ${edited}`).toEqual([...expected]);
+  }
+
+  // Six duplicate survivors cap before dedup.
+  const sixDupesOrig = 'Use TightBeam and TightBeam and TightBeam and TightBeam and TightBeam and TightBeam.';
+  const sixDupesEdit = 'Use tightbeam and tightbeam and tightbeam and tightbeam and tightbeam and tightbeam.';
+  expect(learnCandidates(sixDupesOrig, sixDupesEdit, lex)).toHaveLength(6);
+  expect(learnTerms(sixDupesOrig, sixDupesEdit, lex)).toEqual([]);
+
+  // Veto reduces six qualifying runs to five.
+  const sixEdit = 'Use tightbeam and Scriber and GitHub and Svelte and ollama and cargo now.';
+  expect(learnTerms(SIX, sixEdit)).toEqual([]);
+  expect(learnTerms(SIX, sixEdit, lex)).toEqual(['tightbeam', 'Scriber', 'GitHub', 'Svelte', 'ollama']);
+
+  // Pure Mock with injected SCOWL text suppresses ordinary edits on both Copy and Accept.
+  for (const action of ['copy', 'accept'] as const) {
+    const mock = new Mock('', scowlText);
+    for (const step of ['new', 'record', 'done'] as const) await mock.act(step, '');
+    await settled();
+    const shown = mock.snapshot().text;
+    const ordinaryEdit = shown.replace('part', 'port');
+    const afterOrdinary = await mock.act(action, ordinaryEdit);
+    expect(afterOrdinary.learned, `${action}: ordinary edit vetoed`).toEqual([]);
+    expect(afterOrdinary.text, `${action}: text updated`).toBe(ordinaryEdit);
+
+    const intentionalEdit = ordinaryEdit.replace('dictation', 'Dictation');
+    const afterIntentional = await mock.act(action, intentionalEdit);
+    expect(afterIntentional.learned, `${action}: intentional capitalization learned`).toEqual(['Dictation']);
   }
 });
 

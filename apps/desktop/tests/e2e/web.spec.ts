@@ -251,6 +251,7 @@ test('pnpm build:web emits dist-web with capture-worklet.js, no mock.ts, no __mo
   const files = listFilesRecursive(RELEASE_DIST_DIR);
   const mapFiles = files.filter((f) => f.endsWith('.map'));
   expect(mapFiles).toEqual([]);
+  expect(files.filter((f) => f.endsWith('scowl-en-60.txt'))).toEqual([]);
 
   const jsAssets = files.filter((f) => f.includes('/assets/') && f.endsWith('.js'));
   expect(jsAssets.length).toBeGreaterThan(0);
@@ -258,6 +259,9 @@ test('pnpm build:web emits dist-web with capture-worklet.js, no mock.ts, no __mo
     const text = readFileSync(jsFile, 'utf8');
     expect(text).not.toContain('__mockBridge');
     expect(text).not.toContain('0.0.0-mock');
+    expect(text).not.toContain('scowl-en-60.txt');
+    expect(text).not.toContain('aah\\naardvark\\naardvarks');
+    expect(text).not.toContain('aah\naardvark\naardvarks');
   }
 
   const server = await startStandInServer({ distDir: RELEASE_DIST_DIR });

@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 
 use scriber_core::model::{Action, LibraryEntry, Phase, Settings, Snapshot};
-use scriber_engine::{DataDir, Event, ModelSource, ShutdownReport, Source, StreamRecorder};
+use scriber_engine::{
+    DataDir, Event, LexiconSource, ModelSource, ShutdownReport, Source, StreamRecorder,
+};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
@@ -750,6 +752,11 @@ fn production_engine_config_and_cli_entry() {
     assert!(cfg.clipboard.is_none(), "clipboard is None");
     assert!(cfg.library, "library is enabled");
     assert_eq!(
+        cfg.lexicon,
+        LexiconSource::Bundled,
+        "bundled SCOWL dictionary inherited from EngineConfig::new"
+    );
+    assert_eq!(
         cfg.model,
         ModelSource::default(),
         "default downloadable model source"
@@ -765,7 +772,7 @@ fn production_engine_config_and_cli_entry() {
         ModelSource::Local(dir.path().join("absent-model.bin")),
         "custom model source preserved in EngineConfig"
     );
-    local_cfg.context_lexicon = None;
+    local_cfg.lexicon = LexiconSource::None;
     let engine = open_production_engine(local_cfg, Arc::new(|_ev| {}));
     assert_eq!(
         engine.state().phase,

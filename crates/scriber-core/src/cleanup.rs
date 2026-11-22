@@ -14,6 +14,7 @@
 use std::collections::BTreeSet;
 
 use crate::app_terms::AppTerm;
+use crate::ports::Lexicon;
 
 use serde::{Deserialize, Serialize};
 
@@ -334,11 +335,35 @@ pub fn filter(raw: &str, reply: &Reply, app_terms: &[AppTerm]) -> Reply {
     }
 }
 
-/// Whether `candidate` is a new term worth learning from `reply`: not already
-/// in `terms`, grounded in the transcript or `raw`, and either grounded in a
-/// word the speaker spelled out or a learned word that the reply replaced
-/// with a close enough term.
-fn keeps(candidate: &str, raw: &str, reply: &Reply, terms: &[String], spelled: &[String]) -> bool {
+/// Whether `term` occurs case-sensitively as a whole token in `transcript_words`
+/// and every such occurrence is mid-sentence (neither absent nor at sentence start).
+fn has_unambiguous_mid_sentence(term: &str, transcript_words: &[crate::learn::Word]) -> bool {
+    let mut saw_match = false;
+    for word in transcript_words {
+        if word.text == term {
+            if word.start {
+                return false;
+            }
+            saw_match = true;
+        }
+    }
+    saw_match
+}
+
+/// Whether `candidate` is a new term worth learning from `reply` under
+/// `lexicon` (if attached): not already in `terms`, grounded in the transcript
+/// or `raw`, and either grounded in a word the speaker spelled out or a
+/// learned word backed by a qualifying replacement that survives the
+/// ordinary-singleton lexicon veto.
+fn keeps(
+    candidate: &str,
+    raw: &str,
+    reply: &Reply,
+    terms: &[String],
+    spelled: &[String],
+    transcript_words: &[crate::learn::Word],
+    lexicon: Option<&dyn Lexicon>,
+) -> bool {
     let lowered = candidate.to_lowercase();
     if terms.iter().any(|t| t.to_lowercase() == lowered) {
         return false;
@@ -352,28 +377,64 @@ fn keeps(candidate: &str, raw: &str, reply: &Reply, terms: &[String], spelled: &
     if spelled.iter().any(|s| key.contains(s)) {
         return true;
     }
-    reply.learned.iter().any(|l| l.to_lowercase() == lowered)
-        && candidate
+    if !reply.learned.iter().any(|l| l.to_lowercase() == lowered)
+        || !candidate
             .chars()
             .next()
             .is_some_and(|c| c.is_ascii_uppercase())
-        && reply.replacements.iter().any(|r| {
+    {
+        return false;
+    }
+    let matched: Vec<&Replacement> = reply
+        .replacements
+        .iter()
+        .filter(|r| {
             let fk = tokens(&r.from).join("");
             let tk = tokens(&r.to).join("");
             fk != tk
                 && r.to.to_lowercase() == lowered
                 && !crate::learn::learn(&r.from, &r.to).is_empty()
         })
+        .collect();
+    if matched.is_empty() {
+        return false;
+    }
+    let Some(lexicon) = lexicon else {
+        return true;
+    };
+    if candidate.contains(' ') || !lexicon.is_word(&lowered) {
+        return true;
+    }
+    if matched
+        .iter()
+        .any(|r| crate::learn::has_structural_run(&r.from, &r.to))
+    {
+        return true;
+    }
+    candidate.chars().skip(1).any(char::is_uppercase)
+        || has_unambiguous_mid_sentence(candidate, transcript_words)
 }
 
-/// The new terms worth learning from `reply`: its `learned` words then the
-/// target of each replacement, normalized, title-cased and compound-expanded
-/// like the speaker's spellings, kept only when [`keeps`] agrees,
-/// de-duplicated case-insensitively, and none at all when more than
+/// The new terms worth learning from `reply` without a lexicon: its `learned`
+/// words then the target of each replacement, normalized, title-cased and
+/// compound-expanded like the speaker's spellings, kept only when [`keeps`]
+/// agrees, de-duplicated case-insensitively, and none at all when more than
 /// [`crate::learn::MAX_RUNS`] qualify.
 #[must_use]
 pub fn learned_terms(raw: &str, reply: &Reply, terms: &[String]) -> Vec<String> {
+    learned_terms_with_lexicon(raw, reply, terms, None)
+}
+
+/// [`learned_terms`] with an optional ordinary-word `lexicon` attached.
+#[must_use]
+pub fn learned_terms_with_lexicon(
+    raw: &str,
+    reply: &Reply,
+    terms: &[String],
+    lexicon: Option<&dyn Lexicon>,
+) -> Vec<String> {
     let spelled = spelled(raw);
+    let transcript_words = crate::learn::words(&reply.transcript);
     let mut candidates: Vec<String> = reply.learned.clone();
     candidates.extend(reply.replacements.iter().map(|r| r.to.clone()));
     let mut kept: Vec<String> = Vec::new();
@@ -414,29 +475,25 @@ pub fn learned_terms(raw: &str, reply: &Reply, terms: &[String]) -> Vec<String> 
             }
         }
         for term in expanded {
-            if keeps(&term, raw, reply, terms, &spelled) {
+            if keeps(
+                &term,
+                raw,
+                reply,
+                terms,
+                &spelled,
+                &transcript_words,
+                lexicon,
+            ) {
                 kept.push(term);
             }
         }
     }
-    if kept.len() > crate::learn::MAX_RUNS {
-        return Vec::new();
-    }
-    let mut out: Vec<String> = Vec::new();
-    for term in kept {
-        if !out
-            .iter()
-            .any(|seen| seen.to_lowercase() == term.to_lowercase())
-        {
-            out.push(term);
-        }
-    }
-    out
+    crate::learn::select_terms(&kept)
 }
 
-/// The cleaned text and the new terms to learn from `reply`, after [`filter`]
-/// reverts its bogus replacements and [`accept`] judges the result with the
-/// words the speaker spelled out added to the glossary.
+/// The cleaned text and the new terms to learn from `reply` without a lexicon,
+/// after [`filter`] reverts its bogus replacements and [`accept`] judges the
+/// result with the words the speaker spelled out added to the glossary.
 ///
 /// # Errors
 ///
@@ -447,6 +504,22 @@ pub fn accept_reply(
     reply: &Reply,
     terms: &[String],
     app_terms: &[AppTerm],
+) -> Result<(String, Vec<String>), Reject> {
+    accept_reply_with_lexicon(raw, reply, terms, app_terms, None)
+}
+
+/// [`accept_reply`] with an optional ordinary-word `lexicon` attached.
+///
+/// # Errors
+///
+/// The [`Reject`] for the first rule [`accept`] finds the filtered transcript
+/// breaking.
+pub fn accept_reply_with_lexicon(
+    raw: &str,
+    reply: &Reply,
+    terms: &[String],
+    app_terms: &[AppTerm],
+    lexicon: Option<&dyn Lexicon>,
 ) -> Result<(String, Vec<String>), Reject> {
     let filtered = filter(raw, reply, app_terms);
     let spelled = spelled(raw);
@@ -463,5 +536,8 @@ pub fn accept_reply(
     let clean = accept(raw, &filtered.transcript, &augmented)?;
     let mut excluded = terms.to_vec();
     excluded.extend(app_terms.iter().filter_map(|a| a.spoken.clone()));
-    Ok((clean, learned_terms(raw, &filtered, &excluded)))
+    Ok((
+        clean,
+        learned_terms_with_lexicon(raw, &filtered, &excluded, lexicon),
+    ))
 }

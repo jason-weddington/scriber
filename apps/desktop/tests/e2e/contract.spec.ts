@@ -247,4 +247,32 @@ test.describe('bridge.ts against the Rust command signatures', () => {
     await expect(page.locator('html')).toHaveAttribute('data-bridge', 'mock');
     expect(await page.evaluate(() => '__TAURI_INTERNALS__' in window)).toBe(false);
   });
+
+  test('the browser mock suppresses ordinary-word learning with the checked-in SCOWL dictionary', async ({ page }) => {
+    await open(page);
+    await expect(page.locator('html')).toHaveAttribute('data-bridge', 'mock');
+    const outcome = await page.evaluate(async () => {
+      const url = '/src/lib/bridge.ts';
+      const bridge = (await import(/* @vite-ignore */ url)) as {
+        act: (action: string, text?: string) => Promise<{ phase: string; text: string; learned: string[] }>;
+        dictationState: () => Promise<{ phase: string; text: string; learned: string[] }>;
+      };
+      await bridge.act('new', '');
+      await bridge.act('record', '');
+      await bridge.act('done', '');
+      let state = await bridge.dictationState();
+      for (let i = 0; i < 20 && state.phase !== 'finished'; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+        state = await bridge.dictationState();
+      }
+      const ordinary = await bridge.act('copy', state.text.replace('part', 'port'));
+      const intentional = await bridge.act('copy', ordinary.text.replace('dictation', 'Dictation'));
+      return {
+        ordinaryLearned: ordinary.learned,
+        intentionalLearned: intentional.learned,
+      };
+    });
+    expect(outcome.ordinaryLearned).toEqual([]);
+    expect(outcome.intentionalLearned).toEqual(['Dictation']);
+  });
 });

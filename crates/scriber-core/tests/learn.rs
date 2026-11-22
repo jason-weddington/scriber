@@ -2,9 +2,27 @@
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use scriber_core::learn::{
-        MAX_LEARNED, MAX_RUN_WORDS, MAX_RUNS, MIN_FIX_CHARS, candidates, enforce, learn, remember,
+        MAX_LEARNED, MAX_RUN_WORDS, MAX_RUNS, MIN_FIX_CHARS, candidates, candidates_with_lexicon,
+        enforce, learn, learn_with_lexicon, remember,
     };
+    use scriber_core::ports::Lexicon;
+
+    struct FakeLexicon(BTreeSet<String>);
+
+    impl FakeLexicon {
+        fn new(words: &[&str]) -> Self {
+            Self(words.iter().map(|w| w.to_lowercase()).collect())
+        }
+    }
+
+    impl Lexicon for FakeLexicon {
+        fn is_word(&self, word: &str) -> bool {
+            self.0.contains(word)
+        }
+    }
 
     fn strings(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_string()).collect()
@@ -261,5 +279,124 @@ mod tests {
                 "{terms:?}: {text}"
             );
         }
+    }
+
+    #[test]
+    fn lexicon_vetoes_ordinary_singletons_and_keeps_intentional_structural_and_multiword() {
+        let lex = FakeLexicon::new(&[
+            "lead", "leads", "their", "there", "effect", "affect", "tested", "testing", "deploy",
+            "deployed", "swift", "iphone", "notebook", "email", "team",
+        ]);
+        let some: Option<&dyn Lexicon> = Some(&lex);
+
+        // Ordinary singleton vetoes that qualify without a lexicon:
+        // lowercase, sentence-initial title case, and straight/curly possessives.
+        let vetoed: &[(&str, &str)] = &[
+            ("Check leads now.", "Check lead's now."),
+            ("Leads are here.", "Lead\u{2019}s are here."),
+            ("Leads are here.", "Lead's are here."),
+            ("It will affect us.", "It will effect us."),
+            ("We deployed it.", "We deploy it."),
+            ("Ask the Lead now.", "Ask the lead now."),
+            ("Swyft works here.", "Swift works here."),
+        ];
+        for (original, edited) in vetoed {
+            assert_eq!(
+                learn_with_lexicon(original, edited, some),
+                Vec::<String>::new(),
+                "vetoed with lexicon: {original} => {edited}"
+            );
+            assert!(
+                !learn(original, edited).is_empty(),
+                "lexicon-absent keeps eligible edit: {original} => {edited}"
+            );
+            assert_eq!(
+                learn_with_lexicon(original, edited, None),
+                learn(original, edited),
+                "None matches lexicon-free learn: {original} => {edited}"
+            );
+        }
+        for (original, edited) in [
+            ("Check there now.", "Check their now."),
+            ("Keep testing now.", "Keep tested now."),
+        ] {
+            assert_eq!(
+                learn_with_lexicon(original, edited, some),
+                Vec::<String>::new(),
+                "not learned with lexicon: {original} => {edited}"
+            );
+        }
+
+        // Retained eligible corrections with lexicon attached.
+        let kept: &[(&str, &str, &[&str])] = &[
+            ("Ask swift now.", "Ask Swift now.", &["Swift"]),
+            ("Ask swyft now.", "Ask Swift now.", &["Swift"]),
+            ("Open iphone now.", "Open iPhone now.", &["iPhone"]),
+            ("Ipone is here.", "iPhone is here.", &["iPhone"]),
+            ("Leed is here.", "LEAD is here.", &["LEAD"]),
+            ("Ask scribe now.", "Ask Scriber now.", &["Scriber"]),
+            ("Scribe is here.", "Scriber is here.", &["Scriber"]),
+            ("The scribe works.", "The scriber works.", &["scriber"]),
+            ("Open note book now.", "Open notebook now.", &["notebook"]),
+            ("Open notebook now.", "Open note book now.", &["note book"]),
+            ("Send e-mail now.", "Send email now.", &["email"]),
+            (
+                "The tight-beam runner.",
+                "The tightbeam runner.",
+                &["tightbeam"],
+            ),
+            (
+                "Visit lead team now.",
+                "Visit Lead Team now.",
+                &["Lead Team"],
+            ),
+        ];
+        for (original, edited, expected) in kept {
+            assert_eq!(
+                learn_with_lexicon(original, edited, some),
+                strings(expected),
+                "retained with lexicon: {original} => {edited}"
+            );
+        }
+    }
+
+    #[test]
+    fn lexicon_applies_before_the_five_occurrence_cap_and_deduplication() {
+        let lex = FakeLexicon::new(&["lead", "cargo"]);
+        let some: Option<&dyn Lexicon> = Some(&lex);
+
+        // Six repeated eligible runs still hit MAX_RUNS=5 before deduplication.
+        let six_orig =
+            "Use TightBeam and TightBeam and TightBeam and TightBeam and TightBeam and TightBeam.";
+        let six_edit =
+            "Use tightbeam and tightbeam and tightbeam and tightbeam and tightbeam and tightbeam.";
+        assert_eq!(
+            candidates_with_lexicon(six_orig, six_edit, some).len(),
+            6,
+            "uncapped, undeduplicated"
+        );
+        assert_eq!(
+            learn_with_lexicon(six_orig, six_edit, some),
+            Vec::<String>::new(),
+            "six repeated eligible runs cap before dedup"
+        );
+
+        // Six qualifying runs where one is vetoed becomes five and is learned.
+        let edited = "Use tightbeam and Scriber and GitHub and Svelte and ollama and cargo now.";
+        assert_eq!(
+            learn(SIX, edited),
+            Vec::<String>::new(),
+            "without lexicon, six runs cap to empty"
+        );
+        assert_eq!(
+            candidates_with_lexicon(SIX, edited, some),
+            strings(&["tightbeam", "Scriber", "GitHub", "Svelte", "ollama"]),
+            "one ordinary word vetoed leaves five"
+        );
+        assert_eq!(
+            learn_with_lexicon(SIX, edited, some),
+            strings(&["tightbeam", "Scriber", "GitHub", "Svelte", "ollama"]),
+            "five surviving runs are learned"
+        );
     }
 }

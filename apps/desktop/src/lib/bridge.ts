@@ -18,6 +18,8 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 
+import scowlWords from '../../../../crates/scriber-engine/data/scowl-en-60.txt?raw';
+
 import {
   INITIAL_WEB_UI_STATE,
   normalizeOrigin,
@@ -65,7 +67,7 @@ let webInstance: WebBridge | null = null;
 
 function mock(): Mock {
   if (mockInstance === null) {
-    mockInstance = new Mock(location.search);
+    mockInstance = new Mock(location.search, scowlWords);
     window.__mockBridge = mockInstance.handle;
     document.documentElement.dataset.bridge = 'mock';
   }

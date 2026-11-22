@@ -123,6 +123,21 @@ impl Default for ModelSource {
     }
 }
 
+/// Where the ordinary-word dictionary comes from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LexiconSource {
+    /// The bundled SCOWL 2020.12.07 size-60 English dictionary
+    /// ([`WordList::bundled`]), with no host dictionary I/O.
+    #[default]
+    Bundled,
+    /// A UTF-8 word list file on disk ([`WordList::load`]); an unreadable or
+    /// non-UTF-8 file leaves the lexicon absent.
+    File(PathBuf),
+    /// No lexicon attached: ordinary-word filtering is disabled for both
+    /// context jargon extraction and vocabulary learning.
+    None,
+}
+
 /// The local Ollama server that summarizes library entries.
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 
@@ -160,17 +175,18 @@ pub struct EngineConfig {
     /// Tightbeam's way to feed remote audio: a [`StreamRecorder`] the app
     /// pushes samples into. `None` is the cpal device recorder.
     pub recorder: Option<StreamRecorder>,
-    /// The word list that tells an ordinary word from the jargon of the
-    /// embedder's conversation turns ([`Engine::set_context`]), read once at
-    /// open; `None` disables that rule.
-    pub context_lexicon: Option<PathBuf>,
+    /// The ordinary-word dictionary consulted by context jargon extraction
+    /// ([`Engine::set_context`]) and vocabulary learning, resolved once at
+    /// open; [`LexiconSource::None`] disables those dictionary checks.
+    pub lexicon: LexiconSource,
 }
 
 impl EngineConfig {
     /// The default model, downloaded into `data_dir`, no clipboard, no
     /// library ([`DEFAULT_OLLAMA_URL`] and [`DEFAULT_SUMMARY_MODEL`] for
-    /// when it is turned on), [`OPEN`] as the text editor, and
-    /// [`KEEP_WARM_INTERVAL`] between keep-alive renewals.
+    /// when it is turned on), [`OPEN`] as the text editor,
+    /// [`KEEP_WARM_INTERVAL`] between keep-alive renewals, and
+    /// [`LexiconSource::Bundled`] as the ordinary-word dictionary.
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
@@ -182,7 +198,7 @@ impl EngineConfig {
             editor: PathBuf::from(OPEN),
             keep_warm_every: KEEP_WARM_INTERVAL,
             recorder: None,
-            context_lexicon: Some(PathBuf::from("/usr/share/dict/words")),
+            lexicon: LexiconSource::Bundled,
         }
     }
 }
@@ -337,8 +353,9 @@ struct Inner {
     default_model: String,
     /// Keeps the cleanup model loaded while the cleanup setting is on.
     keep_warm: KeepWarm,
-    /// The word list that tells ordinary words from the context's jargon,
-    /// read once at open; `None` leaves that rule off.
+    /// The ordinary-word dictionary consulted by context jargon extraction and
+    /// vocabulary learning, resolved once at open; `None` leaves those checks
+    /// off.
     lexicon: Option<lexicon::WordList>,
 }
 
@@ -535,9 +552,13 @@ impl Engine {
             editor,
             keep_warm_every,
             recorder: _,
-            context_lexicon,
+            lexicon,
         } = config;
-        let lexicon = context_lexicon.as_deref().and_then(lexicon::WordList::load);
+        let lexicon = match lexicon {
+            LexiconSource::Bundled => Some(lexicon::WordList::bundled()),
+            LexiconSource::File(path) => lexicon::WordList::load(&path),
+            LexiconSource::None => None,
+        };
         let keep_warm = KeepWarm::start(Arc::clone(&adapters.warmer), keep_warm_every);
         let clipboard = clipboard.unwrap_or_else(|| Arc::new(NoClipboard));
         let inner = Arc::new_cyclic(|weak| Inner {

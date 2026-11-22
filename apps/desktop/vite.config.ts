@@ -1,5 +1,7 @@
+import { resolve } from 'node:path';
+
 import { svelte } from '@sveltejs/vite-plugin-svelte';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, searchForWorkspaceRoot, type Plugin } from 'vite';
 
 const isWeb = process.env.VITE_SCRIBER_BACKEND === 'web';
 const emitTestMaps = isWeb && process.env.SCRIBER_WEB_SOURCEMAPS === '1';
@@ -56,6 +58,10 @@ function verifyWebBundle(): Plugin {
       if (leakedMock !== undefined) {
         this.error(`Web build unexpectedly bundled the mock module: ${leakedMock}`);
       }
+      const leakedDict = modules.find((id) => /(^|[\\/])scowl-en-60\.txt(\?|$)/.test(id));
+      if (leakedDict !== undefined) {
+        this.error(`Web build unexpectedly bundled the mock dictionary asset: ${leakedDict}`);
+      }
     },
   };
 }
@@ -75,5 +81,11 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    fs: {
+      allow: [
+        searchForWorkspaceRoot(process.cwd()),
+        resolve(import.meta.dirname, '../../crates/scriber-engine/data'),
+      ],
+    },
   },
 });

@@ -12,11 +12,14 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use scriber_core::ports::Lexicon as _;
     use scriber_engine::{
         Action, Clipboard, DEFAULT_OLLAMA_URL, DEFAULT_SUMMARY_MODEL, DictationError, Download,
-        Engine, EngineConfig, EngineError, Event, InputDevices, LibraryEntry, ModelSource, Phase,
-        PortError, Recorder, Settings, ShutdownReport, Source, StreamRecorder, level_sink,
+        Engine, EngineConfig, EngineError, Event, InputDevices, LexiconSource, LibraryEntry,
+        ModelSource, Phase, PortError, Recorder, Settings, ShutdownReport, Source, StreamRecorder,
+        WordList, level_sink,
     };
+    use sha2::{Digest as _, Sha256};
     use tempfile::TempDir;
 
     use serde_json::{Value, json};
@@ -30,11 +33,10 @@ mod tests {
     const ABCD: &str = "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589";
 
     fn config(dir: &TempDir) -> EngineConfig {
-        // No engine test may read the host's word list (`config` sets it off;
-        // only the lexicon-mode test names a temp file, and only the default
-        // assertion names the literal path).
+        // Most engine tests disable the lexicon to stay fast and deterministic;
+        // the lexicon tests exercise Bundled, File and None explicitly.
         EngineConfig {
-            context_lexicon: None,
+            lexicon: LexiconSource::None,
             ..EngineConfig::new(dir.path())
         }
     }
@@ -687,10 +689,11 @@ mod tests {
         assert_eq!(c.ollama_url, "http://127.0.0.1:11434", "url");
         assert_eq!(c.summary_model, "qwen3.8:27b-mlx", "model");
         assert_eq!(c.keep_warm_every, Duration::from_secs(240), "keep warm");
+        assert_eq!(c.lexicon, LexiconSource::Bundled, "lexicon");
         assert_eq!(
-            c.context_lexicon,
-            Some(PathBuf::from("/usr/share/dict/words")),
-            "lexicon"
+            LexiconSource::default(),
+            LexiconSource::Bundled,
+            "default lexicon source"
         );
         assert_eq!(
             (DEFAULT_OLLAMA_URL, DEFAULT_SUMMARY_MODEL),
@@ -3001,7 +3004,7 @@ mod tests {
         write(&dir, "settings.json", br#"{"cleanup":true}"#);
         let fakes = cleaning(Ok("hello world"));
         let (engine, _rx) = fakes.open(EngineConfig {
-            context_lexicon: None,
+            lexicon: LexiconSource::None,
             ..library_config(&dir)
         });
 
@@ -3090,7 +3093,7 @@ mod tests {
         write(&no_list, "settings.json", br#"{"cleanup":true}"#);
         assert_eq!(
             context_glossary(EngineConfig {
-                context_lexicon: None,
+                lexicon: LexiconSource::None,
                 ..library_config(&no_list)
             }),
             "StreamRecorder",
@@ -3102,7 +3105,7 @@ mod tests {
         write(&listed, "words.txt", b"the\nyukara\n");
         assert_eq!(
             context_glossary(EngineConfig {
-                context_lexicon: Some(listed.path().join("words.txt")),
+                lexicon: LexiconSource::File(listed.path().join("words.txt")),
                 ..library_config(&listed)
             }),
             "thing\nStreamRecorder",
@@ -3113,7 +3116,7 @@ mod tests {
         write(&absent, "settings.json", br#"{"cleanup":true}"#);
         assert_eq!(
             context_glossary(EngineConfig {
-                context_lexicon: Some(absent.path().join("absent.txt")),
+                lexicon: LexiconSource::File(absent.path().join("absent.txt")),
                 ..library_config(&absent)
             }),
             "StreamRecorder",
@@ -3125,11 +3128,138 @@ mod tests {
         write(&not_text, "words.txt", &[0xFF]);
         assert_eq!(
             context_glossary(EngineConfig {
-                context_lexicon: Some(not_text.path().join("words.txt")),
+                lexicon: LexiconSource::File(not_text.path().join("words.txt")),
                 ..library_config(&not_text)
             }),
             "StreamRecorder",
             "a list that is not UTF-8 leaves rule (e) off"
+        );
+
+        let empty = TempDir::new().unwrap();
+        write(&empty, "settings.json", br#"{"cleanup":true}"#);
+        write(&empty, "empty.txt", b"");
+        assert_eq!(
+            context_glossary(EngineConfig {
+                lexicon: LexiconSource::File(empty.path().join("empty.txt")),
+                ..library_config(&empty)
+            }),
+            "the\nyukara\nthing\nStreamRecorder",
+            "an empty attached file knows no word, so every 3+ letter alphabetic word is jargon"
+        );
+
+        // Lowercase alphabetic fixtures only so structural rules cannot match.
+        let turn = vec!["deploying routers emailed podcast scriber vortac yukara".to_string()];
+
+        let bundled_dir = TempDir::new().unwrap();
+        write(&bundled_dir, "settings.json", br#"{"cleanup":true}"#);
+        write(&bundled_dir, "vocabulary.txt", b"userterm\n");
+        assert_eq!(
+            context_glossary_of(
+                EngineConfig {
+                    library: true,
+                    ..EngineConfig::new(bundled_dir.path())
+                },
+                &turn,
+            ),
+            "userterm\nscriber\nvortac\nyukara",
+            "EngineConfig::new defaults to Bundled: removes ordinary words and retains custom terms"
+        );
+
+        let override_dir = TempDir::new().unwrap();
+        write(&override_dir, "settings.json", br#"{"cleanup":true}"#);
+        write(&override_dir, "vocabulary.txt", b"userterm\n");
+        write(&override_dir, "other.txt", b"zzzonly\n");
+        assert_eq!(
+            context_glossary_of(
+                EngineConfig {
+                    lexicon: LexiconSource::File(override_dir.path().join("other.txt")),
+                    ..library_config(&override_dir)
+                },
+                &turn,
+            ),
+            "userterm\ndeploying\nrouters\nemailed\npodcast\nscriber\nvortac\nyukara",
+            "a nonmatching File override keeps the ordinary words on the same turn and user glossary"
+        );
+    }
+
+    #[test]
+    fn bundled_scowl_dictionary_matches_recipe_fixtures_and_ordering() {
+        let unicode_dir = TempDir::new().unwrap();
+        write(&unicode_dir, "words.txt", "  Café\tFOO\r\n".as_bytes());
+        let loaded = WordList::load(&unicode_dir.path().join("words.txt")).unwrap();
+        assert!(loaded.is_word("café"), "Unicode lowercasing");
+        assert!(loaded.is_word("foo"), "whitespace splitting");
+        assert!(!loaded.is_word("bar"), "absent word");
+
+        let bundled = WordList::bundled();
+        for ordinary in [
+            "lead",
+            "leads",
+            "deploying",
+            "deployed",
+            "emailed",
+            "podcast",
+            "blog",
+            "streaming",
+            "refactoring",
+            "routers",
+            "testing",
+            "colour",
+            "color",
+        ] {
+            assert!(
+                bundled.is_word(ordinary),
+                "bundled SCOWL 60 must include ordinary word {ordinary:?}"
+            );
+        }
+        for custom in [
+            "scriber",
+            "vortac",
+            "tightbeam",
+            "claude",
+            "yukara",
+            "ollama",
+        ] {
+            assert!(
+                !bundled.is_word(custom),
+                "bundled SCOWL 60 must exclude custom term {custom:?}"
+            );
+        }
+
+        let data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let dict_bytes = std::fs::read(data_dir.join("scowl-en-60.txt")).unwrap();
+        assert_eq!(dict_bytes.len(), 762_573, "pinned byte count");
+        assert!(dict_bytes.ends_with(b"\n"), "LF final newline");
+        assert!(!dict_bytes.contains(&b'\r'), "LF only, no CR");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&dict_bytes)),
+            "4ff42db4b8561e16d80b68ed8a80fadd13997d6a3adc0baed28fadf8f1743fc4",
+            "scowl-en-60.txt SHA-256 matches pinned recipe"
+        );
+
+        let text = std::str::from_utf8(&dict_bytes).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 79_685, "pinned word count");
+        let mut prev: Option<&str> = None;
+        for line in lines {
+            assert!(
+                !line.is_empty() && line.bytes().all(|b| b.is_ascii_lowercase()),
+                "every entry matches ^[a-z]+$: {line:?}"
+            );
+            if let Some(p) = prev {
+                assert!(
+                    p.as_bytes() < line.as_bytes(),
+                    "strict LC_ALL=C ascending order: {p:?} < {line:?}"
+                );
+            }
+            prev = Some(line);
+        }
+
+        let copyright_bytes = std::fs::read(data_dir.join("SCOWL-COPYRIGHT")).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&copyright_bytes)),
+            "283326a422e29c510e2ba6805518c418ce3c35ed1fadc3eec83d2da4f6c5a055",
+            "SCOWL-COPYRIGHT SHA-256 matches pinned archive member"
         );
     }
 
