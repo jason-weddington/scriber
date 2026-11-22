@@ -467,6 +467,62 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
     await expect.poll(() => countHelloObs('ok', 'authenticated')).toBeGreaterThan(authBeforeReconfig);
     await expect(status(page)).toHaveText('Click New to start a dictation.');
 
+    // Verify meter lifecycle and socket routing observations carry only allowlisted keys and zero sentinel tokens.
+    await press(page, 'New', 'Record');
+    await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
+    server.broadcastEvent('dictation-level', 0.33);
+    await page.evaluate(async () => {
+      const b = window.__scriberWebTest?.bridge as { appVersion: () => Promise<string> };
+      await b.appVersion();
+    });
+    await press(page, 'Discard');
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+    const meterCheckObs = await readObservations(page);
+    expect(meterCheckObs.some((o) => o.category === 'capture' && o.event === 'meter' && o.source === 'local')).toBe(
+      true,
+    );
+    expect(
+      meterCheckObs.some(
+        (o) =>
+          o.category === 'capture' &&
+          o.event === 'level' &&
+          o.source === 'socket' &&
+          o.reason === 'suppressed-local',
+      ),
+    ).toBe(true);
+    const allowedObsKeys = new Set([
+      'seq',
+      'category',
+      'event',
+      'outcome',
+      'reason',
+      'generation',
+      'trigger',
+      'priorAuth',
+      'failureCode',
+      'requestId',
+      'phase',
+      'revision',
+      'frames',
+      'samples',
+      'bytes',
+      'source',
+      'armed',
+      'draining',
+      'sampleRate',
+      'windowSamples',
+      'completedWindows',
+    ]);
+    for (const record of meterCheckObs) {
+      for (const key of Object.keys(record)) {
+        expect(allowedObsKeys.has(key), `unexpected observation key: ${key}`).toBe(true);
+      }
+    }
+    const meterCheckJson = JSON.stringify(meterCheckObs);
+    expect(meterCheckJson).not.toContain(secretToken);
+    expect(meterCheckJson).not.toContain(nextToken);
+    expect(meterCheckJson).not.toContain('0.33');
+
     // Exercise bounded observation ring buffer cap (200 entries).
     await page.evaluate(async () => {
       const b = window.__scriberWebTest?.bridge as { appVersion: () => Promise<string> };
@@ -960,7 +1016,7 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
     // Deterministic audio harness: 48 kHz context, mock worklet port, track/node cleanup counters.
     await page.addInitScript(() => {
       interface FakeCaptureState {
-        mode: 'ok' | 'deny' | 'setup_fail' | 'hold_gum' | 'drop_drain';
+        mode: 'ok' | 'deny' | 'setup_fail' | 'hold_gum' | 'drop_drain' | 'hold_drain';
         gumInGesture: boolean[];
         ctxInGesture: boolean[];
         tracksStopped: number;
@@ -968,8 +1024,12 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
         contextsClosed: number;
         inGesture: boolean;
         portOnMessage: ((ev: MessageEvent) => void) | null;
+        savedHandlers: Array<(ev: MessageEvent) => void>;
         resolveHeldGum: (() => void) | null;
-        emitBlocks: (blockCount: number, blockLen: number) => void;
+        releaseHeldDrain: (() => void) | null;
+        emitBlocks: (blockCount: number, blockLen: number, amplitude?: number) => void;
+        emitDistinctWindows: (amplitudes: number[], windowLen: number, blocks: number) => void;
+        invokeSavedHandler: (handlerIdx: number, blockLen: number, amplitude?: number) => void;
       }
       const w = window as unknown as { __cap: FakeCaptureState };
       const cap: FakeCaptureState = {
@@ -981,13 +1041,31 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
         contextsClosed: 0,
         inGesture: false,
         portOnMessage: null,
+        savedHandlers: [],
         resolveHeldGum: null,
-        emitBlocks(blockCount, blockLen) {
+        releaseHeldDrain: null,
+        emitBlocks(blockCount, blockLen, amplitude = 0.25) {
           for (let b = 0; b < blockCount; b++) {
             const arr = new Float32Array(blockLen);
-            arr.fill(0.25);
+            arr.fill(amplitude);
             cap.portOnMessage?.(new MessageEvent('message', { data: { type: 'audio', samples: arr } }));
           }
+        },
+        emitDistinctWindows(amplitudes, windowLen, blocks) {
+          const windowsPerBlock = amplitudes.length / blocks;
+          for (let b = 0; b < blocks; b++) {
+            const arr = new Float32Array(windowsPerBlock * windowLen);
+            for (let wIdx = 0; wIdx < windowsPerBlock; wIdx++) {
+              const amp = amplitudes[b * windowsPerBlock + wIdx] ?? 0.25;
+              arr.fill(amp, wIdx * windowLen, (wIdx + 1) * windowLen);
+            }
+            cap.portOnMessage?.(new MessageEvent('message', { data: { type: 'audio', samples: arr } }));
+          }
+        },
+        invokeSavedHandler(handlerIdx, blockLen, amplitude = 0.5) {
+          const arr = new Float32Array(blockLen);
+          arr.fill(amplitude);
+          cap.savedHandlers[handlerIdx]?.(new MessageEvent('message', { data: { type: 'audio', samples: arr } }));
         },
       };
       w.__cap = cap;
@@ -1090,6 +1168,7 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
         port = {
           set onmessage(fn: ((ev: MessageEvent) => void) | null) {
             cap.portOnMessage = fn;
+            if (fn !== null) cap.savedHandlers.push(fn);
           },
           postMessage(msg: { type: string; id?: number }) {
             if (msg.type === 'drain' && cap.mode !== 'drop_drain') {
@@ -1097,6 +1176,13 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
               const tailBlock = new Float32Array(4_800); // 1,600 samples at 16 kHz = 3,200 bytes
               tailBlock.fill(0.5);
               cap.portOnMessage?.(new MessageEvent('message', { data: { type: 'audio', samples: tailBlock } }));
+              if (cap.mode === 'hold_drain') {
+                cap.releaseHeldDrain = () => {
+                  cap.releaseHeldDrain = null;
+                  cap.portOnMessage?.(new MessageEvent('message', { data: { type: 'drained', id: msg.id } }));
+                };
+                return;
+              }
               cap.portOnMessage?.(new MessageEvent('message', { data: { type: 'drained', id: msg.id } }));
             }
           },
@@ -1211,14 +1297,208 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
     server.broadcastEvent('dictation-changed', server.getSnapshot());
     await expect(status(page)).toHaveText('Click Record and start talking.');
 
-    // 4. Deterministic Pause drain: 48,000 samples (16,000 out = 4 full 8,000 B frames) + 4,800 tail (1,600 out = 3,200 B).
-    server.resetAudioStats();
-    await press(page, 'Record');
-    await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
-    await page.evaluate(() => {
-      (window as unknown as { __cap: { emitBlocks: (n: number, l: number) => void } }).__cap.emitBlocks(4, 12_000);
+    // 4. Deterministic local 50 ms metering + Pause drain: 48,000 samples (20 bars; 16,000 out = 4 full 8,000 B frames)
+    //    + 4,800 tail (0 local bars; 1,600 out = 3,200 B), plus pre-arm/armed/in-drain/held-Pause echo checks & remote fallback.
+    const fenceSocket = async (): Promise<void> => {
+      await page.evaluate(async () => {
+        const b = window.__scriberWebTest?.bridge as { appVersion: () => Promise<string> };
+        await b.appVersion();
+      });
+    };
+    const readLevels = async (): Promise<number[]> =>
+      page.evaluate(() => [...(window as unknown as { __levels: number[] }).__levels]);
+
+    await page.evaluate(async () => {
+      const b = window.__scriberWebTest?.bridge as {
+        onLevel: (cb: (l: number) => void) => Promise<() => void>;
+      };
+      const w = window as unknown as { __levels: number[] };
+      w.__levels = [];
+      await b.onLevel((l) => w.__levels.push(l));
     });
-    await press(page, 'Pause');
+
+    server.resetAudioStats();
+    let releaseRecord: (() => void) | null = null;
+    server.setOnCall((ctx) => {
+      if (ctx.call === 'dictation_act' && ctx.args.action === 'record') {
+        const recSnap: Snapshot = {
+          ...server.getSnapshot(),
+          revision: server.getSnapshot().revision + 1,
+          phase: 'recording',
+          microphone: 'Browser microphone',
+          notice: null,
+          error: null,
+        };
+        releaseRecord = () => {
+          server.setOwnerConnId(ctx.connId);
+          server.setSnapshot(recSnap);
+          ctx.replyOk(recSnap);
+          server.broadcastEvent('dictation-changed', recSnap);
+        };
+        return true;
+      }
+      return false;
+    });
+
+    const armedCountBefore = (await readObservations(page)).filter(
+      (o) => o.category === 'capture' && o.event === 'start' && o.reason === 'armed',
+    ).length;
+    await button(page, 'Record').click();
+    await expect.poll(() => releaseRecord !== null).toBe(true);
+
+    // Pre-arm samples while local Record reply is held emit ZERO WebBridge.onLevel readings.
+    await page.evaluate(() => {
+      (window as unknown as { __cap: { emitBlocks: (n: number, l: number) => void } }).__cap.emitBlocks(1, 4_800);
+    });
+    expect(await readLevels()).toEqual([]);
+
+    const finishRecord = releaseRecord as (() => void) | null;
+    finishRecord?.();
+    server.setOnCall(undefined);
+    await expect
+      .poll(
+        async () =>
+          (await readObservations(page)).filter(
+            (o) => o.category === 'capture' && o.event === 'start' && o.reason === 'armed',
+          ).length,
+      )
+      .toBe(armedCountBefore + 1);
+    await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
+    const wave = page.locator('.wave');
+    await expect(wave).toBeVisible();
+    await expect.poll(async () => Number(await wave.getAttribute('data-slots'))).toBeGreaterThanOrEqual(25);
+    expect(await readLevels()).toEqual([]);
+    await expect(wave).toHaveAttribute('data-count', '0');
+
+    // 48,000 armed samples at 48 kHz with 20 distinct window amplitudes -> 20 ordered callbacks & 20 distinguishable .wave bars.
+    const distinctAmplitudes = Array.from({ length: 20 }, (_, i) => 10 ** ((-44 + i * 1.8) / 20));
+    await page.evaluate((amps) => {
+      (
+        window as unknown as {
+          __cap: { emitDistinctWindows: (a: number[], win: number, blocks: number) => void };
+        }
+      ).__cap.emitDistinctWindows(amps, 2_400, 4);
+    }, distinctAmplitudes);
+
+    const localLevels = await readLevels();
+    expect(localLevels).toHaveLength(20);
+    for (let i = 1; i < localLevels.length; i++) {
+      expect(localLevels[i] ?? 0).toBeGreaterThan(localLevels[i - 1] ?? 0);
+    }
+    await expect(wave).toHaveAttribute('data-count', '20');
+    const barHeights = await wave.locator('.bar').evaluateAll((els) =>
+      els.slice(-20).map((el) => el.getBoundingClientRect().height),
+    );
+    expect(barHeights).toHaveLength(20);
+    for (let i = 0; i < barHeights.length; i++) {
+      expect(barHeights[i] ?? 0).toBeGreaterThan(4);
+      if (i > 0) expect(barHeights[i] ?? 0).toBeGreaterThan(barHeights[i - 1] ?? 0);
+    }
+
+    // Injected dictation-level echo while armed leaves onLevel and .wave unchanged, observed as suppressed-local.
+    server.broadcastEvent('dictation-level', 0.99);
+    await fenceSocket();
+    expect(await readLevels()).toHaveLength(20);
+    await expect(wave).toHaveAttribute('data-count', '20');
+    expect(
+      (await readObservations(page)).some(
+        (o) =>
+          o.category === 'capture' &&
+          o.event === 'level' &&
+          o.outcome === 'skip' &&
+          o.reason === 'suppressed-local' &&
+          o.source === 'socket' &&
+          o.armed === true &&
+          o.draining === false,
+      ),
+    ).toBe(true);
+
+    // Hold drain ack and Pause RPC reply to verify drain block emits 0 local levels and both in-drain & post-teardown echoes are suppressed.
+    await page.evaluate(() => {
+      (window as unknown as { __cap: { mode: string } }).__cap.mode = 'hold_drain';
+      if (window.__scriberWebTest?.timeouts !== undefined) {
+        window.__scriberWebTest.timeouts.drainMs = 5_000;
+      }
+    });
+    let releasePause: (() => void) | null = null;
+    server.setOnCall((ctx) => {
+      if (ctx.call === 'dictation_act' && ctx.args.action === 'pause') {
+        const pausedSnap: Snapshot = {
+          ...server.getSnapshot(),
+          revision: server.getSnapshot().revision + 1,
+          phase: 'paused',
+          segments: server.getSnapshot().segments + 1,
+          recordedMs: server.getSnapshot().recordedMs + 1000,
+          notice: null,
+        };
+        releasePause = () => {
+          server.setOwnerConnId(null);
+          server.setSnapshot(pausedSnap);
+          ctx.replyOk(pausedSnap);
+          server.broadcastEvent('dictation-changed', pausedSnap);
+        };
+        return true;
+      }
+      return false;
+    });
+
+    await button(page, 'Pause').click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { __cap: { releaseHeldDrain: (() => void) | null } }).__cap.releaseHeldDrain !== null,
+        ),
+      )
+      .toBe(true);
+    // Synchronous 4,800-sample drain block already ran during drain and emitted ZERO local readings.
+    expect(await readLevels()).toHaveLength(20);
+    await expect(wave).toHaveAttribute('data-count', '20');
+
+    // In-drain socket echo is suppressed with draining: true.
+    server.broadcastEvent('dictation-level', 0.88);
+    await fenceSocket();
+    expect(await readLevels()).toHaveLength(20);
+    await expect(wave).toHaveAttribute('data-count', '20');
+    expect(
+      (await readObservations(page)).some(
+        (o) =>
+          o.category === 'capture' &&
+          o.event === 'level' &&
+          o.outcome === 'skip' &&
+          o.reason === 'suppressed-local' &&
+          o.source === 'socket' &&
+          o.armed === true &&
+          o.draining === true,
+      ),
+    ).toBe(true);
+
+    // Release drain ack -> tail flushes, capture tears down, Pause RPC is held while accepted phase is still recording.
+    await page.evaluate(() => {
+      (window as unknown as { __cap: { releaseHeldDrain: (() => void) | null } }).__cap.releaseHeldDrain?.();
+    });
+    await expect.poll(() => releasePause !== null).toBe(true);
+
+    // Post-teardown same-generation dictation-level echo while Pause RPC is held is suppressed!
+    server.broadcastEvent('dictation-level', 0.77);
+    await fenceSocket();
+    expect(await readLevels()).toHaveLength(20);
+    await expect(wave).toHaveAttribute('data-count', '20');
+    expect(
+      (await readObservations(page)).some(
+        (o) =>
+          o.category === 'capture' &&
+          o.event === 'level' &&
+          o.outcome === 'skip' &&
+          o.reason === 'suppressed-local' &&
+          o.source === 'socket' &&
+          o.armed === false &&
+          o.draining === false,
+      ),
+    ).toBe(true);
+
+    const finishPause = releasePause as (() => void) | null;
+    finishPause?.();
+    server.setOnCall(undefined);
     await expect(status(page)).toContainText('Paused');
 
     const pauseStats = server.getAudioStats();
@@ -1231,18 +1511,116 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
     expect(lastPauseAudioIdx).toBeGreaterThan(-1);
     expect(lastPauseAudioIdx).toBeLessThan(pauseRpcIdx);
 
-    // 5. Missing drain ack on Done -> recoverable failure with NO partial Done dispatch, then retry Done succeeds!
-    server.resetAudioStats();
+    // Restore normal drain mode & fast drain timeout after held-drain check.
+    await page.evaluate(() => {
+      (window as unknown as { __cap: { mode: string } }).__cap.mode = 'ok';
+      if (window.__scriberWebTest?.timeouts !== undefined) {
+        window.__scriberWebTest.timeouts.drainMs = 120;
+      }
+    });
+
+    // 4b. Newer remote recording snapshot restores socket-driven waveform updates (1 callback + 1 rendered .wave entry).
+    const remoteRecording: Snapshot = {
+      ...server.getSnapshot(),
+      revision: server.getSnapshot().revision + 1,
+      phase: 'recording',
+      microphone: 'Remote microphone',
+    };
+    server.setSnapshot(remoteRecording);
+    server.broadcastEvent('dictation-changed', remoteRecording);
+    await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
+
+    server.broadcastEvent('dictation-level', 0.65);
+    await fenceSocket();
+    const afterRemoteLevels = await readLevels();
+    expect(afterRemoteLevels).toHaveLength(21);
+    expect(afterRemoteLevels.at(-1)).toBe(0.65);
+    await expect(wave).toHaveAttribute('data-count', '21');
+    const lastRemoteBar = await wave.locator('.bar').last().evaluate((el) => ({
+      level: (el as HTMLElement).style.getPropertyValue('--level').trim(),
+      height: el.getBoundingClientRect().height,
+    }));
+    expect(lastRemoteBar.level).toBe('0.65');
+    expect(lastRemoteBar.height).toBeGreaterThan(4);
+    expect(
+      (await readObservations(page)).some(
+        (o) =>
+          o.category === 'capture' &&
+          o.event === 'level' &&
+          o.outcome === 'ok' &&
+          o.reason === 'forwarded-remote' &&
+          o.source === 'socket' &&
+          o.armed === false &&
+          o.draining === false,
+      ),
+    ).toBe(true);
+
+    // Return to paused for isolated partial-window Resume verification.
+    const pausedAgain: Snapshot = {
+      ...server.getSnapshot(),
+      revision: server.getSnapshot().revision + 1,
+      phase: 'paused',
+    };
+    server.setSnapshot(pausedAgain);
+    server.broadcastEvent('dictation-changed', pausedAgain);
+    await expect(status(page)).toContainText('Paused');
+
+    // 4c. Partial prior window is discarded on teardown: resumed BrowserCapture requires 2,400 fresh samples at 48 kHz.
+    await press(page, 'Resume');
+    await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
+    const levelsBeforePartial = (await readLevels()).length;
+    await page.evaluate(() => {
+      (window as unknown as { __cap: { emitBlocks: (n: number, l: number) => void } }).__cap.emitBlocks(1, 1_200);
+    });
+    expect(await readLevels()).toHaveLength(levelsBeforePartial);
+    await press(page, 'Pause');
+    await expect(status(page)).toContainText('Paused');
+
     await press(page, 'Resume');
     await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
     await page.evaluate(() => {
+      (window as unknown as { __cap: { emitBlocks: (n: number, l: number) => void } }).__cap.emitBlocks(1, 2_399);
+    });
+    expect(await readLevels()).toHaveLength(levelsBeforePartial);
+    await page.evaluate(() => {
+      (window as unknown as { __cap: { emitBlocks: (n: number, l: number) => void } }).__cap.emitBlocks(1, 1);
+    });
+    expect(await readLevels()).toHaveLength(levelsBeforePartial + 1);
+    await press(page, 'Pause');
+    await expect(status(page)).toContainText('Paused');
+
+    // 5. Missing drain ack on Done -> recoverable failure with NO partial Done dispatch, stale handler blocked,
+    //    server dictation-level forwarded once while still recording, then retry Done succeeds!
+    server.resetAudioStats();
+    await press(page, 'Resume');
+    await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
+    const handlerIdxBeforeTimeout = await page.evaluate(
+      () => (window as unknown as { __cap: { savedHandlers: unknown[] } }).__cap.savedHandlers.length - 1,
+    );
+    await page.evaluate(() => {
       const cap = (window as unknown as { __cap: { mode: string; emitBlocks: (n: number, l: number) => void } }).__cap;
-      cap.emitBlocks(1, 12_000); // 1 full frame
+      cap.emitBlocks(1, 12_000); // 1 full frame (5 local windows)
       cap.mode = 'drop_drain';
     });
     await press(page, 'Done');
     await expect(page.getByRole('alert')).toContainText('Timed out waiting for microphone audio to finish flushing.');
     expect(server.orderedWireEvents.includes('rpc:dictation_act:done')).toBe(false);
+
+    // Saved stale worklet handler cannot emit through WebBridge.onLevel after drain timeout.
+    const levelsAfterTimeout = (await readLevels()).length;
+    await page.evaluate((idx) => {
+      (
+        window as unknown as { __cap: { invokeSavedHandler: (i: number, len: number) => void } }
+      ).__cap.invokeSavedHandler(idx, 4_800);
+    }, handlerIdxBeforeTimeout);
+    expect(await readLevels()).toHaveLength(levelsAfterTimeout);
+
+    // Server dictation-level is forwarded exactly once while phase remains recording after local drain timeout.
+    server.broadcastEvent('dictation-level', 0.42);
+    await fenceSocket();
+    const levelsAfterTimeoutForward = await readLevels();
+    expect(levelsAfterTimeoutForward).toHaveLength(levelsAfterTimeout + 1);
+    expect(levelsAfterTimeoutForward.at(-1)).toBe(0.42);
 
     // Now capture is cleaned up; pressing Done again succeeds cleanly!
     await page.evaluate(() => {
@@ -1251,9 +1629,12 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
     await press(page, 'Done');
     await expect(status(page)).toHaveText('Copied to the clipboard.');
 
-    // 6. Disconnect mid-drain cleans up pending drain waiter cleanly without sending Done.
+    // 6. Disconnect mid-drain cleans up pending drain waiter cleanly without sending Done, and saved stale handler cannot emit after rebind.
     await press(page, 'New', 'Record');
     await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
+    const handlerIdxBeforeDrop = await page.evaluate(
+      () => (window as unknown as { __cap: { savedHandlers: unknown[] } }).__cap.savedHandlers.length - 1,
+    );
     await page.evaluate(() => {
       (window as unknown as { __cap: { mode: string } }).__cap.mode = 'drop_drain';
     });
@@ -1263,6 +1644,13 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
     server.disconnectAll(1001, 'mid-drain drop');
     await expect(status(page)).toHaveText('Connection lost. Press Done to finish or Discard to start over.');
     expect(server.orderedWireEvents.includes('rpc:dictation_act:pause')).toBe(false);
+    const levelsAfterRebind = (await readLevels()).length;
+    await page.evaluate((idx) => {
+      (
+        window as unknown as { __cap: { invokeSavedHandler: (i: number, len: number) => void } }
+      ).__cap.invokeSavedHandler(idx, 4_800);
+    }, handlerIdxBeforeDrop);
+    expect(await readLevels()).toHaveLength(levelsAfterRebind);
     await page.evaluate(() => {
       (window as unknown as { __cap: { mode: string } }).__cap.mode = 'ok';
     });
@@ -1330,6 +1718,82 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
     expect(gestureFlags.gum.length).toBeGreaterThan(0);
     expect(gestureFlags.gum.every(Boolean)).toBe(true);
     expect(gestureFlags.ctx.every(Boolean)).toBe(true);
+
+    // Verify bounded, sanitized meter lifecycle & socket routing observations using only allowlisted fields.
+    const captureObs = await readObservations(page);
+    expect(captureObs.length).toBeLessThanOrEqual(200);
+    const allowedKeys = new Set([
+      'seq',
+      'category',
+      'event',
+      'outcome',
+      'reason',
+      'generation',
+      'trigger',
+      'priorAuth',
+      'failureCode',
+      'requestId',
+      'phase',
+      'revision',
+      'frames',
+      'samples',
+      'bytes',
+      'source',
+      'armed',
+      'draining',
+      'sampleRate',
+      'windowSamples',
+      'completedWindows',
+    ]);
+    for (const record of captureObs) {
+      for (const key of Object.keys(record)) {
+        expect(allowedKeys.has(key), `unexpected observation key: ${key}`).toBe(true);
+      }
+    }
+    expect(
+      captureObs.some(
+        (o) =>
+          o.category === 'capture' &&
+          o.event === 'meter' &&
+          o.outcome === 'ok' &&
+          o.reason === 'setup' &&
+          o.source === 'local' &&
+          o.sampleRate === 48_000 &&
+          o.windowSamples === 2_400 &&
+          o.completedWindows === 0,
+      ),
+    ).toBe(true);
+    expect(
+      captureObs.some(
+        (o) =>
+          o.category === 'capture' &&
+          o.event === 'meter' &&
+          o.outcome === 'ok' &&
+          o.reason === 'drained' &&
+          o.source === 'local' &&
+          o.armed === true &&
+          o.draining === true &&
+          o.sampleRate === 48_000 &&
+          o.windowSamples === 2_400 &&
+          o.completedWindows === 20,
+      ),
+    ).toBe(true);
+    expect(
+      captureObs.some(
+        (o) =>
+          o.category === 'capture' &&
+          o.event === 'meter' &&
+          o.outcome === 'timeout' &&
+          o.reason === 'drain_timeout' &&
+          o.source === 'local',
+      ),
+    ).toBe(true);
+    const meterAndLevelJson = JSON.stringify(
+      captureObs.filter((o) => o.category === 'capture' && (o.event === 'meter' || o.event === 'level')),
+    );
+    for (const sentinelLevel of ['0.99', '0.88', '0.77', '0.65', '0.42']) {
+      expect(meterAndLevelJson).not.toContain(sentinelLevel);
+    }
   } finally {
     await server.close();
   }

@@ -296,6 +296,8 @@ Tauri camel-cases argument names. `tests/e2e/contract.spec.ts` reads `src-tauri/
 | `dictation-changed` | `Snapshot` | the session changed: a command's action answered a snapshot (delivered on the caller's thread with the session lock held), or a job changed it -- a segment's transcription finished (or failed), whether or not the phase changed (a session archived into the library on finishing included); the model's download moved another whole percent, finished or failed; the warm-up finished (unchanged); an encode finished (unchanged); a summary was written (`libraryRevision` grew) or failed (unchanged); a part closed at a silence (on a `scriber-split` thread) |
 | `dictation-level` | `number` (0 to 1) | while recording, one per 50 ms window of sound (at most 20 a second); see Input level |
 
+In the web build, `onLevel` subscribers receive local 50 ms browser-metered readings directly from `BrowserCapture` while the tab owns capture (suppressing echoed server `dictation-level` frames through drain and handoff) and fall back to server `dictation-level` events when observing a remote recording; see [docs/design-web.md](design-web.md) (`## Client`).
+
 Commands and events can arrive out of order (a segment can finish before the command that queued it has answered), so the window keeps the snapshot with the highest `revision`; it keeps one of equal revision too (`accept` compares `<`), so a command's snapshot arriving both as its answer and as `Event::State` changes nothing. There is no library event: the window lists the library again whenever an accepted snapshot's `libraryRevision` is higher than the one it last listed for.
 
 ### JSON shapes

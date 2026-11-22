@@ -1,12 +1,16 @@
 import { expect, test } from '@playwright/test';
 
 import {
+  CEILING_DBFS,
   encodePcm16Le,
   floatToPcm16,
+  FLOOR_DBFS,
   FRAME_BYTES,
   FRAME_SAMPLES,
+  LevelMeter,
   Pcm16Framer,
   TARGET_SAMPLE_RATE,
+  WINDOW_MS,
 } from '../../src/lib/pcm16';
 
 function decodeLeInt16(bytes: Uint8Array): Int16Array {
@@ -179,5 +183,109 @@ test.describe('pcm16 resampling and framing', () => {
     expect(decodeLeInt16(upsampled ?? new Uint8Array(0))).toEqual(
       new Int16Array([floatToPcm16(0.5), floatToPcm16(0.5)]),
     );
+  });
+});
+
+function runMeter(input: Float32Array, rate: number, blockSizes: readonly number[]): number[] {
+  const meter = new LevelMeter(rate);
+  const readings: number[] = [];
+  let offset = 0;
+  let sizeIdx = 0;
+  while (offset < input.length) {
+    const size = blockSizes[sizeIdx % blockSizes.length] ?? 128;
+    sizeIdx += 1;
+    const end = Math.min(input.length, offset + size);
+    readings.push(...meter.push(input.subarray(offset, end)));
+    offset = end;
+  }
+  return readings;
+}
+
+test.describe('LevelMeter 50 ms RMS dBFS metering', () => {
+  test('pins normalized RMS dBFS scale for silence, NaN, below-floor, -29 dBFS midpoint and above-ceiling', () => {
+    expect(WINDOW_MS).toBe(50);
+    expect(FLOOR_DBFS).toBe(-52.0);
+    expect(CEILING_DBFS).toBe(-6.0);
+
+    const meter = new LevelMeter(48_000);
+    expect(meter.windowSamples).toBe(2_400);
+    expect(meter.push(new Float32Array(0))).toEqual([]);
+
+    // Exact 0 for silence.
+    expect(meter.push(new Float32Array(2_400))).toEqual([0]);
+
+    // Exact 0 for NaN window.
+    const nanWin = new Float32Array(2_400).fill(0.5);
+    nanWin[1_234] = Number.NaN;
+    expect(meter.push(nanWin)).toEqual([0]);
+
+    // Exact 0 for a below-floor window (-60 dBFS < -52 dBFS) and at-floor (-52 dBFS).
+    expect(meter.push(new Float32Array(2_400).fill(10 ** (-60 / 20)))).toEqual([0]);
+    expect(meter.push(new Float32Array(2_400).fill(10 ** (FLOOR_DBFS / 20)))).toEqual([0]);
+
+    // Exact 1 above the ceiling (-3 dBFS and 0 dBFS full-scale).
+    expect(meter.push(new Float32Array(2_400).fill(10 ** (-3 / 20)))).toEqual([1]);
+    expect(meter.push(new Float32Array(2_400).fill(1.0))).toEqual([1]);
+
+    // Midpoint at -29 dBFS -> 0.5 within 6 decimal places.
+    const mid = meter.push(new Float32Array(2_400).fill(10 ** (-29 / 20)));
+    expect(mid).toHaveLength(1);
+    expect(mid[0]).toBeCloseTo(0.5, 6);
+  });
+
+  test('emits 20 ordered readings per second of 44.1 and 48 kHz samples across 128-sample and multi-window blocks', () => {
+    for (const rate of [44_100, 48_000]) {
+      const windowSamples = Math.floor((rate * WINDOW_MS) / 1_000);
+      const signal = new Float32Array(rate);
+      const expected: number[] = [];
+      for (let w = 0; w < 20; w++) {
+        const dbfs = -50 + w * 2; // -50 dBFS .. -12 dBFS, strictly increasing across all 20 windows
+        const amp = 10 ** (dbfs / 20);
+        signal.fill(amp, w * windowSamples, (w + 1) * windowSamples);
+        expected.push((dbfs - FLOOR_DBFS) / (CEILING_DBFS - FLOOR_DBFS));
+      }
+
+      const by128 = runMeter(signal, rate, [128]);
+      const multiWindow = runMeter(signal, rate, [windowSamples * 3 + 17, windowSamples * 2 - 5, windowSamples * 5]);
+      const whole = runMeter(signal, rate, [rate]);
+
+      expect(by128).toHaveLength(20);
+      expect(multiWindow).toHaveLength(20);
+      expect(whole).toHaveLength(20);
+
+      for (let w = 0; w < 20; w++) {
+        expect(by128[w]).toBeCloseTo(expected[w] ?? 0, 6);
+        expect(multiWindow[w]).toBeCloseTo(expected[w] ?? 0, 6);
+        expect(whole[w]).toBeCloseTo(expected[w] ?? 0, 6);
+        if (w > 0) {
+          expect(by128[w] ?? 0).toBeGreaterThan(by128[w - 1] ?? 0);
+        }
+      }
+    }
+  });
+
+  test('yields no readings for NaN, positive infinity, -1, 0 and 19 Hz', () => {
+    const samples = new Float32Array(10_000).fill(0.5);
+    for (const rate of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 19]) {
+      const meter = new LevelMeter(rate);
+      expect(meter.windowSamples).toBe(0);
+      expect(meter.push(samples)).toEqual([]);
+    }
+  });
+
+  test('recovers on the first finite window following a NaN window, including across partial blocks', () => {
+    const meter = new LevelMeter(48_000);
+    const midAmp = 10 ** (-29 / 20);
+
+    // Partial NaN block carried over into the rest of the first window -> emits exact 0 and resets.
+    const firstHalf = new Float32Array(1_200).fill(midAmp);
+    firstHalf[10] = Number.NaN;
+    expect(meter.push(firstHalf)).toEqual([]);
+
+    const secondHalfAndNext = new Float32Array(1_200 + 2_400).fill(midAmp);
+    const readings = meter.push(secondHalfAndNext);
+    expect(readings).toHaveLength(2);
+    expect(readings[0]).toBe(0);
+    expect(readings[1]).toBeCloseTo(0.5, 6);
   });
 });

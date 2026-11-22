@@ -11,6 +11,55 @@ export const FRAME_SAMPLES = 4_000;
 /** Byte length of a full 250 ms PCM16 frame (4,000 samples * 2 bytes). */
 export const FRAME_BYTES = FRAME_SAMPLES * 2;
 
+/** Waveform metering window length in milliseconds (crates/scriber-core/src/level.rs). */
+export const WINDOW_MS = 50;
+
+/** RMS level in dBFS drawn as silence (0.0), matching crates/scriber-core/src/level.rs. */
+export const FLOOR_DBFS = -52.0;
+
+/** RMS level in dBFS drawn at full height (1.0), matching crates/scriber-core/src/level.rs. */
+export const CEILING_DBFS = -6.0;
+
+function rmsToLevel(rms: number): number {
+  const dbfs = 20 * Math.log10(rms);
+  const normalized = (dbfs - FLOOR_DBFS) / (CEILING_DBFS - FLOOR_DBFS);
+  if (Number.isNaN(normalized)) return 0;
+  return Math.min(1, Math.max(0, normalized));
+}
+
+/**
+ * Streaming 50 ms RMS dBFS waveform level meter for native-rate mono Float32
+ * blocks, matching `crates/scriber-core/src/level.rs` (20 readings/sec).
+ */
+export class LevelMeter {
+  readonly sampleRate: number;
+  readonly windowSamples: number;
+  private squares = 0;
+  private count = 0;
+
+  constructor(sampleRate: number) {
+    this.sampleRate = sampleRate;
+    this.windowSamples =
+      Number.isFinite(sampleRate) && sampleRate > 0 ? Math.floor((sampleRate * WINDOW_MS) / 1_000) : 0;
+  }
+
+  /** Meters one mono Float32 block and returns every completed window reading in order. */
+  push(block: Float32Array): number[] {
+    if (this.windowSamples === 0 || block.length === 0) return [];
+    const readings: number[] = [];
+    for (const sample of block) {
+      this.squares += sample * sample;
+      this.count += 1;
+      if (this.count === this.windowSamples) {
+        readings.push(rmsToLevel(Math.sqrt(this.squares / this.count)));
+        this.squares = 0;
+        this.count = 0;
+      }
+    }
+    return readings;
+  }
+}
+
 /** Clips one floating-point sample to [-1, 1] and quantizes to signed 16-bit PCM. */
 export function floatToPcm16(sample: number): number {
   if (!Number.isFinite(sample)) return 0;

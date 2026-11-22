@@ -3,7 +3,7 @@
 // static AudioWorklet before dispatching Record/Resume, emits 16 kHz PCM16
 // frames only after local action success, and drains in order on Pause/Done.
 
-import { Pcm16Framer } from './pcm16';
+import { LevelMeter, Pcm16Framer } from './pcm16';
 import type { Phase } from './types';
 
 declare global {
@@ -35,10 +35,16 @@ export const CAPTURE_CONSTRAINTS: MediaStreamConstraints = {
 };
 
 export interface CaptureObservation {
-  event: 'start' | 'drain' | 'stop';
+  event: 'start' | 'drain' | 'stop' | 'meter';
   outcome: 'ok' | 'skip' | 'timeout' | 'cancelled' | 'failed';
   reason: string;
   generation: number;
+  source?: 'local';
+  armed?: boolean;
+  draining?: boolean;
+  sampleRate?: number;
+  windowSamples?: number;
+  completedWindows?: number;
   frames?: number;
   samples?: number;
   bytes?: number;
@@ -53,6 +59,7 @@ export interface CaptureDrainResult {
 
 export interface CaptureCallbacks {
   sendFrame: (frame: Uint8Array<ArrayBuffer>) => void;
+  onLevel: (level: number) => void;
   observe: (entry: CaptureObservation) => void;
 }
 
@@ -75,6 +82,7 @@ interface CaptureSession {
   worklet: AudioWorkletNode | null;
   zeroGain: GainNode | null;
   framer: Pcm16Framer | null;
+  meter: LevelMeter | null;
   dispatching: boolean;
   armed: boolean;
   draining: boolean;
@@ -87,6 +95,7 @@ interface CaptureSession {
   framesSent: number;
   samplesSent: number;
   bytesSent: number;
+  completedWindows: number;
 }
 
 function clearTimer(timer: ReturnType<typeof setTimeout> | null): null {
@@ -117,6 +126,11 @@ export class BrowserCapture {
   /** True while a local capture is armed and streaming audio. */
   isActive(): boolean {
     return this.active !== null && this.active.armed && !this.active.closed;
+  }
+
+  /** True while a local capture is draining before Pause or Done. */
+  isDraining(): boolean {
+    return this.active !== null && this.active.draining && !this.active.closed;
   }
 
   /**
@@ -158,6 +172,7 @@ export class BrowserCapture {
       worklet: null,
       zeroGain: null,
       framer: null,
+      meter: null,
       dispatching: false,
       armed: false,
       draining: false,
@@ -170,6 +185,7 @@ export class BrowserCapture {
       framesSent: 0,
       samplesSent: 0,
       bytesSent: 0,
+      completedWindows: 0,
     };
     this.active = session;
 
@@ -208,6 +224,19 @@ export class BrowserCapture {
       session.worklet = worklet;
       session.zeroGain = zeroGain;
       session.framer = new Pcm16Framer(session.context.sampleRate);
+      session.meter = new LevelMeter(session.context.sampleRate);
+      callbacks.observe({
+        event: 'meter',
+        outcome: 'ok',
+        reason: 'setup',
+        generation,
+        source: 'local',
+        armed: session.armed,
+        draining: session.draining,
+        sampleRate: session.meter.sampleRate,
+        windowSamples: session.meter.windowSamples,
+        completedWindows: 0,
+      });
 
       worklet.port.onmessage = (event: MessageEvent<WorkletMessage>) => {
         this.onWorkletMessage(session, event.data);
@@ -338,6 +367,7 @@ export class BrowserCapture {
   }
 
   private onWorkletMessage(session: CaptureSession, msg: WorkletMessage): void {
+    if (!this.isAlive(session)) return;
     if (msg.type === 'audio') {
       if (!session.armed || session.framer === null) return;
       for (const frame of session.framer.push(msg.samples)) {
@@ -345,6 +375,13 @@ export class BrowserCapture {
         session.samplesSent += frame.byteLength / 2;
         session.bytesSent += frame.byteLength;
         session.callbacks.sendFrame(frame);
+      }
+      if (!session.draining && session.meter !== null) {
+        const readings = session.meter.push(msg.samples);
+        session.completedWindows += readings.length;
+        for (const level of readings) {
+          session.callbacks.onLevel(level);
+        }
       }
       return;
     }
@@ -359,11 +396,31 @@ export class BrowserCapture {
 
   private teardown(session: CaptureSession, reason: string): void {
     if (session.closed) return;
+    const wasArmed = session.armed;
+    const wasDraining = session.draining;
+    const meter = session.meter;
     session.closed = true;
     session.armed = false;
     session.draining = false;
+    session.meter = null;
     session.cancelReason = reason;
     if (this.active === session) this.active = null;
+    if (meter !== null) {
+      const outcome: CaptureObservation['outcome'] =
+        reason === 'drained' || reason === 'discard' ? 'ok' : reason === 'drain_timeout' ? 'timeout' : 'cancelled';
+      session.callbacks.observe({
+        event: 'meter',
+        outcome,
+        reason,
+        generation: session.generation,
+        source: 'local',
+        armed: wasArmed,
+        draining: wasDraining,
+        sampleRate: meter.sampleRate,
+        windowSamples: meter.windowSamples,
+        completedWindows: session.completedWindows,
+      });
+    }
 
     session.drainTimer = clearTimer(session.drainTimer);
     if (session.drainReject !== null) {

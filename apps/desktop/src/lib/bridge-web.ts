@@ -114,6 +114,12 @@ export interface WebObservation {
   frames?: number;
   samples?: number;
   bytes?: number;
+  source?: 'local' | 'socket';
+  armed?: boolean;
+  draining?: boolean;
+  sampleRate?: number;
+  windowSamples?: number;
+  completedWindows?: number;
 }
 
 export type WebClipboardOutcome =
@@ -375,6 +381,9 @@ export class WebBridge {
   private wasOwnerBeforeDisconnect = false;
   private connectionLostNotice = false;
   private lastSnapshotRevision: number | null = null;
+  private localLevelHandoffGen: number | null = null;
+  private nextHandoffToken = 0;
+  private localLevelHandoffToken = 0;
 
   private finishAnchored = false;
   private finishText: string | null = null;
@@ -616,6 +625,9 @@ export class WebBridge {
       sendFrame: (frame) => {
         this.sendBinary(gen, frame);
       },
+      onLevel: (level) => {
+        this.emitLocalLevel(gen, level);
+      },
       observe: (entry) => {
         this.observeCapture(entry);
       },
@@ -647,25 +659,32 @@ export class WebBridge {
 
   private async actPause(): Promise<Snapshot> {
     const gen = this.generation;
-    if (this.capture.isActive()) {
-      await this.capture.drainAndStop(gen, this.timeouts().drainMs);
-    } else {
-      this.observe({
-        category: 'capture',
-        event: 'drain',
-        outcome: 'skip',
-        reason: 'not_active',
-        generation: gen,
-      });
+    let handoffToken: number | null = null;
+    try {
+      if (this.capture.isActive()) {
+        handoffToken = this.enterLocalLevelHandoff(gen);
+        await this.capture.drainAndStop(gen, this.timeouts().drainMs);
+      } else {
+        this.observe({
+          category: 'capture',
+          event: 'drain',
+          outcome: 'skip',
+          reason: 'not_active',
+          generation: gen,
+        });
+      }
+      this.ownedRecording = false;
+      const snap = await (await this.callWithId<Snapshot>('dictation_act', { action: 'pause', text: '' })).promise;
+      this.onSnapshot(snap);
+      return snap;
+    } finally {
+      if (handoffToken !== null) this.releaseLocalLevelHandoff(handoffToken);
     }
-    this.ownedRecording = false;
-    const snap = await (await this.callWithId<Snapshot>('dictation_act', { action: 'pause', text: '' })).promise;
-    this.onSnapshot(snap);
-    return snap;
   }
 
   private async actDiscard(): Promise<Snapshot> {
     this.capture.stop('discard');
+    this.clearLocalLevelHandoff();
     this.ownedRecording = false;
     this.wasOwnerBeforeDisconnect = false;
     this.connectionLostNotice = false;
@@ -680,38 +699,44 @@ export class WebBridge {
     const gen = this.generation;
     // Start clipboard.write synchronously inside the gesture before any await.
     const assoc = this.startDoneAssociation(gen);
+    let handoffToken: number | null = null;
 
-    if (this.capture.isActive()) {
+    try {
+      if (this.capture.isActive()) {
+        handoffToken = this.enterLocalLevelHandoff(gen);
+        try {
+          await this.capture.drainAndStop(gen, this.timeouts().drainMs);
+        } catch (err) {
+          this.cancelDoneAssociation('drain_failed', assoc);
+          throw err;
+        }
+      } else {
+        this.observe({
+          category: 'capture',
+          event: 'drain',
+          outcome: 'skip',
+          reason: 'not_active',
+          generation: gen,
+        });
+      }
+
+      this.ownedRecording = false;
+      let snap: Snapshot;
       try {
-        await this.capture.drainAndStop(gen, this.timeouts().drainMs);
+        const handle = await this.callWithId<Snapshot>('dictation_act', { action: 'done', text: '' });
+        assoc.requestId = handle.requestId;
+        snap = await handle.promise;
       } catch (err) {
-        this.cancelDoneAssociation('drain_failed', assoc);
+        this.cancelDoneAssociation('done_rejected', assoc);
         throw err;
       }
-    } else {
-      this.observe({
-        category: 'capture',
-        event: 'drain',
-        outcome: 'skip',
-        reason: 'not_active',
-        generation: gen,
-      });
-    }
 
-    this.ownedRecording = false;
-    let snap: Snapshot;
-    try {
-      const handle = await this.callWithId<Snapshot>('dictation_act', { action: 'done', text: '' });
-      assoc.requestId = handle.requestId;
-      snap = await handle.promise;
-    } catch (err) {
-      this.cancelDoneAssociation('done_rejected', assoc);
-      throw err;
+      this.onDoneReply(assoc, snap);
+      this.onSnapshot(snap);
+      return snap;
+    } finally {
+      if (handoffToken !== null) this.releaseLocalLevelHandoff(handoffToken);
     }
-
-    this.onDoneReply(assoc, snap);
-    this.onSnapshot(snap);
-    return snap;
   }
 
   private async actCopy(text: string): Promise<Snapshot> {
@@ -997,11 +1022,14 @@ export class WebBridge {
         this.connectionLostNotice = true;
         changed = true;
       }
-    } else if (this.ownedRecording || this.wasOwnerBeforeDisconnect || this.connectionLostNotice) {
-      this.ownedRecording = false;
-      this.wasOwnerBeforeDisconnect = false;
-      this.connectionLostNotice = false;
-      changed = true;
+    } else {
+      this.clearLocalLevelHandoff();
+      if (this.ownedRecording || this.wasOwnerBeforeDisconnect || this.connectionLostNotice) {
+        this.ownedRecording = false;
+        this.wasOwnerBeforeDisconnect = false;
+        this.connectionLostNotice = false;
+        changed = true;
+      }
     }
 
     if (snap.phase !== 'finished') {
@@ -1034,10 +1062,35 @@ export class WebBridge {
     this.wasOwnerBeforeDisconnect = false;
     this.connectionLostNotice = false;
     this.lastSnapshotRevision = null;
+    this.clearLocalLevelHandoff();
     this.finishAnchored = false;
     this.finishText = null;
     this.clipboardOutcome = { kind: 'unwritten' };
     this.archiveSuffix = null;
+  }
+
+  private enterLocalLevelHandoff(generation: number): number {
+    const token = ++this.nextHandoffToken;
+    this.localLevelHandoffGen = generation;
+    this.localLevelHandoffToken = token;
+    return token;
+  }
+
+  private releaseLocalLevelHandoff(token: number): void {
+    if (this.localLevelHandoffToken === token && !this.capture.isActive()) {
+      this.localLevelHandoffGen = null;
+      this.localLevelHandoffToken = 0;
+    }
+  }
+
+  private clearLocalLevelHandoff(): void {
+    this.localLevelHandoffGen = null;
+    this.localLevelHandoffToken = 0;
+  }
+
+  private emitLocalLevel(generation: number, level: number): void {
+    if (generation !== this.generation || !this.capture.isActive()) return;
+    for (const cb of this.levelListeners) cb(level);
   }
 
   // ---- WebSocket transport & lifecycle --------------------------------------
@@ -1269,7 +1322,32 @@ export class WebBridge {
         this.onSnapshotEvent(generation, snap);
         for (const cb of this.dictationListeners) cb(snap);
       } else if (msg.event === 'dictation-level' && typeof msg.payload === 'number') {
-        for (const cb of this.levelListeners) cb(msg.payload);
+        const armed = this.capture.isActive();
+        const draining = this.capture.isDraining();
+        if (armed || this.localLevelHandoffGen === generation) {
+          this.observe({
+            category: 'capture',
+            event: 'level',
+            outcome: 'skip',
+            reason: 'suppressed-local',
+            generation,
+            source: 'socket',
+            armed,
+            draining,
+          });
+        } else {
+          this.observe({
+            category: 'capture',
+            event: 'level',
+            outcome: 'ok',
+            reason: 'forwarded-remote',
+            generation,
+            source: 'socket',
+            armed,
+            draining,
+          });
+          for (const cb of this.levelListeners) cb(msg.payload);
+        }
       }
       return;
     }
@@ -1393,6 +1471,7 @@ export class WebBridge {
     } else if (!preserveOwnership) {
       this.ownedRecording = false;
     }
+    this.clearLocalLevelHandoff();
     this.capture.stop('retired');
     this.cancelDoneAssociation('retired');
     this.lastConnectionError = errorMessage;
@@ -1564,6 +1643,12 @@ export class WebBridge {
     frames?: number | undefined;
     samples?: number | undefined;
     bytes?: number | undefined;
+    source?: 'local' | 'socket' | undefined;
+    armed?: boolean | undefined;
+    draining?: boolean | undefined;
+    sampleRate?: number | undefined;
+    windowSamples?: number | undefined;
+    completedWindows?: number | undefined;
   }): void {
     const hook = window.__scriberWebTest;
     if (hook === undefined) return;
@@ -1583,6 +1668,12 @@ export class WebBridge {
       ...(entry.frames !== undefined ? { frames: entry.frames } : {}),
       ...(entry.samples !== undefined ? { samples: entry.samples } : {}),
       ...(entry.bytes !== undefined ? { bytes: entry.bytes } : {}),
+      ...(entry.source !== undefined ? { source: entry.source } : {}),
+      ...(entry.armed !== undefined ? { armed: entry.armed } : {}),
+      ...(entry.draining !== undefined ? { draining: entry.draining } : {}),
+      ...(entry.sampleRate !== undefined ? { sampleRate: entry.sampleRate } : {}),
+      ...(entry.windowSamples !== undefined ? { windowSamples: entry.windowSamples } : {}),
+      ...(entry.completedWindows !== undefined ? { completedWindows: entry.completedWindows } : {}),
     };
     if (hook.observations !== undefined) {
       if (hook.observations.length >= MAX_OBSERVATIONS) hook.observations.shift();

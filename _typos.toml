@@ -1,8 +1,8 @@
 # Project vocabulary for the `typos` spell checker. Add real terms here rather
 # than rewording code to appease the checker.
 [default]
-# Git SHAs in backticks are not words.
-extend-ignore-re = ["`[0-9a-f]{7,40}`"]
+# Git SHAs and Vortac message/record UUIDs in backticks are not words.
+extend-ignore-re = ["`[0-9a-f]{7,40}`", "`msg_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`"]
 
 [files]
 # Machine-written files.
