@@ -2,6 +2,25 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.13.0 - 2026-11-22
+#### Features
+- Web 3: install as an app (manifest, icons), hide the Mac-only settings, the Connect screen and the README - (c870eec) - vortac-dispatch
+- Web 2: the web backend for the Svelte app: bridge-web.ts, browser microphone capture, clipboard write and the build:web bundle - (35c4df0) - vortac-dispatch
+- Web 1: crates/scriber-server, a WebSocket host around scriber-engine with a shared-token hello, audio frames into StreamRecorder, and static serving - (3c94091) - vortac-dispatch
+#### Documentation
+- the iPad clipboard check is Jason's after the first deploy, not a build step - (ddcd753) - Jason Weddington, *Claude Sonnet 5.5*
+- design for Scriber on the web (scriber-server, WebSocket protocol, PWA client) - (8f86b91) - Jason Weddington, *Claude Sonnet 5.5*
+- rename CLAUDE.md to AGENTS.md and state how work lands today (branches, the Vortac factory, releases, install, coverage floors) - (43ff832) - Jason Weddington, *Claude Sonnet 5.5*
+- document set_context and set_terms in the README for apps that embed the engine - (d451be2) - Jason Weddington, *Claude Sonnet 5.5*
+#### Tests
+- (**server**) decouple wire fixture version check from crate version - (ec43e39) - Jason Weddington
+- (**web**) eliminate timing races and server keep-alive hang in web e2e - (84bad73) - Jason Weddington
+#### Miscellaneous Chores
+- (**deps**) update url to 2.5.9 for RUSTSEC-2026-0592 and async-executor - (434e4c0) - Jason Weddington
+- (**engine**) replace chrono with jiff and drop RUSTSEC-2026-0543 ignores - (0ef4221) - Jason Weddington
+
+- - -
+
 ## v0.12.0 - 2026-11-19
 #### Features
 - Engine app terms: always-included embedder terms with spoken forms, outside the 30 context cap, in Whisper's prompt and the cleanup glossary - (10a650e) - vortac-dispatch
