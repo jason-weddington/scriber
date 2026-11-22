@@ -847,6 +847,29 @@ test('streams real static AudioWorklet PCM16 frames under strict CSP and recover
     await installClipboardHarness(page, 'resolve');
     await openWeb(page, server.url);
 
+    // Mirror real scriber-server's Engine::act order: emit dictation-changed (phase: recording)
+    // BEFORE replying to Record/Resume so capture is never torn down by its own event.
+    server.setOnCall((ctx) => {
+      if (ctx.call === 'dictation_act' && (ctx.args.action === 'record' || ctx.args.action === 'resume')) {
+        const next: Snapshot = {
+          ...server.getSnapshot(),
+          revision: server.getSnapshot().revision + 1,
+          phase: 'recording',
+          microphone: 'Browser microphone',
+          notice: null,
+          error: null,
+        };
+        server.setOwnerConnId(ctx.connId);
+        server.setSnapshot(next);
+        server.broadcastEvent('dictation-changed', next);
+        setTimeout(() => {
+          ctx.replyOk(next);
+        }, 15);
+        return true;
+      }
+      return false;
+    });
+
     // Record via click -> wait for real 8,000-byte frames from static /capture-worklet.js.
     await press(page, 'New', 'Record');
     await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
@@ -892,8 +915,12 @@ test('streams real static AudioWorklet PCM16 frames under strict CSP and recover
     await expect(status(page)).toHaveText('Copied to the clipboard.');
 
     // Second cycle: former-owner disconnect -> recover via Discard.
+    const framesBeforeSecondCycle = server.getAudioStats().acceptedFrames;
     await press(page, 'New', 'Record');
     await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
+    await expect
+      .poll(() => server.getAudioStats().acceptedFrames, { timeout: 5_000 })
+      .toBeGreaterThan(framesBeforeSecondCycle);
     server.disconnectAll(1001, 'network drop');
     await expect(status(page)).toHaveText('Connection lost. Press Done to finish or Discard to start over.');
     await press(page, 'Discard');
@@ -1023,6 +1050,8 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
             if (cap.mode === 'setup_fail') {
               return Promise.reject(new Error('worklet load failed'));
             }
+            // Simulate iOS/iPadOS Safari interrupting AudioContext when getUserMedia switches AVAudioSession.
+            this.state = 'interrupted';
             return Promise.resolve();
           },
         };
@@ -1157,7 +1186,30 @@ test('verifies deterministic ordered drain totals, drain timeout recovery, and c
       () => (window as unknown as { __cap: { tracksStopped: number } }).__cap.tracksStopped,
     );
     expect(tracksAfterReject).toBe(tracksBeforeReject + 1);
+
+    // Non-recording remote interruption while dispatching tears down before arm() runs.
+    server.setOnCall((ctx) => {
+      if (ctx.call === 'dictation_act' && ctx.args.action === 'record') {
+        server.broadcastEvent('dictation-changed', { ...makeDefaultSnapshot(), revision: 11, phase: 'idle' });
+        setTimeout(() => {
+          ctx.replyOk({ ...makeDefaultSnapshot(), revision: 12, phase: 'recording' });
+        }, 15);
+        return true;
+      }
+      return false;
+    });
+    const tracksBeforeDispatchInterrupt = await page.evaluate(
+      () => (window as unknown as { __cap: { tracksStopped: number } }).__cap.tracksStopped,
+    );
+    await press(page, 'Record');
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __cap: { tracksStopped: number } }).__cap.tracksStopped))
+      .toBe(tracksBeforeDispatchInterrupt + 1);
+    await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
     server.setOnCall(undefined);
+    server.setSnapshot({ ...makeDefaultSnapshot(), revision: 13, phase: 'ready' });
+    server.broadcastEvent('dictation-changed', server.getSnapshot());
+    await expect(status(page)).toHaveText('Click Record and start talking.');
 
     // 4. Deterministic Pause drain: 48,000 samples (16,000 out = 4 full 8,000 B frames) + 4,800 tail (1,600 out = 3,200 B).
     server.resetAudioStats();

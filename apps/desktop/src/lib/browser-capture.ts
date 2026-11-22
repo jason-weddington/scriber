@@ -75,6 +75,7 @@ interface CaptureSession {
   worklet: AudioWorkletNode | null;
   zeroGain: GainNode | null;
   framer: Pcm16Framer | null;
+  dispatching: boolean;
   armed: boolean;
   draining: boolean;
   closed: boolean;
@@ -157,6 +158,7 @@ export class BrowserCapture {
       worklet: null,
       zeroGain: null,
       framer: null,
+      dispatching: false,
       armed: false,
       draining: false,
       closed: false,
@@ -214,14 +216,19 @@ export class BrowserCapture {
       source.connect(worklet);
       worklet.connect(zeroGain);
       zeroGain.connect(session.context.destination);
+      if (session.context.state !== 'running') {
+        await session.context.resume();
+      }
     } catch (err) {
       this.teardown(session, 'setup_error');
       callbacks.observe({ event: 'start', outcome: 'failed', reason: 'setup_error', generation });
       throw new Error(`Could not set up the microphone: ${readableError(err)}`);
     }
 
+    session.dispatching = true;
     return {
       arm: () => {
+        if (!this.isAlive(session)) return false;
         session.armed = true;
         callbacks.observe({ event: 'start', outcome: 'ok', reason: 'armed', generation });
         return true;
@@ -238,7 +245,7 @@ export class BrowserCapture {
     const session = this.active;
     if (session === null || session.closed) return;
     if (!session.armed && !session.draining) {
-      if (phase !== session.expectedPrePhase) {
+      if (phase !== session.expectedPrePhase && !(session.dispatching && phase === 'recording')) {
         session.callbacks.observe({ event: 'start', outcome: 'cancelled', reason: 'remote_interruption', generation: session.generation });
         this.teardown(session, 'remote_interruption');
       }
