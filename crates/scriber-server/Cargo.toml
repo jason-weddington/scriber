@@ -1,0 +1,28 @@
+[package]
+name = "scriber-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Scriber's web host: axum HTTP/WebSocket server around scriber-engine with shared-token auth, PCM16 streaming and static asset serving."
+publish = false
+
+[dependencies]
+scriber-core = { path = "../scriber-core" }
+scriber-engine = { path = "../scriber-engine" }
+
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+base64 = "0.23"
+hyper = { version = "1", default-features = false, features = ["http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+tokio = { version = "1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+sha2 = "0.10"
+tempfile = "3"
+
+[lints]
+workspace = true

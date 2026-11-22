@@ -83,6 +83,27 @@ bash scripts/install.sh
 
 Builds the release app, verifies its signature (ad hoc, so it runs on the machine that built it) and installs it in `/Applications`. The first Record asks for the microphone; allow it in the prompt (or later in System Settings, Privacy & Security, Microphone).
 
+## Running the web server
+
+`crates/scriber-server` hosts `scriber-engine` over HTTP and WebSocket (`/ws`) and serves the built web assets from `apps/desktop/dist-web` (or `SCRIBER_WEB_DIR`):
+
+```sh
+SCRIBER_TOKEN="replace-with-a-secret" cargo run -p scriber-server
+```
+
+Then open `http://localhost:8742` in a browser (or check `http://localhost:8742/healthz` for `ok`). Built static assets are served from `apps/desktop/dist-web` by default; point `SCRIBER_WEB_DIR` at another directory to override it. For local development without a token, set `SCRIBER_ALLOW_NO_TOKEN=1` with `SCRIBER_TOKEN` unset.
+
+Environment settings:
+
+- `SCRIBER_BIND`: bind address and port (default `127.0.0.1:8742`).
+- `SCRIBER_TOKEN`: shared secret required in the WebSocket `hello` frame; startup fails when unset or empty unless `SCRIBER_ALLOW_NO_TOKEN=1`.
+- `SCRIBER_ALLOW_NO_TOKEN`: set to `1` to allow tokenless local development (ignored when a non-empty `SCRIBER_TOKEN` is set).
+- `SCRIBER_DATA`: engine data folder (default `$HOME/Library/Application Support/com.jasonweddington.scriber-server`, isolated from the desktop app's folder).
+- `SCRIBER_MODEL_FOLDER`: optional absolute path persisted into `settings.json` at startup so the server can share or store the Whisper model folder.
+- `SCRIBER_WEB_DIR`: directory of built static web assets (default `apps/desktop/dist-web` relative to the working directory).
+
+**Remote access requires TLS (HTTPS):** browsers only expose microphone capture (`getUserMedia`) on `localhost` or HTTPS origins, so put a TLS-terminating reverse proxy in front of `scriber-server` when accessing it from another device such as an iPad.
+
 ## Release
 
 ```sh

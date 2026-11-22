@@ -1,0 +1,76 @@
+{
+  "helloRequest": {
+    "hello": {
+      "token": "shared-secret"
+    }
+  },
+  "helloRequestNoToken": {
+    "hello": {
+      "token": ""
+    }
+  },
+  "helloResponse": {
+    "hello": {
+      "version": "0.12.0",
+      "platform": "web"
+    }
+  },
+  "rpcRequestEmpty": {
+    "id": 1,
+    "call": "dictation_state",
+    "args": {}
+  },
+  "rpcRequestAct": {
+    "id": 2,
+    "call": "dictation_act",
+    "args": {
+      "action": "record",
+      "text": ""
+    }
+  },
+  "rpcRequestLibraryGet": {
+    "id": 3,
+    "call": "library_get",
+    "args": {
+      "id": "20261026-140309"
+    }
+  },
+  "rpcRequestLibraryCopy": {
+    "id": 4,
+    "call": "library_copy",
+    "args": {
+      "id": "20261026-140309"
+    }
+  },
+  "rpcReplyOkNull": {
+    "id": 4,
+    "ok": null
+  },
+  "rpcReplyOkVersion": {
+    "id": 5,
+    "ok": "0.12.0"
+  },
+  "rpcReplyOkFullscreen": {
+    "id": 6,
+    "ok": true
+  },
+  "rpcReplyOkInputDevices": {
+    "id": 7,
+    "ok": {
+      "default": "Browser microphone",
+      "others": []
+    }
+  },
+  "rpcReplyErrUnavailable": {
+    "id": 8,
+    "err": "Not available in the web app."
+  },
+  "rpcReplyErrUncorrelated": {
+    "id": null,
+    "err": "Invalid PCM16 frame: byte length must be even."
+  },
+  "eventLevel": {
+    "event": "dictation-level",
+    "payload": 0.5
+  }
+}

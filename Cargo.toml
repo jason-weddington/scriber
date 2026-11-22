@@ -8,7 +8,7 @@
 # never reaches these gates (coverage, mutants, machete, deny).
 [workspace]
 resolver = "3"
-members = ["crates/scriber-core", "crates/scriber-engine"]
+members = ["crates/scriber-core", "crates/scriber-engine", "crates/scriber-server"]
 
 [workspace.package]
 version = "0.12.0"

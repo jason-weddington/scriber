@@ -48,22 +48,26 @@ core=crates/scriber-core
 engine=crates/scriber-engine
 app=apps/desktop/src-tauri
 
-# A local stand-in named tokio: planting the real crate would need it in the
-# registry cache, which a fresh machine or CI runner does not have.
-plant_fake_tokio() {
-  mkdir -p fake-tokio/src &&
-    printf '[package]\nname = "tokio"\nversion = "1.0.0"\nedition = "2024"\npublish = false\n' > fake-tokio/Cargo.toml &&
-    : > fake-tokio/src/lib.rs &&
-    perl -pi -e 's/^thiserror = .*$/$&\ntokio = { path = "..\/..\/fake-tokio" }/' "$1/Cargo.toml" &&
+# Plant a real banned dependency already locked in the workspace Cargo.lock
+# (via scriber-server) so `cargo update --offline` works without network access.
+plant_dep() {
+  local crate=$1 dep=$2 spec=$3
+  DEP_LINE="$dep = $spec" perl -pi -e 's/^thiserror = .*$/$&\n$ENV{DEP_LINE}/' "$crate/Cargo.toml" &&
     cargo update --offline -q
 }
-export -f plant_fake_tokio
+export -f plant_dep
 expect_fail "the core depends on tokio" "$arch" \
-  "plant_fake_tokio $core" \
+  "plant_dep $core tokio '{ version = \"1\", default-features = false }'" \
   'scriber-core depends on tokio'
+expect_fail "the core depends on axum" "$arch" \
+  "plant_dep $core axum '{ version = \"0.8.9\", default-features = false }'" \
+  'scriber-core depends on axum'
 expect_fail "the engine depends on tokio" "$arch" \
-  "plant_fake_tokio $engine" \
+  "plant_dep $engine tokio '{ version = \"1\", default-features = false }'" \
   'scriber-engine depends on tokio'
+expect_fail "the engine depends on axum" "$arch" \
+  "plant_dep $engine axum '{ version = \"0.8.9\", default-features = false }'" \
+  'scriber-engine depends on axum'
 expect_fail "the core reads a file directly" "$arch" \
   "printf 'fn f() { let _ = std::fs::read(\"x\"); }\n' >> $core/src/dictation.rs" \
   'direct I/O in the core'

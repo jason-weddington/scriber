@@ -7,7 +7,7 @@
 #   scripts/gate.sh pre-commit   per-commit checks; a docs-only commit skips the heavy ones
 #   scripts/gate.sh pre-push     pre-commit plus coverage, doctests, audits and e2e, with no mutation testing
 #   scripts/gate.sh full         everything except mutation testing, never skipped; the agent and GTD gate command
-#   scripts/gate.sh release      everything full runs plus mutation testing over the whole core and engine; release.sh runs it
+#   scripts/gate.sh release      everything full runs plus mutation testing over the whole core, engine and server; release.sh runs it
 #
 # Every step CHECKS; none rewrites a tracked file. Steps run in order and the
 # script stops at the first failure, naming the step that failed.
@@ -18,7 +18,7 @@ mode=${1:?usage: gate.sh pre-commit|pre-push|full|release}
 case "$mode" in pre-commit|pre-push|full|release) ;; *) echo "unknown mode: $mode" >&2; exit 2 ;; esac
 
 # Coverage floors. RATCHET UP as coverage climbs, never down.
-# Rust: line coverage of the core and the engine, at least 98.
+# Rust: line coverage of the core, engine and server, at least 98.
 RUST_COVERAGE_FLOOR=100
 # Frontend: line coverage of src/ (unit + e2e; the mock is excluded, see
 # apps/desktop/tests/coverage/options.ts), whole-number percent.
@@ -90,15 +90,16 @@ step unit-tests in_app pnpm exec playwright test --project unit
 # never pass on coverage data left by an earlier commit.
 # The engine's cpal and whisper.cpp adapters (and its smoke example) need a
 # microphone and a speech model the gate never has, so they are not measured;
-# every other file, the engine's lib.rs included, is held to the floor.
+# every other file in the core, engine and server is held to the floor.
 step coverage cargo llvm-cov nextest --workspace --all-features --locked \
   --ignore-filename-regex 'crates/scriber-engine/(src/(device|whisper)\.rs|examples/)' \
   --fail-under-lines "$RUST_COVERAGE_FLOOR"
 # nextest does not run doctests; without this they silently never run.
 step doctests cargo test --doc --workspace --locked
 
-# Mutation testing runs only in release mode, over the whole core and engine,
-# with zero survivors required. The copies cargo-mutants builds live under target/.
+# Mutation testing runs only in release mode, over the whole core, engine and
+# server production source, with zero survivors required. The copies cargo-mutants
+# builds live under target/.
 # Six jobs build and test six copies at once; one job left most of an 18-core Mac idle for over an hour.
 if [ "$mode" = release ]; then
   mkdir -p target/mutants-tmp

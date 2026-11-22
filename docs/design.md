@@ -45,14 +45,21 @@ crates/scriber-engine        the core with the real adapters, as a library for a
   examples/smoke.rs          real-model smoke check (scripts/smoke.sh), never run by the gate
   examples/exit_check.rs     Mac exit check (scripts/exit-check.sh), never run by the gate: exit() after shutdown must not abort
   examples/extract.rs        study-104 extraction (decoder features, Silero spans, stage-2 transcripts from recording folders), never run by the gate
+crates/scriber-server        axum HTTP/WebSocket host around scriber-engine: shared-token hello, PCM16 streaming into StreamRecorder, static web serving, sanitized structured diagnostics (only crate allowed tokio and axum)
+  src/main.rs                env config, startup-only SCRIBER_MODEL_FOLDER persistence, bind-before-open lifecycle, Ctrl-C/SIGTERM graceful shutdown
+  src/server.rs              GET /healthz, symlink-safe static serving, RFC 6455 /ws with 1 MiB limit, RPC dispatch, 64-event subscriber hub and recording ownership coordination
+  src/diagnostics.rs         sanitized structured JSON-line diagnostics (no token, raw frame, PCM or transcript)
+  src/tests.rs               in-process loopback WebSocket, HTTP, lifecycle and diagnostics tests
+  src/tests/fakes.rs         local adapter fakes, loopback HTTP /api/tags stub and RFC 6455 test client
+  tests/fixtures/wire.json   web-only protocol envelope fixtures
 apps/desktop/src-tauri       thin client over the engine: the clipboard, dialog, tray, global-shortcut and notification plugins, the two events, eleven commands
 apps/desktop/src             Svelte 5 frontend; src/lib/bridge.ts is its only door to Rust
 ```
 
 The rules, each enforced by `scripts/check-architecture.sh` and proven by `scripts/selftest-checks.sh`:
 
-- The core's dependency tree has no Tauri, no webview and no async runtime, and its code reads no file, clock, environment or network directly. Every effect goes through a trait in `ports.rs`; the real implementation lives in `crates/scriber-engine` (the clipboard's in `src-tauri`), the fake in the core's tests.
-- The engine's dependency tree has no Tauri, no webview and no async runtime either, so none reaches an app that depends on it.
+- The core's dependency tree has no Tauri, no webview, no async runtime and no web server (`tokio`, `axum`, etc.), and its code reads no file, clock, environment or network directly. Every effect goes through a trait in `ports.rs`; the real implementation lives in `crates/scriber-engine` (the clipboard's in `src-tauri`), the fake in the core's tests.
+- The engine's dependency tree has no Tauri, no webview, no async runtime and no web server (`tokio`, `axum`, etc.) either, so none reaches an app that depends on it. Only `crates/scriber-server` may depend on `tokio` and `axum`.
 - `src-tauri` holds `lib.rs` and `main.rs` only, `lib.rs` stays at or under 500 lines, and it has no tests. Logic that needs a test belongs in the core, and an adapter any app could use in the engine.
 - `src/lib/bridge.ts` is the only frontend file that imports `@tauri-apps/*` (also an eslint rule). Outside Tauri it answers from `src/lib/mock.ts`, and marks `<html data-bridge="mock">`; inside Tauri it marks `data-bridge="tauri"`.
 - No `#[allow(...)]` anywhere; a lint exception is `#[expect(lint, reason = "...")]`.
@@ -352,6 +359,15 @@ interface InputDevices {
 ```
 
 Every object is exactly these fields: the Rust types refuse unknown and missing fields.
+
+### Web server
+
+`crates/scriber-server` exposes the same bridge contract over one WebSocket at `GET /ws`, alongside unauthenticated `GET /healthz` (`200 ok`) and static assets from `SCRIBER_WEB_DIR` (canonicalized strictly within that directory, including symlink containment). See `docs/design-web.md` for the full web architecture and client behaviour.
+
+- **Handshake.** WebSocket control frames (Ping/Pong/Close) are handled at transport level. The first application message must be `{"hello":{"token":"..."}}` (`""` when `SCRIBER_ALLOW_NO_TOKEN=1` with no `SCRIBER_TOKEN`). Any wrong or missing token, invalid hello shape, ordinary pre-hello RPC or pre-hello binary frame closes with code `4401` before any engine work or event. A valid hello answers `{"hello":{"version":"<crate version>","platform":"web"}}` immediately followed by the current `{"event":"dictation-changed","payload":<Snapshot>}` (subscribed before sampling state, discarding pre-boundary levels and snapshots older than bootstrap while preserving equal and newer revisions).
+- **RPC envelopes.** Requests are `{"id":<u32>,"call":"<name>","args":{...}}` with `{}` for argumentless calls (`dictation_state`, `library_list`, `settings_get`, `ollama_models`, `app_version`, `input_devices`, `window_fullscreen`, and the four unavailable calls), `{"action":<Action>,"text":<string>}` for `dictation_act`, `{"id":<string>}` for `library_get` and `library_copy`, and `{"settings":<Settings>}` for `settings_set`. Replies are exactly one `{"id":<same>,"ok":<value>}` (with `null` for `library_copy`) or `{"id":<same|null>,"err":"<message>"}`. Nested `Snapshot`, `LibraryEntry`, `Settings`, `Action` and `Phase` shapes match the JSON shapes above verbatim, including raw `Snapshot.notice` values. `app_version` returns the crate version string (matching `hello`); `input_devices` returns `{"default":"Browser microphone","others":[]}`; `window_fullscreen` returns `true`; `vocabulary_open`, `learned_vocabulary_open`, `pick_vocabulary_file` and `pick_model_folder` return `err` `"Not available in the web app."`.
+- **Uncorrelated errors and limits.** Authenticated unknown calls, malformed JSON or envelopes, invalid args and odd-byte binary PCM return `err` and keep the socket open, preserving the valid `u32` `id` when recoverable and using `id: null` (uncorrelated) otherwise. Incoming frames and reassembled messages are capped at `1,048,576` bytes (1 MiB inclusive) with bounded buffering; oversized binary (single or fragmented) or text closes with code `1009` before application auth. Each subscriber has an ordered writer and a 64-event queue that disconnects on overflow.
+- **Audio and ownership.** Authenticated binary frames are little-endian 16 kHz mono PCM16 pushed via `StreamRecorder::push_pcm16`. Per-socket calls and PCM run in arrival order; cross-socket phase-changing RPCs and PCM coordinate ownership, granting it only on an actual `Record` or `Resume` transition into `recording`, dropping non-owner and out-of-phase PCM, clearing leases by connection identity on disconnect without pausing the session, and never granting ownership implicitly on reconnect.
 
 ## The mock
 

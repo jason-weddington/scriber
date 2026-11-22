@@ -16,9 +16,9 @@ ui=apps/desktop
 rust_code() { grep -rnE --include='*.rs' "$1" "$2" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'; }
 
 # 1. Dependency direction: the core has no Tauri, no webview and no async
-#    runtime anywhere in its normal dependency tree.
+#    runtime or web server anywhere in its normal dependency tree.
 if deps=$(cargo tree --locked -q -p scriber-core -e normal --prefix none 2>/dev/null | awk '{print $1}' | sort -u); then
-  for banned in tauri tauri-build wry tao tokio async-std smol futures; do
+  for banned in tauri tauri-build wry tao tokio axum async-std smol futures; do
     grep -qx "$banned" <<<"$deps" && bad "scriber-core depends on $banned"
   done
   grep -qE '^tauri-' <<<"$deps" && bad "scriber-core depends on a tauri crate"
@@ -27,9 +27,9 @@ else
 fi
 
 # 1b. The engine is a library for any Rust app: the same ban as the core, so
-#     no Tauri, webview or async runtime reaches a consumer through it.
+#     no Tauri, webview, async runtime or web server reaches a consumer through it.
 if deps=$(cargo tree --locked -q -p scriber-engine -e normal --prefix none 2>/dev/null | awk '{print $1}' | sort -u); then
-  for banned in tauri tauri-build wry tao tokio async-std smol futures; do
+  for banned in tauri tauri-build wry tao tokio axum async-std smol futures; do
     grep -qx "$banned" <<<"$deps" && bad "scriber-engine depends on $banned"
   done
   grep -qE '^tauri-' <<<"$deps" && bad "scriber-engine depends on a tauri crate"

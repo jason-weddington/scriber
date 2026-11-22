@@ -9,7 +9,7 @@ The rule: **start strict, relax only on evidence.** Every check starts at its st
 - `pre-commit`: the per-commit checks, fast enough to run on every commit.
 - `pre-push`: pre-commit plus the slow ones (coverage, doctests, audits, e2e; no mutation testing).
 - `full`: everything except mutation testing, never skipped, for CI and agent harnesses.
-- `release`: full plus mutation testing over the whole core and engine; release.sh runs it.
+- `release`: full plus mutation testing over the whole core, engine and server production source; release.sh runs it.
 
 ### Hooks check, never fix
 
@@ -26,21 +26,21 @@ A change that touches only `docs/**` and top-level `*.md` skips clippy, tests, c
 | `cargo fmt --check`, `cargo sort --check` | Style and manifest drift that turns diffs into noise | Seconds |
 | `typos` | Misspelled identifiers and docs, which become permanent API | Seconds |
 | `gitleaks` | Secrets committed once and public forever; the commit hook scans staged changes, push and full scan the tree | Seconds |
-| `check-architecture.sh` | Violations of the layering rules (Tauri or async in the core or the engine, logic in the adapter, `@tauri-apps` imported outside `bridge.ts`, `#[allow]`) | Seconds |
-| `selftest-checks.sh` | A custom check that has silently stopped checking | Seconds |
+| `check-architecture.sh` | Violations of the layering rules (Tauri, async runtimes or `axum` in the core or the engine, logic in the adapter, `@tauri-apps` imported outside `bridge.ts`, `#[allow]`) | Seconds |
+| `selftest-checks.sh` | A custom check that has silently stopped checking (including real locked `tokio` and `axum` plants in both protected crates) | Seconds |
 | `clippy` (both workspaces, `-D warnings`, `--locked`) | Bug classes the compiler accepts, plus the lint table below; `--locked` keeps the lockfile honest | Tens of seconds |
-| Core and engine tests via `cargo llvm-cov nextest --no-report` | Behaviour regressions, in an instrumented build shared with coverage | Minutes cold, seconds warm |
-| Core tests under `TZ=Pacific/Chatham LANG=de_DE.UTF-8` | Hidden dependence on the machine's time zone or locale | One more test run |
+| Core, engine and server tests via `cargo llvm-cov nextest --no-report` | Behaviour regressions, in an instrumented build shared with coverage | Minutes cold, seconds warm |
+| Workspace tests under `TZ=Pacific/Chatham LANG=de_DE.UTF-8` | Hidden dependence on the machine's time zone or locale | One more test run |
 | Frontend: `pnpm install --frozen-lockfile`, `svelte-check --fail-on-warnings`, `eslint --max-warnings 0`, unit tests | Type errors and warnings in templates, lint debt, a lockfile that disagrees with `package.json` | Tens of seconds |
-| Rust line coverage floor (pre-push) | Code that no test executes | A test run in the warm tree |
+| Rust line coverage floor (pre-push) | Code that no test executes across core, engine and server (100% floor) | A test run in the warm tree |
 | Doctests (pre-push) | Documentation examples that no longer compile; nextest does not run doctests | Seconds to a minute |
-| `cargo mutants` over the core and the engine, zero survivors (release) | The same, over everything, so nothing escapes for long | Longest step |
+| `cargo mutants` over the core, engine and server production source, zero survivors (release) | The same, over everything, so nothing escapes for long | Longest step |
 | `cargo machete`, `cargo deny check`, `pnpm audit --prod` | Unused dependencies, licences, advisories, unexpected registries, vulnerable frontend packages | Seconds |
 | Playwright e2e with axe, frontend coverage floor, `vite build` | UI regressions against the mock, accessibility violations, untested frontend code, a bundle that does not build | Minutes |
 
 ### Why these are worth their cost
 
-**Mutation testing** is the one gate whose cost deserves care. Coverage proves a line ran, not that anything asserted on it; a mutant (a flipped comparison, a deleted statement) that survives proves the tests would pass with the logic broken. Zero survivors is the only bar that does not erode: any tolerated number invites the next one. It is slow, so it runs only as the last check before a release (`gate.sh release`, from release.sh), over the whole core and engine. Mutation copies of the tree go under `target/` rather than the system temp directory, so concurrent gates cannot fill a small tmpfs, and run six jobs in parallel. Because survivors found only at release cost a fix and a full rerun, every change to `crates/` also mutation-tests its own diff before it is finished (`cargo mutants --in-diff`, see AGENTS.md); that is a step the author runs, not a hook, so commits and pushes stay fast.
+**Mutation testing** is the one gate whose cost deserves care. Coverage proves a line ran, not that anything asserted on it; a mutant (a flipped comparison, a deleted statement) that survives proves the tests would pass with the logic broken. Zero survivors is the only bar that does not erode: any tolerated number invites the next one. It is slow, so it runs only as the last check before a release (`gate.sh release`, from release.sh), over the whole core, engine and server production source. Mutation copies of the tree go under `target/` rather than the system temp directory, so concurrent gates cannot fill a small tmpfs, and run six jobs in parallel. Because survivors found only at release cost a fix and a full rerun, every change to `crates/` also mutation-tests its own diff before it is finished (`cargo mutants --in-diff`, see AGENTS.md); that is a step the author runs, not a hook, so commits and pushes stay fast.
 
 **The time-zone and locale rerun** runs the whole core suite a second time under an unusual zone (a 45-minute offset with its own DST rules) and a decimal-comma locale. Code that formats or parses dates, numbers or sorted strings works on the author's machine and fails on a user's; the rerun catches it on the author's machine. The cost is one more test run, paid only because the suite is fast.
 
@@ -58,7 +58,7 @@ A change that touches only `docs/**` and top-level `*.md` skips clippy, tests, c
 
 ### Recorded relaxations
 
-- **The engine's device and Whisper adapters are not measured or mutated.** `crates/scriber-engine/src/device.rs` (cpal) and `src/whisper.rs` (whisper.cpp) need a microphone and a 1.6 GB speech model that the gate never has, so no test can run them: the coverage step ignores them (and the engine's `examples/`: the real-model smoke check, the exit check and the study-104 `extract` example) with `--ignore-filename-regex`, and `.cargo/mutants.toml` excludes them. Every other engine file, `lib.rs` included, is held to the 100 % floor and zero survivors. `scripts/smoke.sh` exercises them on a Mac, and `scripts/exit-check.sh` checks that exit() after `Engine::shutdown` does not abort with the Metal model loaded (`--control` also proves that it aborts without the shutdown). The field check, on the Mac: quit Scriber with Cmd-Q once while idle with the model warm, once while recording and once during a transcription, and confirm that no new `Scriber*.ips` appears in ~/Library/Logs/DiagnosticReports/ and no crash dialog shows.
+- **The engine's device and Whisper adapters are not measured or mutated.** `crates/scriber-engine/src/device.rs` (cpal) and `src/whisper.rs` (whisper.cpp) need a microphone and a 1.6 GB speech model that the gate never has, so no test can run them: the coverage step ignores them (and the engine's `examples/`: the real-model smoke check, the exit check and the study-104 `extract` example) with `--ignore-filename-regex`, and `.cargo/mutants.toml` excludes them (plus `crates/scriber-server/src/tests*` test modules). Every other file across core, engine (`lib.rs` included) and `scriber-server` is held to the 100 % line coverage floor and zero survivors. `scripts/smoke.sh` exercises them on a Mac, and `scripts/exit-check.sh` checks that exit() after `Engine::shutdown` does not abort with the Metal model loaded (`--control` also proves that it aborts without the shutdown). The field check, on the Mac: quit Scriber with Cmd-Q once while idle with the model warm, once while recording and once during a transcription, and confirm that no new `Scriber*.ips` appears in ~/Library/Logs/DiagnosticReports/ and no crash dialog shows.
 - **`cargo deny` looks at two targets only.** The root `deny.toml` sets `[graph] targets` to `aarch64-apple-darwin` (the shipped Mac) and `x86_64-unknown-linux-gnu` (the gate host): the engine's audio and TLS crates carry per-platform trees (Windows, wasm, Android) that never ship and would otherwise fail the duplicate-version ban. Two build-time duplicates remain on those targets (`shlex` 1.3 and `syn` 2, behind whisper.cpp's bindgen and native-tls's openssl), each skipped by version with its dependency path as the reason; `multiple-versions` stays `deny`.
 
 ## The lint table
