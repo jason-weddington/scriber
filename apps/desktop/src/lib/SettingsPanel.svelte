@@ -23,6 +23,8 @@
   // that fails leaves Whisper's text, and a summary simply replaces the
   // excerpt when it lands. The modal ends with the app's version when it can
   // be read.
+  import { untrack } from 'svelte';
+
   import { captureShortcut, fileName, shortcutAria, shortcutGlyphs } from './format';
   import type { Settings } from './types';
 
@@ -34,6 +36,11 @@
     ollamaDown: boolean;
     ollamaReason: string;
     version: string;
+    web?: boolean;
+    settingsReady?: boolean;
+    effectiveOrigin?: string;
+    initialFocus?: 'default' | 'connect';
+    onconnect?: () => void;
     onsummaries: (on: boolean) => void;
     oncleanup: (on: boolean) => void;
     onsummarymodel: (name: string) => void;
@@ -58,6 +65,11 @@
     ollamaDown,
     ollamaReason,
     version,
+    web = false,
+    settingsReady = true,
+    effectiveOrigin = '',
+    initialFocus = 'default',
+    onconnect,
     onsummaries,
     oncleanup,
     onsummarymodel,
@@ -76,6 +88,8 @@
 
   let dialog = $state<HTMLDialogElement>();
   let path = $state<HTMLInputElement>();
+  let silenceSplit = $state<HTMLSelectElement>();
+  let connectButton = $state<HTMLButtonElement>();
   // Which shortcut button is capturing the next key press, and why the last
   // press was refused.
   let armed = $state<'toggle' | 'pause' | null>(null);
@@ -86,13 +100,41 @@
   // Whether the press that led to a click began on the overlay, so that a
   // drag from inside the modal released on the overlay does not close it.
   let pressedBackdrop = false;
+  let closingProgrammatically = false;
+  let wasOpen = false;
+
+  /** Synchronously closes the native modal without firing the user-dismissal callback. */
+  export function closeDialog(): void {
+    wasOpen = false;
+    if (dialog?.open) {
+      closingProgrammatically = true;
+      dialog.close();
+    }
+  }
 
   $effect(() => {
-    if (!open) return;
-    dialog?.showModal();
-    // The heading row comes first, but the settings themselves are what opens.
-    path?.focus();
+    if (!open || wasOpen) return;
+    wasOpen = true;
+    if (dialog !== undefined && !dialog.open) {
+      dialog.showModal();
+    }
+    const target = untrack(() => initialFocus);
+    if (target === 'connect' && connectButton !== undefined) {
+      connectButton.focus();
+    } else {
+      // The heading row comes first, but the settings themselves are what opens.
+      (path ?? silenceSplit)?.focus();
+    }
   });
+
+  function handleDialogClose(): void {
+    wasOpen = false;
+    if (closingProgrammatically) {
+      closingProgrammatically = false;
+      return;
+    }
+    onclose();
+  }
 
   // The installed models, once listed; null while loading or when Ollama is down.
   const listed = $derived(models !== null && !ollamaDown ? models : null);
@@ -127,7 +169,7 @@
   class="settings"
   aria-labelledby="settings-title"
   bind:this={dialog}
-  {onclose}
+  onclose={handleDialogClose}
   onpointerdown={(e) => {
     pressedBackdrop = e.target === e.currentTarget;
   }}
@@ -151,32 +193,36 @@
     </button>
   </div>
   <div class="settings-body">
-  <div class="vocabulary" role="group" aria-label="Vocabulary file">
-    <span class="caption" aria-hidden="true">Vocabulary file</span>
-    <div class="row">
-      <input readonly bind:this={path} aria-label="Vocabulary file" value={fileName(settings.vocabulary)} title={settings.vocabulary} />
-      <button type="button" onclick={onbrowse}>Browse…</button>
-      <button type="button" onclick={onopenvocabulary}>Open in Text Editor</button>
+  {#if !web}
+    <div class="vocabulary" role="group" aria-label="Vocabulary file">
+      <span class="caption" aria-hidden="true">Vocabulary file</span>
+      <div class="row">
+        <input readonly bind:this={path} aria-label="Vocabulary file" value={fileName(settings.vocabulary)} title={settings.vocabulary} />
+        <button type="button" onclick={onbrowse}>Browse…</button>
+        <button type="button" onclick={onopenvocabulary}>Open in Text Editor</button>
+      </div>
     </div>
-  </div>
-  <div class="vocabulary" role="group" aria-label="Learned vocabulary file">
-    <span class="caption" aria-hidden="true">Learned vocabulary file</span>
-    <div class="row">
-      <input readonly aria-label="Learned vocabulary file" value={fileName(settings.learnedVocabulary)} title={settings.learnedVocabulary} />
-      <button type="button" onclick={onbrowselearned}>Browse…</button>
-      <button type="button" onclick={onopenlearned}>Open in Text Editor</button>
+    <div class="vocabulary" role="group" aria-label="Learned vocabulary file">
+      <span class="caption" aria-hidden="true">Learned vocabulary file</span>
+      <div class="row">
+        <input readonly aria-label="Learned vocabulary file" value={fileName(settings.learnedVocabulary)} title={settings.learnedVocabulary} />
+        <button type="button" onclick={onbrowselearned}>Browse…</button>
+        <button type="button" onclick={onopenlearned}>Open in Text Editor</button>
+      </div>
     </div>
-  </div>
-  <div class="vocabulary" role="group" aria-label="Speech model folder">
-    <span class="caption" aria-hidden="true">Speech model folder</span>
-    <div class="row">
-      <input readonly aria-label="Speech model folder" value={fileName(settings.modelFolder)} title={settings.modelFolder} />
-      <button type="button" onclick={onbrowsemodel}>Browse…</button>
+    <div class="vocabulary" role="group" aria-label="Speech model folder">
+      <span class="caption" aria-hidden="true">Speech model folder</span>
+      <div class="row">
+        <input readonly aria-label="Speech model folder" value={fileName(settings.modelFolder)} title={settings.modelFolder} />
+        <button type="button" onclick={onbrowsemodel}>Browse…</button>
+      </div>
     </div>
-  </div>
+  {/if}
   <label for="silence-split">Split into parts at a pause</label>
   <select
     id="silence-split"
+    bind:this={silenceSplit}
+    disabled={!settingsReady}
     onchange={(e) => {
       onsilencesplit(Number(e.currentTarget.value));
     }}
@@ -186,96 +232,99 @@
       <option {...{ value }} selected={ms === settings.silenceSplitMs}>{text}</option>
     {/each}
   </select>
-  <div class="vocabulary" role="group" aria-label="Toggle dictation shortcut">
-    <span class="caption" aria-hidden="true">Toggle dictation shortcut</span>
-    <div class="row">
-      <button
-        type="button"
-        aria-label={`Toggle dictation shortcut: ${shown}`}
-        aria-keyshortcuts={shortcutAria(settings.toggleShortcut)}
-        title={shortcutAria(settings.toggleShortcut)}
-        onclick={() => {
-          armed = 'toggle';
-          refusal = null;
-        }}
-        onkeydown={(e) => {
-          if (armed !== 'toggle') return;
-          // Every key belongs to the capture: the modal must not see the
-          // Escape that would close it, nor Space or Return that would click
-          // the button again.
-          e.preventDefault();
-          const capture = captureShortcut(e);
-          if (capture.kind === 'cancel') {
-            armed = null;
+  {#if !web}
+    <div class="vocabulary" role="group" aria-label="Toggle dictation shortcut">
+      <span class="caption" aria-hidden="true">Toggle dictation shortcut</span>
+      <div class="row">
+        <button
+          type="button"
+          aria-label={`Toggle dictation shortcut: ${shown}`}
+          aria-keyshortcuts={shortcutAria(settings.toggleShortcut)}
+          title={shortcutAria(settings.toggleShortcut)}
+          onclick={() => {
+            armed = 'toggle';
             refusal = null;
-          } else if (capture.kind === 'needsModifier') {
-            refusal = 'A shortcut needs ⌥ or ⌘.';
-          } else if (capture.kind === 'badKey') {
-            refusal = 'That key cannot be a shortcut.';
-          } else if (capture.value === settings.pauseShortcut) {
-            refusal = 'That shortcut is the pause shortcut.';
-          } else {
-            armed = null;
-            refusal = null;
-            onshortcut(capture.value);
-          }
-        }}
-      >
-        {shown}
-      </button>
+          }}
+          onkeydown={(e) => {
+            if (armed !== 'toggle') return;
+            // Every key belongs to the capture: the modal must not see the
+            // Escape that would close it, nor Space or Return that would click
+            // the button again.
+            e.preventDefault();
+            const capture = captureShortcut(e);
+            if (capture.kind === 'cancel') {
+              armed = null;
+              refusal = null;
+            } else if (capture.kind === 'needsModifier') {
+              refusal = 'A shortcut needs ⌥ or ⌘.';
+            } else if (capture.kind === 'badKey') {
+              refusal = 'That key cannot be a shortcut.';
+            } else if (capture.value === settings.pauseShortcut) {
+              refusal = 'That shortcut is the pause shortcut.';
+            } else {
+              armed = null;
+              refusal = null;
+              onshortcut(capture.value);
+            }
+          }}
+        >
+          {shown}
+        </button>
+      </div>
     </div>
-  </div>
-  <div class="vocabulary" role="group" aria-label="Pause shortcut">
-    <span class="caption" aria-hidden="true">Pause shortcut</span>
-    <div class="row">
-      <button
-        type="button"
-        aria-label={`Pause shortcut: ${pauseShown}`}
-        aria-keyshortcuts={shortcutAria(settings.pauseShortcut) || undefined}
-        title={shortcutAria(settings.pauseShortcut) || undefined}
-        onclick={() => {
-          armed = 'pause';
-          refusal = null;
-        }}
-        onkeydown={(e) => {
-          if (armed !== 'pause') return;
-          e.preventDefault();
-          const capture = captureShortcut(e);
-          if (capture.kind === 'cancel') {
-            armed = null;
+    <div class="vocabulary" role="group" aria-label="Pause shortcut">
+      <span class="caption" aria-hidden="true">Pause shortcut</span>
+      <div class="row">
+        <button
+          type="button"
+          aria-label={`Pause shortcut: ${pauseShown}`}
+          aria-keyshortcuts={shortcutAria(settings.pauseShortcut) || undefined}
+          title={shortcutAria(settings.pauseShortcut) || undefined}
+          onclick={() => {
+            armed = 'pause';
             refusal = null;
-          } else if (capture.kind === 'needsModifier') {
-            refusal = 'A shortcut needs ⌥ or ⌘.';
-          } else if (capture.kind === 'badKey') {
-            refusal = 'That key cannot be a shortcut.';
-          } else if (capture.value === settings.toggleShortcut) {
-            refusal = 'That shortcut is the toggle shortcut.';
-          } else {
-            armed = null;
-            refusal = null;
-            onpauseshortcut(capture.value);
-          }
-        }}
-      >
-        {pauseShown}
-      </button>
+          }}
+          onkeydown={(e) => {
+            if (armed !== 'pause') return;
+            e.preventDefault();
+            const capture = captureShortcut(e);
+            if (capture.kind === 'cancel') {
+              armed = null;
+              refusal = null;
+            } else if (capture.kind === 'needsModifier') {
+              refusal = 'A shortcut needs ⌥ or ⌘.';
+            } else if (capture.kind === 'badKey') {
+              refusal = 'That key cannot be a shortcut.';
+            } else if (capture.value === settings.toggleShortcut) {
+              refusal = 'That shortcut is the toggle shortcut.';
+            } else {
+              armed = null;
+              refusal = null;
+              onpauseshortcut(capture.value);
+            }
+          }}
+        >
+          {pauseShown}
+        </button>
+      </div>
     </div>
-  </div>
+    <label class="switch">
+      <input
+        type="checkbox"
+        role="switch"
+        checked={settings.copySound}
+        onchange={(e) => {
+          oncopysound(e.currentTarget.checked);
+        }}
+      />
+      Play a sound when the transcript is copied
+    </label>
+  {/if}
   <label class="switch">
     <input
       type="checkbox"
       role="switch"
-      checked={settings.copySound}
-      onchange={(e) => {
-        oncopysound(e.currentTarget.checked);
-      }}
-    />
-    Play a sound when the transcript is copied
-  </label>
-  <label class="switch">
-    <input
-      type="checkbox"
-      role="switch"
+      disabled={!settingsReady}
       checked={settings.cleanup}
       onchange={(e) => {
         oncleanup(e.currentTarget.checked);
@@ -286,7 +335,7 @@
   <label for="cleanup-model">Post-processing model</label>
   <select
     id="cleanup-model"
-    disabled={listed === null}
+    disabled={!settingsReady || listed === null}
     onchange={(e) => {
       oncleanupmodel(e.currentTarget.value);
     }}
@@ -299,6 +348,7 @@
     <input
       type="checkbox"
       role="switch"
+      disabled={!settingsReady}
       checked={settings.summaries}
       onchange={(e) => {
         onsummaries(e.currentTarget.checked);
@@ -309,7 +359,7 @@
   <label for="summary-model">Title model</label>
   <select
     id="summary-model"
-    disabled={listed === null}
+    disabled={!settingsReady || listed === null}
     onchange={(e) => {
       onsummarymodel(e.currentTarget.value);
     }}
@@ -318,6 +368,15 @@
       <option {...{ value }} selected={value === settings.summaryModel}>{text}</option>
     {/each}
   </select>
+  {#if web}
+    <div class="vocabulary" role="group" aria-label="Server">
+      <span class="caption" aria-hidden="true">Server</span>
+      <div class="row">
+        <input readonly aria-label="Server" value={effectiveOrigin} title={effectiveOrigin} />
+        <button type="button" bind:this={connectButton} onclick={onconnect}>Connect</button>
+      </div>
+    </div>
+  {/if}
   <div class="status-row">
     <p class="note" class:visually-hidden={error !== null} title={ollamaDown ? ollamaReason : undefined}>{ollamaDown ? 'Local AI needs Ollama. Start Ollama, then reopen Settings.' : ''}</p>
     {#if error !== null || refusal !== null}

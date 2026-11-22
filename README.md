@@ -83,17 +83,31 @@ bash scripts/install.sh
 
 Builds the release app, verifies its signature (ad hoc, so it runs on the machine that built it) and installs it in `/Applications`. The first Record asks for the microphone; allow it in the prompt (or later in System Settings, Privacy & Security, Microphone).
 
-## Running the web server
+## Use the web app
 
-`crates/scriber-server` hosts `scriber-engine` over HTTP and WebSocket (`/ws`) and serves the built web assets from `apps/desktop/dist-web` (or `SCRIBER_WEB_DIR`):
+Scriber can also run as a standalone web app (for example, installed on an iPad) backed by `crates/scriber-server` on your Mac. The browser captures audio from the device microphone, streams it over `/ws` to `scriber-server`, transcribes it with local Whisper, and copies the finished transcript to the browser clipboard.
+
+1. **Build the web frontend** from `apps/desktop` (emits `apps/desktop/dist-web` with the PWA manifest, icons and `capture-worklet.js`):
+
+```sh
+cd apps/desktop && pnpm build:web
+```
+
+2. **Run `scriber-server`** from the repository root with a shared token:
 
 ```sh
 SCRIBER_TOKEN="replace-with-a-secret" cargo run -p scriber-server
 ```
 
-Then open `http://localhost:8742` in a browser (or check `http://localhost:8742/healthz` for `ok`). Built static assets are served from `apps/desktop/dist-web` by default; point `SCRIBER_WEB_DIR` at another directory to override it. For local development without a token, set `SCRIBER_ALLOW_NO_TOKEN=1` with `SCRIBER_TOKEN` unset.
+Then open `http://localhost:8742` in a browser (or check `http://localhost:8742/healthz` for `ok`). For local development on `localhost` without a token, unset `SCRIBER_TOKEN` and set `SCRIBER_ALLOW_NO_TOKEN=1`.
 
-Environment settings:
+3. **Enter the shared token on the Connect screen.** When `SCRIBER_TOKEN` is set, the first connection is refused with `4401` and the **Connect** dialog opens automatically with the current server URL pre-filled; enter the shared token and select **Connect**. You can change the server URL or token at any time from **Settings → Connect**. Credentials are stored in `localStorage` (`scriber.web.endpoint` and `scriber.web.token`, with an in-memory fallback when storage is unavailable).
+
+4. **Install on an iPad.** Open your Scriber HTTPS URL in Safari on the iPad, tap **Share → Add to Home Screen**, and launch Scriber from the Home Screen. It opens in standalone mode with its app icon and hides Mac-only settings (global shortcuts, copy sound, vocabulary/learned file pickers, model folder and Mac input-device picker).
+
+5. **HTTPS requirement for remote devices.** Browsers only expose microphone capture (`getUserMedia`) and async clipboard writes (`navigator.clipboard.write`) in secure contexts—either `http://localhost` for local development or `https://` for any remote host—so put a TLS-terminating reverse proxy in front of `scriber-server` before connecting from an iPad or another machine.
+
+Environment settings for `scriber-server`:
 
 - `SCRIBER_BIND`: bind address and port (default `127.0.0.1:8742`).
 - `SCRIBER_TOKEN`: shared secret required in the WebSocket `hello` frame; startup fails when unset or empty unless `SCRIBER_ALLOW_NO_TOKEN=1`.
@@ -101,8 +115,6 @@ Environment settings:
 - `SCRIBER_DATA`: engine data folder (default `$HOME/Library/Application Support/com.jasonweddington.scriber-server`, isolated from the desktop app's folder).
 - `SCRIBER_MODEL_FOLDER`: optional absolute path persisted into `settings.json` at startup so the server can share or store the Whisper model folder.
 - `SCRIBER_WEB_DIR`: directory of built static web assets (default `apps/desktop/dist-web` relative to the working directory).
-
-**Remote access requires TLS (HTTPS):** browsers only expose microphone capture (`getUserMedia`) on `localhost` or HTTPS origins, so put a TLS-terminating reverse proxy in front of `scriber-server` when accessing it from another device such as an iPad.
 
 ## Release
 

@@ -20,9 +20,14 @@ import { open } from '@tauri-apps/plugin-dialog';
 
 import {
   INITIAL_WEB_UI_STATE,
+  normalizeOrigin,
   projectWebSnapshot,
   WebBridge,
   WebCopyError,
+  type WebAttemptFailureCode,
+  type WebAttemptReason,
+  type WebConnectDecision,
+  type WebConnectionAttempt,
   type WebConnectionConfig,
   type WebUiState,
 } from './bridge-web';
@@ -30,7 +35,14 @@ import { Mock } from './mock';
 import type { Action, InputDevices, LibraryEntry, Settings, Snapshot } from './types';
 
 export { INITIAL_WEB_UI_STATE, projectWebSnapshot, WebCopyError };
-export type { WebConnectionConfig, WebUiState };
+export type {
+  WebAttemptFailureCode,
+  WebAttemptReason,
+  WebConnectDecision,
+  WebConnectionAttempt,
+  WebConnectionConfig,
+  WebUiState,
+};
 
 /** The event src-tauri emits when a job changes the snapshot (DICTATION_EVENT in lib.rs). */
 export const DICTATION_EVENT = 'dictation-changed';
@@ -80,9 +92,14 @@ export function onWebRebind(cb: (generation: number) => void): void {
   if (import.meta.env.VITE_SCRIBER_BACKEND === 'web') web().onRebind(cb);
 }
 
-/** Subscribes to projected web clipboard and former-owner reconnect feedback state. */
+/** Subscribes to projected web clipboard, former-owner reconnect and connection attempt state. */
 export function onWebUiStateChanged(cb: (state: WebUiState) => void): void {
   if (import.meta.env.VITE_SCRIBER_BACKEND === 'web') web().onUiStateChanged(cb);
+}
+
+/** Records a sanitized, bounded Connect UI decision observation for built-web tests. */
+export function observeWebConnectDecision(decision: WebConnectDecision): void {
+  if (import.meta.env.VITE_SCRIBER_BACKEND === 'web') web().observeConnectDecision(decision);
 }
 
 /** Marks <html> with the backend in use, so a test or a person can tell. */
@@ -110,6 +127,7 @@ export function identify(): void {
         onLevel,
         configureWebConnection,
         retryWebConnection,
+        normalizeOrigin,
       };
     }
     web().identify();

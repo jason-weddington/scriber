@@ -36,7 +36,7 @@ import { extname, resolve, sep } from 'node:path';
  */
 
 /**
- * @typedef {'ok' | 'hang' | 'invalid_json' | 'bad_platform' | 'close_before_hello'} HelloMode
+ * @typedef {'ok' | 'hang' | 'hold' | 'invalid_json' | 'bad_platform' | 'close_before_hello' | 'close_1009_before_hello'} HelloMode
  */
 
 /**
@@ -110,6 +110,8 @@ const MIME_TYPES = {
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.map': 'application/json; charset=utf-8',
 };
@@ -219,6 +221,8 @@ export async function startStandInServer(options) {
 
   /** @type {Map<number, { ws: WsSocketLike; authenticated: boolean }>} */
   const connections = new Map();
+  /** @type {Array<() => void>} */
+  const heldHellos = [];
 
   /**
    * @param {WsSocketLike} ws
@@ -479,9 +483,29 @@ export async function startStandInServer(options) {
           log.push({ kind: 'hello', connId, authMatch });
           return;
         }
+        if (helloMode === 'hold') {
+          heldHellos.push(() => {
+            if (ws.readyState !== 1) return;
+            if (!authMatch) {
+              log.push({ kind: 'hello', connId, authMatch: false, closeCode: 4401 });
+              ws.close(4401, 'unauthorized');
+              return;
+            }
+            state.authenticated = true;
+            log.push({ kind: 'hello', connId, authMatch: true });
+            sendJson(ws, { hello: { version: serverVersion, platform: 'web' } });
+            sendJson(ws, { event: 'dictation-changed', payload: snapshot });
+          });
+          return;
+        }
         if (helloMode === 'close_before_hello') {
           log.push({ kind: 'hello', connId, authMatch, closeCode: 1000 });
           ws.close(1000, 'closing');
+          return;
+        }
+        if (helloMode === 'close_1009_before_hello') {
+          log.push({ kind: 'hello', connId, authMatch, closeCode: 1009 });
+          ws.close(1009, 'message too big');
           return;
         }
         if (helloMode === 'invalid_json') {
@@ -729,6 +753,13 @@ export async function startStandInServer(options) {
     /** @param {HelloMode} next */
     setHelloMode(next) {
       helloMode = next;
+    },
+    pendingHeldHellos() {
+      return heldHellos.length;
+    },
+    releaseHeldHellos() {
+      const pending = heldHellos.splice(0);
+      for (const fn of pending) fn();
     },
     /** @param {RpcInterceptor | undefined} next */
     setOnCall(next) {

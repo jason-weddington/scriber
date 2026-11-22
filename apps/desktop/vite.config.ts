@@ -3,6 +3,35 @@ import { defineConfig, type Plugin } from 'vite';
 
 const isWeb = process.env.VITE_SCRIBER_BACKEND === 'web';
 const emitTestMaps = isWeb && process.env.SCRIBER_WEB_SOURCEMAPS === '1';
+const VIEWPORT_META = /<meta\s+name="viewport"\s+content="[^"]*"\s*\/>/;
+
+/**
+ * Updates the viewport meta tag and injects standalone PWA install metadata
+ * only for the web build (`VITE_SCRIBER_BACKEND=web`); desktop/mock HTML stays untouched.
+ */
+function webPwaHtml(): Plugin {
+  return {
+    name: 'scriber-web-pwa-html',
+    transformIndexHtml(html) {
+      if (!isWeb) return html;
+      if (!VIEWPORT_META.test(html)) {
+        throw new Error('index.html is missing the viewport meta tag.');
+      }
+      return {
+        html: html.replace(
+          VIEWPORT_META,
+          '<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />',
+        ),
+        tags: [
+          { tag: 'meta', attrs: { name: 'apple-mobile-web-app-capable', content: 'yes' }, injectTo: 'head' },
+          { tag: 'meta', attrs: { name: 'apple-mobile-web-app-title', content: 'Scriber' }, injectTo: 'head' },
+          { tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }, injectTo: 'head' },
+          { tag: 'link', attrs: { rel: 'manifest', href: '/manifest.webmanifest' }, injectTo: 'head' },
+        ],
+      };
+    },
+  };
+}
 
 /**
  * Verifies the built web bundle's emitted JS module graph is nonempty and
@@ -36,7 +65,7 @@ function verifyWebBundle(): Plugin {
 // (src-tauri/tauri.conf.json) then loads nothing. Playwright runs its own
 // server on 1430 (playwright.config.ts).
 export default defineConfig({
-  plugins: [svelte(), verifyWebBundle()],
+  plugins: [svelte(), webPwaHtml(), verifyWebBundle()],
   clearScreen: false,
   build: {
     outDir: isWeb ? 'dist-web' : 'dist',

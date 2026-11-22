@@ -63,7 +63,14 @@ function buildWebBundle(outDir: string, withSourceMaps: boolean): void {
 }
 
 async function expectNoAxeViolations(page: Page): Promise<void> {
-  const results = await new AxeBuilder({ page }).analyze();
+  // Built web HTML disables pinch-zoom (`user-scalable=no`) for iPad standalone
+  // PWA ergonomics (docs/design-web.md). Verify the exact single viewport tag
+  // independently before exempting only axe's `meta-viewport` rule.
+  const viewports = await page.locator('meta[name="viewport"]').evaluateAll((els) =>
+    els.map((el) => el.getAttribute('content')),
+  );
+  expect(viewports).toEqual(['width=device-width, initial-scale=1.0, user-scalable=no']);
+  const results = await new AxeBuilder({ page }).disableRules(['meta-viewport']).analyze();
   expect(results.violations.map((v) => `${v.id}: ${v.help} (${String(v.nodes.length)})`)).toEqual([]);
 }
 
@@ -279,9 +286,11 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
     await attachWebTestHook(page, { helloMs: 250, reconnectMs: 120, rpcMs: 300 });
     await openWeb(page, server.url);
 
-    // Initial empty token is refused with 4401.
-    await expect(page.locator('main').getByRole('alert')).toContainText('Authentication refused');
-    const refusedText = (await page.locator('main').getByRole('alert').textContent()) ?? '';
+    // Initial empty token is refused with 4401 and opens the Connect dialog.
+    const connectDialog = page.getByRole('dialog', { name: 'Connect' });
+    await expect(connectDialog).toBeVisible();
+    await expect(connectDialog.getByRole('alert')).toHaveText('Authentication refused.');
+    const refusedText = (await connectDialog.getByRole('alert').textContent()) ?? '';
     expect(refusedText).not.toContain(secretToken);
 
     // Wait past reconnectMs to verify NO automatic retry on 4401, and RPCs reject immediately while refused.
@@ -312,41 +321,43 @@ test('handles 4401 refusal without auto-retry, configureWebConnection storage + 
     expect(obsAfter4401.some((o) => o.category === 'connection' && o.event === 'hello' && o.outcome === 'refused' && o.reason === 'auth_4401')).toBe(true);
     expect(obsAfter4401.some((o) => o.category === 'connection' && o.event === 'retry' && o.outcome === 'skip' && o.reason === 'auth_refused')).toBe(true);
 
-    // Explicit configureWebConnection stores normalized origin + token and rebinds immediately.
-    await page.evaluate(
-      ([endpoint, token]) => {
-        const b = window.__scriberWebTest?.bridge as {
-          configureWebConnection: (cfg: { endpoint: string; token: string }) => void;
-        };
-        b.configureWebConnection({ endpoint: `${endpoint}/ignored?secret=nope#frag`, token });
-      },
-      [server.url, secretToken] as const,
-    );
+    // Submitting through Connect stores normalized origin + token, rebinds immediately and closes Connect.
+    await connectDialog.getByLabel('Server URL').fill(`${server.url}/ignored?secret=nope#frag`);
+    await connectDialog.getByLabel('Shared token').fill(secretToken);
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
 
+    await expect(connectDialog).toBeHidden();
     await expect(status(page)).toHaveText('Click New to start a dictation.');
     expect(await page.evaluate(() => localStorage.getItem('scriber.web.endpoint'))).toBe(server.url);
     expect(await page.evaluate(() => localStorage.getItem('scriber.web.token'))).toBe(secretToken);
 
-    // Storage failure fallback: breaking localStorage still lets configureWebConnection work in memory.
+    // Storage failure fallback: breaking localStorage still lets Connect work in memory and records fallback observation.
     const nextToken = 'SYNTHETIC_FALLBACK_TOKEN_54321';
     server.setToken(nextToken);
-    await page.evaluate(
-      ([endpoint, token]) => {
-        const throwing = () => {
-          throw new DOMException('blocked', 'SecurityError');
-        };
-        Object.defineProperty(window, 'localStorage', {
-          configurable: true,
-          value: { getItem: throwing, setItem: throwing, removeItem: throwing },
-        });
-        const b = window.__scriberWebTest?.bridge as {
-          configureWebConnection: (cfg: { endpoint: string; token: string }) => void;
-        };
-        b.configureWebConnection({ endpoint: endpoint.replace('http://', 'ws://'), token });
-      },
-      [server.url, nextToken] as const,
-    );
+    await page.evaluate(() => {
+      const throwing = () => {
+        throw new DOMException('blocked', 'SecurityError');
+      };
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        value: { getItem: throwing, setItem: throwing, removeItem: throwing },
+      });
+    });
+    await button(page, 'Settings').click();
+    await page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(connectDialog).toBeVisible();
+    await connectDialog.getByLabel('Server URL').fill(server.url.replace('http://', 'ws://'));
+    await connectDialog.getByLabel('Shared token').fill(nextToken);
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(connectDialog).toBeHidden();
+    await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+    await page.keyboard.press('Escape');
     await expect(status(page)).toHaveText('Click New to start a dictation.');
+    expect(
+      (await readObservations(page)).some(
+        (o) => o.category === 'connection' && o.event === 'storage' && o.outcome === 'skip' && o.reason === 'memory_fallback',
+      ),
+    ).toBe(true);
 
     // Hello failure modes: invalid JSON, bad platform, close before hello, hello timeout, 1009 close.
     for (const mode of ['invalid_json', 'bad_platform', 'close_before_hello', 'hang'] as const) {
@@ -772,9 +783,12 @@ test('rebinds cleanly to a restarted server with lower revision and libraryRevis
     });
     await attachWebTestHook(page, { reconnectMs: 100 });
     await openWeb(page, serverAuth.url);
-    await expect(page.locator('main').getByRole('alert')).toContainText('Authentication refused');
+    const connectDialog = page.getByRole('dialog', { name: 'Connect' });
+    await expect(connectDialog).toBeVisible();
+    await expect(connectDialog.getByRole('alert')).toHaveText('Authentication refused.');
     serverAuth.setToken('');
-    await button(page, 'Try again').click();
+    await connectDialog.getByRole('button', { name: 'Try again', exact: true }).click();
+    await expect(connectDialog).toBeHidden();
     await expect(status(page)).toHaveText('Click New to start a dictation.');
   } finally {
     await serverAuth.close();
@@ -1878,9 +1892,1067 @@ for (const colorScheme of ['light', 'dark'] as const) {
           await expect(status(page)).toHaveText('Copied to the clipboard.');
         });
         await expectNoAxeViolations(page);
+
+        // Web Settings dialog: whole-document axe + expectNoShift on save error + short-viewport reachability.
+        server.setOnCall((ctx) => {
+          if (ctx.call === 'settings_set') {
+            ctx.replyErr('Disk full.');
+            return true;
+          }
+          return false;
+        });
+        await button(page, 'Settings').click();
+        const settingsDialog = page.getByRole('dialog', { name: 'Settings' });
+        await expect(settingsDialog).toBeVisible();
+        await expectNoAxeViolations(page);
+        await expectNoShift(page, settingsDialog, async () => {
+          await settingsDialog.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' }).click();
+          await expect(settingsDialog.getByRole('alert')).toHaveText('Disk full.');
+        });
+        await expectNoAxeViolations(page);
+
+        // Open Connect dialog from Settings: whole-document axe + expectNoShift on validation error.
+        await settingsDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+        const connectDialog = page.getByRole('dialog', { name: 'Connect' });
+        await expect(connectDialog).toBeVisible();
+        await expectNoAxeViolations(page);
+        await expectNoShift(page, connectDialog, async () => {
+          await connectDialog.getByLabel('Server URL').fill('ftp://example.invalid');
+          await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+          await expect(connectDialog.getByRole('alert')).toHaveText('Enter a valid server URL.');
+        });
+        await expectNoAxeViolations(page);
+
+        // Short-viewport keyboard reachability and no horizontal overflow in both dialogs under strict CSP.
+        await page.setViewportSize({ width: 520, height: 240 });
+        await connectDialog.getByLabel('Server URL').focus();
+        await expect(connectDialog.getByLabel('Server URL')).toBeFocused();
+        for (const locator of [
+          connectDialog.getByLabel('Shared token'),
+          connectDialog.getByRole('button', { name: 'Connect', exact: true }),
+          connectDialog.getByRole('button', { name: 'Cancel', exact: true }),
+        ]) {
+          await locator.scrollIntoViewIfNeeded();
+          await expect(locator).toBeInViewport();
+        }
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+        await page.keyboard.press('Escape');
+        await expect(connectDialog).toBeHidden();
+        await expect(settingsDialog).toBeVisible();
+        await expect(settingsDialog.getByRole('button', { name: 'Connect', exact: true })).toBeFocused();
+        for (const locator of [
+          settingsDialog.getByLabel('Split into parts at a pause'),
+          settingsDialog.getByRole('button', { name: 'Connect', exact: true }),
+          settingsDialog.getByText(/^Version /),
+        ]) {
+          await locator.scrollIntoViewIfNeeded();
+          await expect(locator).toBeInViewport();
+        }
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
       } finally {
         await server.close();
       }
     });
   });
 }
+
+// ---- Web 3 AC 1, AC 2, AC 3: PWA HTML, manifest, PNG icons (dimensions & maskable 40% circle), no service worker ----
+
+test('built web HTML/manifest/icons satisfy PWA contract, desktop/mock HTML stays untouched, and no service worker registers', async ({
+  page,
+}) => {
+  // Verify desktop build HTML retains original viewport and has no PWA install tags.
+  const desktopTempDir = resolve(DESKTOP_DIR, 'coverage/desktop-html-check');
+  mkdirSync(desktopTempDir, { recursive: true });
+  try {
+    const desktopEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete desktopEnv.VITE_SCRIBER_BACKEND;
+    delete desktopEnv.SCRIBER_WEB_SOURCEMAPS;
+    delete desktopEnv.COVERAGE;
+    execFileSync('pnpm', ['exec', 'vite', 'build', '--outDir', desktopTempDir], {
+      cwd: DESKTOP_DIR,
+      env: desktopEnv,
+      stdio: 'pipe',
+    });
+    const desktopHtml = readFileSync(join(desktopTempDir, 'index.html'), 'utf8');
+    const desktopViewports = desktopHtml.match(/<meta\s+name="viewport"[^>]*>/g) ?? [];
+    expect(desktopViewports).toEqual(['<meta name="viewport" content="width=device-width, initial-scale=1.0" />']);
+    expect(desktopHtml).not.toContain('apple-mobile-web-app-capable');
+    expect(desktopHtml).not.toContain('apple-mobile-web-app-title');
+    expect(desktopHtml).not.toContain('apple-touch-icon');
+    expect(desktopHtml).not.toContain('manifest.webmanifest');
+  } finally {
+    rmSync(desktopTempDir, { recursive: true, force: true });
+  }
+
+  // Also check live mock dev HTML (baseURL) keeps original viewport and no install tags.
+  await page.goto('/');
+  expect(
+    await page.locator('meta[name="viewport"]').evaluateAll((els) => els.map((e) => e.getAttribute('content'))),
+  ).toEqual(['width=device-width, initial-scale=1.0']);
+  await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveCount(0);
+  await expect(page.locator('link[rel="manifest"]')).toHaveCount(0);
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveCount(0);
+
+  // Built web HTML served from stand-in server.
+  const server = await startStandInServer({ distDir: testDistDir });
+  try {
+    await openWeb(page, server.url);
+
+    expect(
+      await page.locator('meta[name="viewport"]').evaluateAll((els) => els.map((e) => e.getAttribute('content'))),
+    ).toEqual(['width=device-width, initial-scale=1.0, user-scalable=no']);
+    await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveAttribute('content', 'yes');
+    await expect(page.locator('meta[name="apple-mobile-web-app-title"]')).toHaveAttribute('content', 'Scriber');
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/apple-touch-icon.png');
+    await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest');
+
+    // Fetch manifest and verify schema.
+    const manifestRes = await page.request.get(`${server.url}/manifest.webmanifest`);
+    expect(manifestRes.status()).toBe(200);
+    expect(manifestRes.headers()['content-type']).toContain('application/manifest+json');
+    const manifest = (await manifestRes.json()) as {
+      name: string;
+      short_name: string;
+      start_url: string;
+      scope: string;
+      display: string;
+      icons: Array<{ src: string; sizes: string; type: string; purpose: string }>;
+    };
+    expect(manifest).toEqual({
+      name: 'Scriber',
+      short_name: 'Scriber',
+      start_url: '/',
+      scope: '/',
+      display: 'standalone',
+      icons: [
+        { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+        { src: '/icon-maskable-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+        { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      ],
+    });
+
+    // Fetch all five PNG icons, asserting 200, image/png MIME, PNG dimensions, and maskable safe-zone pixel inspection.
+    const expectedIcons = [
+      { path: '/icon-192.png', size: 192, maskable: false },
+      { path: '/icon-512.png', size: 512, maskable: false },
+      { path: '/icon-maskable-192.png', size: 192, maskable: true },
+      { path: '/icon-maskable-512.png', size: 512, maskable: true },
+      { path: '/apple-touch-icon.png', size: 180, maskable: false },
+    ] as const;
+
+    for (const icon of expectedIcons) {
+      const res = await page.request.get(`${server.url}${icon.path}`);
+      expect(res.status(), icon.path).toBe(200);
+      expect(res.headers()['content-type'], icon.path).toContain('image/png');
+      const buf = await res.body();
+      expect(buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), icon.path).toBe(true);
+      const width = buf.readUInt32BE(16);
+      const height = buf.readUInt32BE(20);
+      expect({ width, height }, icon.path).toEqual({ width: icon.size, height: icon.size });
+
+      if (icon.maskable) {
+        const inspect = await page.evaluate(async (url) => {
+          const img = new Image();
+          img.src = url;
+          await img.decode();
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext('2d');
+          if (ctx === null) throw new Error('no 2d context');
+          ctx.drawImage(img, 0, 0);
+          const { data, width: w, height: h } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const bgR = data[0] ?? 0;
+          const bgG = data[1] ?? 0;
+          const bgB = data[2] ?? 0;
+          let minAlpha = 255;
+          let maxFgRadius = 0;
+          let fgPixels = 0;
+          const cx = (w - 1) / 2;
+          const cy = (h - 1) / 2;
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+              const i = (y * w + x) * 4;
+              const r = data[i] ?? 0;
+              const g = data[i + 1] ?? 0;
+              const b = data[i + 2] ?? 0;
+              const a = data[i + 3] ?? 0;
+              if (a < minAlpha) minAlpha = a;
+              if (r !== bgR || g !== bgG || b !== bgB) {
+                fgPixels += 1;
+                const d = Math.hypot(x - cx, y - cy);
+                if (d > maxFgRadius) maxFgRadius = d;
+              }
+            }
+          }
+          return { w, h, minAlpha, fgPixels, maxFgRadius };
+        }, `${server.url}${icon.path}`);
+        expect(inspect.minAlpha, `${icon.path} opaque`).toBe(255);
+        expect(inspect.fgPixels, `${icon.path} has artwork`).toBeGreaterThan(0);
+        expect(inspect.maxFgRadius, `${icon.path} within 40% circle`).toBeLessThanOrEqual(0.4 * inspect.w);
+      }
+    }
+
+    // No service worker is registered.
+    const swCount = await page.evaluate(async () => {
+      if (!('serviceWorker' in navigator)) return 0;
+      return (await navigator.serviceWorker.getRegistrations()).length;
+    });
+    expect(swCount).toBe(0);
+  } finally {
+    await server.close();
+  }
+});
+
+// ---- Web 3 AC 4, AC 5: Web Settings hidden Mac-only controls, full Settings round-trip, browser mic indicator ----
+
+test('Web Settings hides Mac-only controls, preserves shared settings + hidden fields on save, and recorder shows browser mic without picker', async ({
+  page,
+}) => {
+  const initialSettings: Settings = {
+    summaries: true,
+    libraryOpen: true,
+    vocabulary: '/mac/custom/vocab.txt',
+    cleanup: false,
+    summaryModel: 'gemma3:4b',
+    cleanupModel: 'qwen3.8:27b-mlx',
+    libraryWidth: 260,
+    inputDevice: 'MacBook Pro Microphone',
+    silenceSplitMs: 1500,
+    keepSegments: true,
+    learnedVocabulary: '/mac/custom/learned.txt',
+    modelFolder: '/mac/custom/models',
+    toggleShortcut: 'Opt+Cmd+K',
+    pauseShortcut: 'Opt+Cmd+J',
+    copySound: false,
+  };
+  let savedPayload: Settings | null = null;
+  const server = await startStandInServer({
+    distDir: testDistDir,
+    version: '0.12.0-web3',
+    initialSettings,
+    onCall: (ctx) => {
+      if (ctx.call === 'settings_set') {
+        savedPayload = structuredClone(ctx.args.settings as Settings);
+      }
+      return false;
+    },
+  });
+
+  try {
+    await openWeb(page, server.url);
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+
+    // Recorder shows non-interactive Browser microphone indicator without a picker in ready, recording, and paused.
+    await press(page, 'New');
+    await expect(page.locator('.mic-indicator')).toHaveText('Browser microphone');
+    await expect(page.locator('button.mic')).toHaveCount(0);
+    await expect(page.locator('[aria-haspopup="menu"]')).toHaveCount(0);
+    await expect(page.getByRole('menu')).toHaveCount(0);
+
+    await press(page, 'Record');
+    await expect(page.locator('.mic-indicator')).toHaveText('Browser microphone');
+    await expect(page.locator('button.mic')).toHaveCount(0);
+
+    await press(page, 'Pause');
+    await expect(page.locator('.mic-indicator')).toHaveText('Browser microphone');
+    await expect(page.locator('button.mic')).toHaveCount(0);
+    await press(page, 'Discard');
+
+    // Open Web Settings and verify Mac-only controls are hidden while shared controls + Connect + version remain.
+    await button(page, 'Settings').click();
+    const dialog = page.getByRole('dialog', { name: 'Settings' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('group', { name: 'Vocabulary file' })).toHaveCount(0);
+    await expect(dialog.getByRole('group', { name: 'Learned vocabulary file' })).toHaveCount(0);
+    await expect(dialog.getByRole('group', { name: 'Speech model folder' })).toHaveCount(0);
+    await expect(dialog.getByRole('group', { name: 'Toggle dictation shortcut' })).toHaveCount(0);
+    await expect(dialog.getByRole('group', { name: 'Pause shortcut' })).toHaveCount(0);
+    await expect(dialog.getByRole('switch', { name: 'Play a sound when the transcript is copied' })).toHaveCount(0);
+    await expect(dialog.getByRole('switch')).toHaveCount(2);
+
+    await expect(dialog.getByLabel('Split into parts at a pause')).toHaveValue('1500');
+    await expect(dialog.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' })).not.toBeChecked();
+    await expect(dialog.getByRole('switch', { name: 'Generate library titles with local AI (Ollama)' })).toBeChecked();
+    await expect(dialog.getByRole('combobox', { name: 'Post-processing model' })).toHaveValue('qwen3.8:27b-mlx');
+    await expect(dialog.getByRole('combobox', { name: 'Title model' })).toHaveValue('gemma3:4b');
+    await expect(dialog.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
+    await expect(dialog.getByText('Version 0.12.0-web3')).toBeVisible();
+
+    // Shared setting round-trip preserves full Settings shape including every hidden Mac-only field.
+    await dialog.getByLabel('Split into parts at a pause').selectOption('4000');
+    await expect.poll(() => savedPayload).toEqual({
+      ...initialSettings,
+      silenceSplitMs: 4000,
+    });
+    await dialog.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' }).click();
+    await expect.poll(() => savedPayload).toEqual({
+      ...initialSettings,
+      silenceSplitMs: 4000,
+      cleanup: true,
+    });
+    await dialog.getByRole('combobox', { name: 'Post-processing model' }).selectOption('gemma3:4b');
+    await expect.poll(() => savedPayload).toEqual({
+      ...initialSettings,
+      silenceSplitMs: 4000,
+      cleanup: true,
+      cleanupModel: 'gemma3:4b',
+    });
+    await dialog.getByRole('combobox', { name: 'Title model' }).selectOption('qwen3.8:27b-mlx');
+    await expect.poll(() => savedPayload).toEqual({
+      ...initialSettings,
+      silenceSplitMs: 4000,
+      cleanup: true,
+      cleanupModel: 'gemma3:4b',
+      summaryModel: 'qwen3.8:27b-mlx',
+    });
+    await dialog.getByRole('switch', { name: 'Generate library titles with local AI (Ollama)' }).click();
+    await expect.poll(() => savedPayload).toEqual({
+      ...initialSettings,
+      silenceSplitMs: 4000,
+      cleanup: true,
+      cleanupModel: 'gemma3:4b',
+      summaryModel: 'qwen3.8:27b-mlx',
+      summaries: false,
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+// ---- Web 3 AC 8, AC 9, AC 10, AC 11, AC 14, AC 16: Connect UI lifecycle, validation, persistence, modal coordination, sanitization ----
+
+test('Connect UI handles validation, cancel, repeated refusal, reload persistence, untouched manual open, shortcuts suspension and zero secret leaks', async ({
+  page,
+}) => {
+  const sentinelToken = 'SENTINEL_WEB3_SECRET_TOKEN_XYZ';
+  const wrongToken = 'WRONG_SENTINEL_TOKEN_ABC';
+  const server = await startStandInServer({
+    distDir: testDistDir,
+    token: sentinelToken,
+    version: '0.12.0-connect',
+  });
+  const pageErrors: string[] = [];
+  const consoleLines: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
+  page.on('console', (m) => consoleLines.push(m.text()));
+
+  try {
+    await attachWebTestHook(page, { helloMs: 250, reconnectMs: 100, rpcMs: 500 });
+    await openWeb(page, server.url);
+
+    const connectDialog = page.getByRole('dialog', { name: 'Connect' });
+    const urlField = connectDialog.getByLabel('Server URL');
+    const tokenField = connectDialog.getByLabel('Shared token');
+    const submitBtn = connectDialog.getByRole('button', { name: 'Connect', exact: true });
+    const cancelBtn = connectDialog.getByRole('button', { name: 'Cancel', exact: true });
+    const retryBtn = connectDialog.getByRole('button', { name: 'Try again', exact: true });
+
+    // 1. Initial 4401 opens Connect automatically with page origin pre-filled and blank masked token.
+    await expect(connectDialog).toBeVisible();
+    await expect(urlField).toHaveValue(server.url);
+    await expect(tokenField).toHaveValue('');
+    await expect(tokenField).toHaveAttribute('type', 'password');
+    await expect(connectDialog.getByRole('alert')).toHaveText('Authentication refused.');
+    await expect(retryBtn).toBeVisible();
+
+    const obsInit = await readObservations(page);
+    expect(
+      obsInit.some(
+        (o) =>
+          o.category === 'connect' &&
+          o.trigger === 'initial_failure' &&
+          o.outcome === 'ok' &&
+          o.reason === 'open' &&
+          o.priorAuth === false &&
+          o.failureCode === 'auth_4401' &&
+          o.generation > 0,
+      ),
+    ).toBe(true);
+
+    // 2. Invalid input (ftp://example.invalid & malformed whitespace URL) reports fixed message, mutates nothing, starts no attempt.
+    const connsBeforeInvalid = server.totalConnections();
+    await urlField.fill('ftp://example.invalid');
+    await tokenField.fill('unsaved-draft-token');
+    await submitBtn.click();
+    await expect(connectDialog.getByRole('alert')).toHaveText('Enter a valid server URL.');
+    expect(server.totalConnections()).toBe(connsBeforeInvalid);
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.endpoint'))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.token'))).toBeNull();
+
+    await urlField.fill('bad host url');
+    await submitBtn.click();
+    await expect(connectDialog.getByRole('alert')).toHaveText('Enter a valid server URL.');
+    expect(server.totalConnections()).toBe(connsBeforeInvalid);
+
+    // 3. Cancel dismisses Connect, clears token draft without writing/retrying, focuses persistent recovery Connect button.
+    await cancelBtn.click();
+    await expect(connectDialog).toBeHidden();
+    expect(server.totalConnections()).toBe(connsBeforeInvalid);
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.endpoint'))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.token'))).toBeNull();
+    const recoveryConnect = page.locator('main').getByRole('button', { name: 'Connect', exact: true });
+    await expect(recoveryConnect).toBeVisible();
+    await expect(recoveryConnect).toBeFocused();
+    expect(
+      (await readObservations(page)).some(
+        (o) => o.category === 'connect' && o.trigger === 'cancel' && o.outcome === 'cancelled' && o.reason === 'dismiss',
+      ),
+    ).toBe(true);
+
+    // Re-open from persistent recovery trigger -> token draft was cleared! Also exercise Close (×) and backdrop dismissal.
+    await recoveryConnect.click();
+    await expect(connectDialog).toBeVisible();
+    await expect(urlField).toHaveValue(server.url);
+    await expect(tokenField).toHaveValue('');
+    await connectDialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(connectDialog).toBeHidden();
+    await recoveryConnect.click();
+    await expect(connectDialog).toBeVisible();
+    await page.mouse.click(5, 5);
+    await expect(connectDialog).toBeHidden();
+    await recoveryConnect.click();
+    await expect(connectDialog).toBeVisible();
+    await expect(urlField).toHaveValue(server.url);
+    await expect(tokenField).toHaveValue('');
+
+    // 4. Valid refused save replaces BOTH storage keys immediately, opens no auto-retry, leaves form editable.
+    await urlField.fill(''); // blank origin means page origin
+    await tokenField.fill(wrongToken);
+    await submitBtn.click();
+    await expect(connectDialog.getByRole('alert')).toHaveText('Authentication refused.');
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.endpoint'))).toBe(server.url);
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.token'))).toBe(wrongToken);
+    const connsAfterRefusedSave = server.totalConnections();
+    await page.waitForTimeout(250);
+    expect(server.totalConnections()).toBe(connsAfterRefusedSave); // no auto-retry!
+    await expect(urlField).toBeEditable();
+    await expect(tokenField).toBeEditable();
+
+    // 5. Valid credentials authenticate, dismiss Connect via active_auth, restore recorder focus, bootstrap & refresh.
+    await urlField.fill(''); // blank origin -> page origin
+    await tokenField.fill(sentinelToken);
+    await submitBtn.click();
+    await expect(connectDialog).toBeHidden();
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.endpoint'))).toBe(server.url);
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.token'))).toBe(sentinelToken);
+    expect(
+      (await readObservations(page)).some(
+        (o) => o.category === 'connect' && o.trigger === 'active_auth' && o.outcome === 'ok' && o.reason === 'dismiss',
+      ),
+    ).toBe(true);
+    // Usable focus restored in the recorder (New button is primary & enabled in idle).
+    await expect(button(page, 'New')).toBeFocused();
+
+    // 6. Persistence across reload: page reloads and authenticates without opening Connect.
+    await page.reload();
+    await expect(page.locator('html')).toHaveAttribute('data-bridge', 'web');
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+    await expect(connectDialog).toBeHidden();
+
+    // 7. Manual open from Settings: explicitly closes Settings first (only one :modal), suspends recorder shortcuts,
+    //    background auth leaves untouched manual Connect open, Escape reopens Settings with focus on Connect.
+    await press(page, 'New');
+    await expect(status(page)).toHaveText('Click Record and start talking.');
+    await button(page, 'Settings').click();
+    const settingsDialog = page.getByRole('dialog', { name: 'Settings' });
+    await expect(settingsDialog).toBeVisible();
+    await settingsDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(settingsDialog).toBeHidden();
+    await expect(connectDialog).toBeVisible();
+    expect(await page.evaluate(() => document.querySelectorAll('dialog:modal').length)).toBe(1);
+    expect(
+      (await readObservations(page)).some(
+        (o) => o.category === 'connect' && o.trigger === 'settings' && o.outcome === 'ok' && o.reason === 'open',
+      ),
+    ).toBe(true);
+
+    // Recorder shortcuts are suspended while Connect is open (Space does not start recording, Meta+Comma does not open Settings).
+    const actsBeforeKeys = server.log.filter((e) => e.kind === 'rpc' && e.call === 'dictation_act').length;
+    await page.keyboard.press('Meta+n');
+    await page.keyboard.press('Meta+Comma');
+    await expect(settingsDialog).toBeHidden();
+    expect(server.log.filter((e) => e.kind === 'rpc' && e.call === 'dictation_act').length).toBe(actsBeforeKeys);
+
+    // Background reconnect auth leaves untouched manual Connect open!
+    server.disconnectAll(1001, 'bg drop');
+    await expect
+      .poll(async () =>
+        (await readObservations(page)).some(
+          (o) => o.category === 'connect' && o.trigger === 'background_auth' && o.outcome === 'skip' && o.reason === 'keep_open',
+        ),
+      )
+      .toBe(true);
+    await expect(connectDialog).toBeVisible();
+
+    // Typing a draft token then pressing Escape clears draft, preserves storage, reopens Settings with focus on Connect.
+    await tokenField.fill('temporary-draft-never-saved');
+    await page.keyboard.press('Escape');
+    await expect(connectDialog).toBeHidden();
+    await expect(settingsDialog).toBeVisible();
+    await expect(settingsDialog.getByRole('button', { name: 'Connect', exact: true })).toBeFocused();
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.token'))).toBe(sentinelToken);
+
+    // Verify blank token submits empty string (when server allows empty token).
+    server.setToken('');
+    await settingsDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(connectDialog).toBeVisible();
+    await expect(tokenField).toHaveValue('');
+    // Explicit same-origin configure failure after prior auth reports Could not connect and keeps Connect open.
+    server.setHelloMode('close_before_hello');
+    await submitBtn.click();
+    await expect(connectDialog.getByRole('alert')).toHaveText('Could not connect to the Scriber server.');
+    expect(
+      (await readObservations(page)).some(
+        (o) => o.category === 'connect' && o.trigger === 'explicit_failure' && o.priorAuth === true,
+      ),
+    ).toBe(true);
+    server.setHelloMode('ok');
+    await submitBtn.click();
+    await expect(connectDialog).toBeHidden();
+    await expect(settingsDialog).toBeVisible();
+    await expect(settingsDialog.getByRole('button', { name: 'Connect', exact: true })).toBeFocused();
+    expect(await page.evaluate(() => localStorage.getItem('scriber.web.token'))).toBe('');
+
+    // Verify normalizeOrigin HTTPS loopback / remote rules in mapped coverage context.
+    const httpsNorm = await page.evaluate(() => {
+      const b = window.__scriberWebTest?.bridge as { normalizeOrigin: (raw: string, base?: string) => string };
+      const allowed = [
+        b.normalizeOrigin('https://remote.example:8742/p?q=1#h', 'https://scriber.test'),
+        b.normalizeOrigin('wss://remote.example:8742/ws', 'https://scriber.test'),
+        b.normalizeOrigin('http://localhost:8742', 'https://scriber.test'),
+        b.normalizeOrigin('http://sub.localhost:8742', 'https://scriber.test'),
+        b.normalizeOrigin('http://127.0.0.1:8742', 'https://scriber.test'),
+        b.normalizeOrigin('http://[::1]:8742', 'https://scriber.test'),
+      ];
+      let rejected = '';
+      try {
+        b.normalizeOrigin('http://remote.example:8742', 'https://scriber.test');
+      } catch (e) {
+        rejected = e instanceof Error ? e.message : String(e);
+      }
+      return { allowed, rejected };
+    });
+    expect(httpsNorm.allowed).toEqual([
+      'https://remote.example:8742',
+      'https://remote.example:8742',
+      'http://localhost:8742',
+      'http://sub.localhost:8742',
+      'http://127.0.0.1:8742',
+      'http://[::1]:8742',
+    ]);
+    expect(httpsNorm.rejected).toContain('https or wss');
+
+    // Sanitization check: sentinel token matched ONLY via boolean authMatch in server hello log and appears NOWHERE else!
+    expect(server.log.some((e) => e.kind === 'hello' && e.authMatch)).toBe(true);
+    const bodyText = (await page.locator('body').textContent()) ?? '';
+    const clientObs = JSON.stringify(await readObservations(page));
+    const serverLog = JSON.stringify(server.log);
+    for (const secret of [sentinelToken, wrongToken, 'temporary-draft-never-saved']) {
+      expect(page.url()).not.toContain(secret);
+      expect(bodyText).not.toContain(secret);
+      expect(pageErrors.join('\n')).not.toContain(secret);
+      expect(consoleLines.join('\n')).not.toContain(secret);
+      expect(clientObs).not.toContain(secret);
+      expect(serverLog).not.toContain(secret);
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+// ---- Web 3 AC 9: HTTPS page rejects insecure non-loopback remote origins before mutation ----
+
+test('HTTPS page rejects insecure non-loopback remote origins in Connect before mutating storage or opening sockets', async ({
+  page,
+}) => {
+  await page.route('https://scriber.test/**', async (route) => {
+    const reqUrl = new URL(route.request().url());
+    const rel = reqUrl.pathname === '/' ? 'index.html' : reqUrl.pathname.replace(/^\/+/, '');
+    const filePath = join(testDistDir, rel);
+    if (!existsSync(filePath)) {
+      await route.fulfill({ status: 404, body: 'Not found' });
+      return;
+    }
+    const ext = filePath.slice(filePath.lastIndexOf('.'));
+    const types: Record<string, string> = {
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'text/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.webmanifest': 'application/manifest+json; charset=utf-8',
+      '.png': 'image/png',
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: types[ext] ?? 'application/octet-stream',
+      body: readFileSync(filePath),
+    });
+  });
+
+  await page.addInitScript(() => {
+    const w = window as unknown as { __wsUrls: string[] };
+    w.__wsUrls = [];
+    class StubWs {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      readyState = 0;
+      binaryType = 'blob';
+      onopen: (() => void) | null = null;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onclose: ((e: CloseEvent) => void) | null = null;
+      onerror: ((e: Event) => void) | null = null;
+      constructor(url: string) {
+        w.__wsUrls.push(url);
+        setTimeout(() => {
+          this.readyState = 3;
+          this.onclose?.(new CloseEvent('close', { code: 4401 }));
+        }, 10);
+      }
+      send(): void {
+        // no-op
+      }
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+    Object.defineProperty(window, 'WebSocket', { configurable: true, value: StubWs });
+  });
+
+  await page.goto('https://scriber.test/');
+  const connectDialog = page.getByRole('dialog', { name: 'Connect' });
+  await expect(connectDialog).toBeVisible();
+  const wsBefore = await page.evaluate(() => (window as unknown as { __wsUrls: string[] }).__wsUrls.length);
+
+  for (const bad of ['http://remote.example:8742', 'ws://remote.example:8742', 'ftp://example.invalid']) {
+    await connectDialog.getByLabel('Server URL').fill(bad);
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(connectDialog.getByRole('alert')).toHaveText('Enter a valid server URL.');
+  }
+  expect(await page.evaluate(() => (window as unknown as { __wsUrls: string[] }).__wsUrls.length)).toBe(wsBefore);
+  expect(await page.evaluate(() => localStorage.getItem('scriber.web.endpoint'))).toBeNull();
+
+  // Loopback HTTP from HTTPS is permitted.
+  await connectDialog.getByLabel('Server URL').fill('http://127.0.0.1:8742');
+  await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __wsUrls: string[] }).__wsUrls.at(-1)))
+    .toBe('ws://127.0.0.1:8742/ws');
+});
+
+// ---- Web 3 AC 6, AC 7, AC 11, AC 15, AC 16: Startup failures, sync socket error, post-auth 4401, transient suppression, retired A vs B races ----
+
+test('handles all initial startup handshake failures on same-origin reloads', async ({ page }) => {
+  const srv = await startStandInServer({ distDir: testDistDir, helloMode: 'hang' });
+  try {
+    await attachWebTestHook(page, { helloMs: 120, reconnectMs: 5_000, rpcMs: 500 });
+    for (const mode of ['hang', 'invalid_json', 'bad_platform', 'close_before_hello', 'close_1009_before_hello'] as const) {
+      srv.setHelloMode(mode);
+      await openWeb(page, srv.url);
+      const dlg = page.getByRole('dialog', { name: 'Connect' });
+      await expect(dlg).toBeVisible();
+      await expect(dlg.getByRole('alert')).toHaveText('Could not connect to the Scriber server.');
+      const expectedCode =
+        mode === 'hang'
+          ? 'hello_timeout'
+          : mode === 'invalid_json' || mode === 'bad_platform'
+            ? 'invalid_hello'
+            : mode === 'close_1009_before_hello'
+              ? 'message_too_big'
+              : 'closed_before_hello';
+      expect(
+        (await readObservations(page)).some(
+          (o) =>
+            o.category === 'connect' &&
+            o.trigger === 'initial_failure' &&
+            o.outcome === 'ok' &&
+            o.reason === 'open' &&
+            o.priorAuth === false &&
+            o.failureCode === expectedCode,
+        ),
+      ).toBe(true);
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test('handles synchronous WebSocket construction failure and recovers on explicit Try again', async ({ page }) => {
+  const syncServer = await startStandInServer({ distDir: testDistDir });
+  try {
+    await attachWebTestHook(page, { helloMs: 250, reconnectMs: 100 });
+    await page.addInitScript(() => {
+      const RealWs = window.WebSocket;
+      let throwOnce = true;
+      const Wrapped = function (this: unknown, url: string | URL, protocols?: string | string[]) {
+        if (throwOnce) {
+          throwOnce = false;
+          throw new DOMException('blocked by test', 'SecurityError');
+        }
+        return protocols === undefined ? new RealWs(url) : new RealWs(url, protocols);
+      } as unknown as typeof WebSocket;
+      Object.assign(Wrapped, RealWs);
+      Wrapped.prototype = RealWs.prototype;
+      Object.defineProperty(window, 'WebSocket', { configurable: true, value: Wrapped });
+    });
+    await openWeb(page, syncServer.url);
+    const dlg = page.getByRole('dialog', { name: 'Connect' });
+    await expect(dlg).toBeVisible();
+    await expect(dlg.getByRole('alert')).toHaveText('Could not connect to the Scriber server.');
+    expect(
+      (await readObservations(page)).some(
+        (o) => o.category === 'connect' && o.trigger === 'initial_failure' && o.failureCode === 'socket_error',
+      ),
+    ).toBe(true);
+    // Cancel to recovery view and click main Try again -> recovers cleanly without re-entering credentials.
+    await page.keyboard.press('Escape');
+    await expect(dlg).toBeHidden();
+    await page.locator('main').getByRole('button', { name: 'Try again', exact: true }).click();
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+  } finally {
+    await syncServer.close();
+  }
+});
+
+test('handles post-auth 4401 interrupting Settings, transient reconnect suppression, and retired socket A vs B races', async ({
+  page,
+}) => {
+  const serverA = await startStandInServer({ distDir: testDistDir, version: '1.0.0-server-A' });
+  const serverB = await startStandInServer({ distDir: testDistDir, version: '2.0.0-server-B', helloMode: 'hold' });
+  try {
+    await attachWebTestHook(page, { helloMs: 250, reconnectMs: 80, rpcMs: 500 });
+    // Spy on WebSocket instances and retain original handlers even after retire() nulls them.
+    await page.addInitScript(() => {
+      interface SpyRecord {
+        url: string;
+        onopen: (() => void) | null;
+        onmessage: ((ev: MessageEvent) => void) | null;
+        onclose: ((ev: CloseEvent) => void) | null;
+      }
+      const w = window as unknown as { __wsSpy: SpyRecord[] };
+      w.__wsSpy = [];
+      const RealWs = window.WebSocket;
+      class SpyWebSocket extends RealWs {
+        private readonly rec: SpyRecord;
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super(url, protocols);
+          this.rec = { url: String(url), onopen: null, onmessage: null, onclose: null };
+          w.__wsSpy.push(this.rec);
+        }
+        override set onopen(fn: ((this: WebSocket, ev: Event) => unknown) | null) {
+          if (fn !== null) this.rec.onopen = fn as () => void;
+          super.onopen = fn;
+        }
+        override get onopen() {
+          return super.onopen;
+        }
+        override set onmessage(fn: ((this: WebSocket, ev: MessageEvent) => unknown) | null) {
+          if (fn !== null) this.rec.onmessage = fn as (ev: MessageEvent) => void;
+          super.onmessage = fn;
+        }
+        override get onmessage() {
+          return super.onmessage;
+        }
+        override set onclose(fn: ((this: WebSocket, ev: CloseEvent) => unknown) | null) {
+          if (fn !== null) this.rec.onclose = fn;
+          super.onclose = fn;
+        }
+        override get onclose() {
+          return super.onclose;
+        }
+      }
+      Object.defineProperty(window, 'WebSocket', { configurable: true, value: SpyWebSocket });
+    });
+
+    // First successful hello -> Connect stays closed.
+    await openWeb(page, serverA.url);
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+    const connectDialog = page.getByRole('dialog', { name: 'Connect' });
+    await expect(connectDialog).toBeHidden();
+
+    // Transient pre-hello reconnect failure after prior auth -> Connect stays CLOSED and records suppression!
+    serverA.setHelloMode('close_before_hello');
+    serverA.disconnectAll(1001, 'transient drop');
+    await expect
+      .poll(async () =>
+        (await readObservations(page)).some(
+          (o) =>
+            o.category === 'connect' &&
+            o.trigger === 'transient_reconnect' &&
+            o.outcome === 'skip' &&
+            o.reason === 'suppress' &&
+            o.priorAuth === true &&
+            o.failureCode === 'closed_before_hello',
+        ),
+      )
+      .toBe(true);
+    await expect(connectDialog).toBeHidden();
+    serverA.setHelloMode('ok');
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+
+    // Post-auth 4401 interrupts open Settings; dismissing returns focus to persistent Connect recovery trigger in band!
+    await button(page, 'Settings').click();
+    const settingsDialog = page.getByRole('dialog', { name: 'Settings' });
+    await expect(settingsDialog).toBeVisible();
+    serverA.setToken('rotated-token');
+    serverA.disconnectAll(4401, 'token rotated');
+    await expect(settingsDialog).toBeHidden();
+    await expect(connectDialog).toBeVisible();
+    await expect(connectDialog.getByRole('alert')).toHaveText('Authentication refused.');
+    expect(
+      (await readObservations(page)).some(
+        (o) =>
+          o.category === 'connect' &&
+          o.trigger === 'post_auth_4401' &&
+          o.outcome === 'ok' &&
+          o.reason === 'open' &&
+          o.priorAuth === true &&
+          o.failureCode === 'auth_4401',
+      ),
+    ).toBe(true);
+
+    // Dismissing auto recovery returns focus to persistent Connect button (NOT Settings).
+    await page.keyboard.press('Escape');
+    await expect(connectDialog).toBeHidden();
+    await expect(settingsDialog).toBeHidden();
+    const bandConnect = page.locator('.band').getByRole('button', { name: 'Connect', exact: true });
+    await expect(bandConnect).toBeVisible();
+    await expect(bandConnect).toBeFocused();
+
+    // Race 1 & Race 2: Switch to Server B (whose hello is held).
+    // Capture retired A socket index before switching.
+    const spyCountBeforeB = await page.evaluate(
+      () => (window as unknown as { __wsSpy: unknown[] }).__wsSpy.length,
+    );
+    await bandConnect.click();
+    await expect(connectDialog).toBeVisible();
+    await connectDialog.getByLabel('Server URL').fill(serverB.url);
+    await connectDialog.getByLabel('Shared token').fill('');
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect.poll(() => serverB.pendingHeldHellos()).toBe(1);
+
+    // Deterministically deliver retired A's late onopen, valid hello AND stale snapshot WHILE B is pending!
+    await page.evaluate((idx) => {
+      const spy = (
+        window as unknown as {
+          __wsSpy: Array<{
+            onopen: (() => void) | null;
+            onmessage: ((ev: MessageEvent) => void) | null;
+          }>;
+        }
+      ).__wsSpy;
+      const retiredA = spy[idx - 1];
+      retiredA?.onopen?.();
+      retiredA?.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ hello: { version: '9.9.9-stale-A', platform: 'web' } }),
+        }),
+      );
+      retiredA?.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({
+            event: 'dictation-changed',
+            payload: { revision: 99, phase: 'ready', text: '', recordedMs: 0, segments: 0, pending: 0, error: null, notice: null, modelError: null, download: null, libraryRevision: 0, microphone: null, learned: [], partial: '', rawText: null, postProcessing: false },
+          }),
+        }),
+      );
+    }, spyCountBeforeB);
+
+    // B must still be pending and Connect must still be open!
+    await expect(connectDialog).toBeVisible();
+
+    // Now release B's held hello -> B authenticates, bootstraps, and closes Connect.
+    serverB.releaseHeldHellos();
+    await expect(connectDialog).toBeHidden();
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+
+    // Now deterministically deliver retired A's late 4401 AFTER B has authenticated!
+    const obsCountBeforeLate4401 = (await readObservations(page)).length;
+    await page.evaluate((idx) => {
+      const spy = (window as unknown as { __wsSpy: Array<{ onclose: ((ev: CloseEvent) => void) | null }> }).__wsSpy;
+      const retiredA = spy[idx - 1];
+      retiredA?.onclose?.(new CloseEvent('close', { code: 4401, reason: 'late 4401 from A' }));
+    }, spyCountBeforeB);
+    await page.waitForTimeout(80);
+
+    // B's modal stays closed, auth stays active, and RPCs + Settings version prove we are cleanly on B!
+    await expect(connectDialog).toBeHidden();
+    const obsAfterLate4401 = (await readObservations(page)).slice(obsCountBeforeLate4401);
+    expect(obsAfterLate4401.some((o) => o.reason === 'auth_4401' || o.trigger === 'post_auth_4401')).toBe(false);
+    await button(page, 'Settings').click();
+    await expect(page.getByRole('dialog', { name: 'Settings' }).getByText('Version 2.0.0-server-B')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await press(page, 'New');
+    await expect(status(page)).toHaveText('Click Record and start talking.');
+  } finally {
+    await serverA.close();
+    await serverB.close();
+  }
+});
+
+// ---- Web 3 AC 12: Changed normalized origin clears state, disables writes until new Settings load, blocks stale completions ----
+
+test('changing normalized origin clears prior server data, blocks stale completions, and disables settings writes until new server settings load', async ({
+  page,
+}) => {
+  const sharedEntryId = '20261122-100000';
+  const settingsA: Settings = {
+    summaries: true,
+    libraryOpen: true,
+    vocabulary: '/server-a/vocab.txt',
+    cleanup: true,
+    summaryModel: 'gemma3:4b',
+    cleanupModel: 'qwen3.8:27b-mlx',
+    libraryWidth: 220,
+    inputDevice: 'Mic A',
+    silenceSplitMs: 1500,
+    keepSegments: true,
+    learnedVocabulary: '/server-a/learned.txt',
+    modelFolder: '/server-a/models',
+    toggleShortcut: 'Opt+Cmd+A',
+    pauseShortcut: 'Opt+Cmd+B',
+    copySound: true,
+  };
+  const settingsB: Settings = {
+    summaries: false,
+    libraryOpen: true,
+    vocabulary: '/server-b/vocab.txt',
+    cleanup: false,
+    summaryModel: 'qwen3.8:27b-mlx',
+    cleanupModel: 'gemma3:4b',
+    libraryWidth: 240,
+    inputDevice: 'Mic B',
+    silenceSplitMs: 4000,
+    keepSegments: false,
+    learnedVocabulary: '/server-b/learned.txt',
+    modelFolder: '/server-b/models',
+    toggleShortcut: 'Opt+Cmd+X',
+    pauseShortcut: 'Opt+Cmd+Y',
+    copySound: false,
+  };
+
+  let releaseStaleEntryA: (() => void) | null = null;
+  let releaseSettingsB: (() => void) | null = null;
+  const savedOnB: Settings[] = [];
+
+  const serverA = await startStandInServer({
+    distDir: testDistDir,
+    version: '1.0.0-A',
+    initialSettings: settingsA,
+    initialLibrary: [
+      {
+        entry: { id: sharedEntryId, title: '2026-11-22 10:00:00', summary: 'Summary from Server A' },
+        transcript: 'Transcript from Server A.',
+      },
+    ],
+  });
+  const serverB = await startStandInServer({
+    distDir: testDistDir,
+    version: '2.0.0-B',
+    initialSettings: settingsB,
+    initialLibrary: [
+      {
+        entry: { id: sharedEntryId, title: '2026-11-22 10:00:00', summary: 'Summary from Server B' },
+        transcript: 'Transcript from Server B.',
+      },
+    ],
+    onCall: (ctx) => {
+      if (ctx.call === 'settings_get' && releaseSettingsB === null) {
+        releaseSettingsB = () => {
+          ctx.replyOk(settingsB);
+        };
+        return true;
+      }
+      if (ctx.call === 'settings_set') {
+        savedOnB.push(structuredClone(ctx.args.settings as Settings));
+      }
+      return false;
+    },
+  });
+
+  try {
+    await attachWebTestHook(page, { reconnectMs: 100 });
+    await openWeb(page, serverA.url);
+
+    // Trigger former-owner recording notice on Server A, then select overlapping entry with a held library_get.
+    await press(page, 'New', 'Record');
+    await expect(status(page)).toHaveText('Recording. Pause to think, Done when you have said it all.');
+    serverA.disconnectAll(1001, 'drop A');
+    await expect(status(page)).toHaveText('Connection lost. Press Done to finish or Discard to start over.');
+
+    serverA.setOnCall((ctx) => {
+      if (ctx.call === 'library_get' && ctx.args.id === sharedEntryId) {
+        releaseStaleEntryA = () => {
+          ctx.replyOk('Stale delayed transcript from Server A.');
+        };
+        return true;
+      }
+      return false;
+    });
+    await page.locator('#library li').first().getByRole('button').click();
+    await expect(page.getByRole('heading', { level: 2 })).toHaveText('2026-11-22 10:00:00');
+    await expect.poll(() => releaseStaleEntryA !== null).toBe(true);
+
+    // Switch from Server A to Server B via Settings -> Connect.
+    await button(page, 'Settings').click();
+    const settingsDialog = page.getByRole('dialog', { name: 'Settings' });
+    await expect(settingsDialog).toBeVisible();
+    await settingsDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const connectDialog = page.getByRole('dialog', { name: 'Connect' });
+    await expect(connectDialog).toBeVisible();
+    await connectDialog.getByLabel('Server URL').fill(serverB.url);
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+
+    // Server B authenticates -> Connect closes, Settings reopens, settings writes MUST be disabled while settings_get is held!
+    await expect(connectDialog).toBeHidden();
+    await expect(settingsDialog).toBeVisible();
+    await expect.poll(() => releaseSettingsB !== null).toBe(true);
+    await expect(settingsDialog.getByLabel('Split into parts at a pause')).toBeDisabled();
+    await expect(settingsDialog.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' })).toBeDisabled();
+    await expect(settingsDialog.getByRole('switch', { name: 'Generate library titles with local AI (Ollama)' })).toBeDisabled();
+
+    // Release Server A's stale library_get completion: must be ignored!
+    const releaseA = releaseStaleEntryA as (() => void) | null;
+    releaseA?.();
+    await page.waitForTimeout(50);
+
+    // Even closing Settings and clicking Library toggle while settings_get is still pending sends NO settings_set!
+    await page.keyboard.press('Escape');
+    await button(page, 'Library').click();
+    await page.waitForTimeout(30);
+    expect(savedOnB).toHaveLength(0);
+    await button(page, 'Settings').click();
+    await expect(settingsDialog).toBeVisible();
+
+    // Release Server B's settings_get -> controls unlock with Server B's values!
+    const releaseB = releaseSettingsB as (() => void) | null;
+    releaseB?.();
+    await expect(settingsDialog.getByLabel('Split into parts at a pause')).toBeEnabled();
+    await expect(settingsDialog.getByLabel('Split into parts at a pause')).toHaveValue('4000');
+    await expect(settingsDialog.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' })).not.toBeChecked();
+    await expect(settingsDialog.getByRole('switch', { name: 'Generate library titles with local AI (Ollama)' })).not.toBeChecked();
+    await expect(settingsDialog.getByText('Version 2.0.0-B')).toBeVisible();
+
+    // First save on Server B carries Server B's COMPLETE Settings including every hidden value!
+    await settingsDialog.getByRole('switch', { name: 'Enable post-processing with local AI (Ollama)' }).click();
+    await expect.poll(() => savedOnB.length).toBe(1);
+    expect(savedOnB[0]).toEqual({ ...settingsB, cleanup: true });
+
+    // Close Settings -> verify prior Server A entry selection & former-owner notice are gone, and Server B's entry loads cleanly!
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { level: 2 })).toHaveCount(0);
+    await expect(status(page)).toHaveText('Click New to start a dictation.');
+    await expect(page.getByText('Summary from Server B')).toBeVisible();
+    await expect(page.getByText('Summary from Server A')).toHaveCount(0);
+    await page.locator('#library li').first().getByRole('button').click();
+    await expect(page.locator('#entry-transcript')).toHaveValue('Transcript from Server B.');
+  } finally {
+    await serverA.close();
+    await serverB.close();
+  }
+});

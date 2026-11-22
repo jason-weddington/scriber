@@ -5,11 +5,12 @@
   // actions. Patterns: docs/tauri-design-notes.md. The library drawer on the
   // left lists past dictations; selecting one shows it in place of the
   // recorder until New.
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
 
   import {
     act,
     appVersion,
+    configureWebConnection,
     dictationState,
     errorText,
     INITIAL_WEB_UI_STATE,
@@ -19,6 +20,7 @@
     libraryGet,
     libraryList,
     learnedVocabularyOpen,
+    observeWebConnectDecision,
     onDictationChanged,
     ollamaModels,
     onFullscreenChanged,
@@ -34,6 +36,8 @@
     vocabularyOpen,
     WebCopyError,
     windowFullscreen,
+    type WebAttemptFailureCode,
+    type WebConnectionConfig,
     type WebUiState,
   } from './lib/bridge';
   import {
@@ -56,6 +60,7 @@
     statusAlert,
     statusLine,
   } from './lib/format';
+  import ConnectPanel from './lib/ConnectPanel.svelte';
   import CopyButton from './lib/CopyButton.svelte';
   import LibraryDrawer from './lib/LibraryDrawer.svelte';
   import MicrophoneMenu from './lib/MicrophoneMenu.svelte';
@@ -92,9 +97,12 @@
   // The settings, as last read or chosen; the defaults until they load.
   let settings = $state<Settings>({ summaries: true, libraryOpen: true, vocabulary: '', cleanup: false, summaryModel: '', cleanupModel: '', libraryWidth: LIBRARY_WIDTH_DEFAULT, inputDevice: '', silenceSplitMs: 0, keepSegments: false, learnedVocabulary: '', modelFolder: '', toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, pauseShortcut: DEFAULT_PAUSE_SHORTCUT, copySound: true });
   let settingsOpen = $state(false);
+  let settingsPanel = $state<{ closeDialog: () => void }>();
+  let settingsInitialFocus = $state<'default' | 'connect'>('default');
   let settingsButton = $state<HTMLButtonElement>();
   let settingsFromPointer = false;
   let settingsError = $state<string | null>(null);
+  let settingsLoaded = $state(!isWebBackend());
   // The installed Ollama models, listed each time Settings opens; null while
   // the listing is in flight.
   let models = $state<string[] | null>(null);
@@ -125,7 +133,36 @@
   const webBackend = isWebBackend();
   let webUi = $state<WebUiState>(INITIAL_WEB_UI_STATE);
   let sessionGeneration = 0;
+  let entryRequest = 0;
   let resetSnapshotBaseline = false;
+  let activeOrigin: string | null = null;
+  let lastHandledAttemptKey = '';
+
+  type ConnectOrigin = 'manual_settings' | 'auto' | 'manual_recovery';
+  let connectOpen = $state(false);
+  let connectOrigin = $state<ConnectOrigin | null>(null);
+  let connectSubmitted = $state(false);
+  let connectFeedback = $state<string | null>(null);
+  let recoveryConnectButton = $state<HTMLButtonElement>();
+  let pendingRecorderFocus = false;
+
+  const webNeedsRecovery = $derived(
+    webBackend &&
+      webUi.connection.status === 'failed' &&
+      (webUi.connection.failureCode === 'auth_4401' ||
+        (!webUi.connection.priorAuth && webUi.connection.failureCode !== 'disconnect') ||
+        webUi.connection.reason === 'configure' ||
+        webUi.connection.reason === 'explicit_retry'),
+  );
+  const webRecoveryMessage = $derived(
+    webUi.connection.status === 'failed' && webUi.connection.failureCode === 'auth_4401'
+      ? 'Authentication refused.'
+      : 'Could not connect to the Scriber server.',
+  );
+  const connectConnecting = $derived(
+    connectSubmitted && webUi.connection.status === 'connecting',
+  );
+  const connectCanRetry = $derived(webUi.connection.status !== 'authenticated');
 
   const elapsed = $derived(
     snapshot === null ? 0 : snapshot.recordedMs + (recordingSince === null ? 0 : Math.max(0, now - recordingSince)),
@@ -153,7 +190,11 @@
     if (next.phase === 'finished' && (snapshot?.phase !== 'finished' || snapshot.text !== next.text)) draft = next.text;
     const becameReady = next.phase === 'ready' && snapshot?.phase !== 'ready';
     snapshot = next;
-    if (becameReady) listInputs();
+    if (pendingRecorderFocus) {
+      pendingRecorderFocus = false;
+      focusRecorderAfterConnect();
+    }
+    if (becameReady && !webBackend) listInputs();
     if (next.libraryRevision > listedRevision) void list(next.libraryRevision);
   }
 
@@ -173,14 +214,28 @@
     }
   }
 
+  function saveSettings(next: Settings, onOk: () => void, onErr: (msg: string) => void): void {
+    if (webBackend && !settingsLoaded) return;
+    settings = next;
+    const gen = sessionGeneration;
+    settingsSet(next).then(
+      () => {
+        if (gen === sessionGeneration) onOk();
+      },
+      (e: unknown) => {
+        if (gen === sessionGeneration) onErr(errorText(e));
+      },
+    );
+  }
+
   function toggleLibrary(): void {
-    settings = { ...settings, libraryOpen: !settings.libraryOpen };
-    settingsSet(settings).then(
+    saveSettings(
+      { ...settings, libraryOpen: !settings.libraryOpen },
       () => {
         toggleError = null;
       },
-      (e: unknown) => {
-        toggleError = errorText(e);
+      (msg) => {
+        toggleError = msg;
       },
     );
   }
@@ -191,48 +246,49 @@
   }
 
   function saveLibraryWidth(): void {
-    settingsSet(settings).then(
+    saveSettings(
+      settings,
       () => {
         toggleError = null;
       },
-      (e: unknown) => {
-        toggleError = errorText(e);
+      (msg) => {
+        toggleError = msg;
       },
     );
   }
 
   function setCleanup(on: boolean): void {
-    settings = { ...settings, cleanup: on };
-    settingsSet(settings).then(
+    saveSettings(
+      { ...settings, cleanup: on },
       () => {
         settingsError = null;
       },
-      (e: unknown) => {
-        settingsError = errorText(e);
+      (msg) => {
+        settingsError = msg;
       },
     );
   }
 
   function setCopySound(on: boolean): void {
-    settings = { ...settings, copySound: on };
-    settingsSet(settings).then(
+    saveSettings(
+      { ...settings, copySound: on },
       () => {
         settingsError = null;
       },
-      (e: unknown) => {
-        settingsError = errorText(e);
+      (msg) => {
+        settingsError = msg;
       },
     );
   }
 
   function setSilenceSplit(ms: number): void {
-    settings = { ...settings, silenceSplitMs: ms };
-    settingsSet(settings).then(
+    saveSettings(
+      { ...settings, silenceSplitMs: ms },
       () => {
         settingsError = null;
       },
-      (e: unknown) => {
-        settingsError = errorText(e);
+      (msg) => {
+        settingsError = msg;
       },
     );
   }
@@ -241,15 +297,16 @@
   function listModels(): void {
     modelListing += 1;
     const n = modelListing;
+    const gen = sessionGeneration;
     models = null;
     ollamaDown = false;
     ollamaReason = '';
     ollamaModels().then(
       (got) => {
-        if (n === modelListing) models = got;
+        if (n === modelListing && gen === sessionGeneration) models = got;
       },
       (e: unknown) => {
-        if (n !== modelListing) return;
+        if (n !== modelListing || gen !== sessionGeneration) return;
         ollamaDown = true;
         models = [];
         ollamaReason = errorText(e);
@@ -323,37 +380,37 @@
   }
 
   function setSummaryModel(name: string): void {
-    settings = { ...settings, summaryModel: name };
-    settingsSet(settings).then(
+    saveSettings(
+      { ...settings, summaryModel: name },
       () => {
         settingsError = null;
       },
-      (e: unknown) => {
-        settingsError = errorText(e);
+      (msg) => {
+        settingsError = msg;
       },
     );
   }
 
   function setCleanupModel(name: string): void {
-    settings = { ...settings, cleanupModel: name };
-    settingsSet(settings).then(
+    saveSettings(
+      { ...settings, cleanupModel: name },
       () => {
         settingsError = null;
       },
-      (e: unknown) => {
-        settingsError = errorText(e);
+      (msg) => {
+        settingsError = msg;
       },
     );
   }
 
   function setSummaries(on: boolean): void {
-    settings = { ...settings, summaries: on };
-    settingsSet(settings).then(
+    saveSettings(
+      { ...settings, summaries: on },
       () => {
         settingsError = null;
       },
-      (e: unknown) => {
-        settingsError = errorText(e);
+      (msg) => {
+        settingsError = msg;
       },
     );
   }
@@ -445,14 +502,20 @@
 
   /** Shows library entry `chosen` in place of the recorder. */
   async function select(chosen: LibraryEntry): Promise<void> {
+    const gen = sessionGeneration;
+    const req = ++entryRequest;
     entry = { id: chosen.id, title: chosen.title, transcript: null };
     entryError = null;
     entryCopied = false;
     try {
       const transcript = await libraryGet(chosen.id);
-      if (showing(chosen.id)) entry = { id: chosen.id, title: chosen.title, transcript };
+      if (gen === sessionGeneration && req === entryRequest && showing(chosen.id)) {
+        entry = { id: chosen.id, title: chosen.title, transcript };
+      }
     } catch (e) {
-      if (showing(chosen.id)) entryError = errorText(e);
+      if (gen === sessionGeneration && req === entryRequest && showing(chosen.id)) {
+        entryError = errorText(e);
+      }
     }
   }
 
@@ -461,14 +524,19 @@
   }
 
   async function copyEntry(id: string): Promise<boolean> {
+    const gen = sessionGeneration;
+    const req = entryRequest;
     entryCopied = false;
     try {
       await libraryCopy(id);
+      if (gen !== sessionGeneration || req !== entryRequest || !showing(id)) return false;
       entryError = null;
       entryCopied = true;
       return true;
     } catch (e) {
-      entryError = errorText(e);
+      if (gen === sessionGeneration && req === entryRequest && showing(id)) {
+        entryError = errorText(e);
+      }
       return false;
     }
   }
@@ -484,8 +552,7 @@
     if (snapshot?.phase === 'recording') levels = pushLevel(levels, level);
   }
 
-  async function load(): Promise<void> {
-    if (webBackend) retryWebConnection();
+  async function loadSession(): Promise<void> {
     const gen = sessionGeneration;
     loadError = null;
     try {
@@ -497,18 +564,25 @@
     }
   }
 
+  function retryLoad(): void {
+    if (webBackend) retryWebConnection();
+    void loadSession();
+  }
+
   function refreshAll(): void {
     const gen = sessionGeneration;
     void list(0);
-    listInputs();
+    if (!webBackend) listInputs();
     // Unreadable settings leave the defaults, silently.
     settingsGet().then(
       (s) => {
-        if (gen === sessionGeneration) settings = s;
+        if (gen !== sessionGeneration) return;
+        settings = s;
+        settingsLoaded = true;
       },
       () => undefined,
     );
-    void load();
+    void loadSession();
     // Settings shows no version line when the version cannot be read.
     appVersion().then(
       (v) => {
@@ -516,6 +590,39 @@
       },
       () => undefined,
     );
+    if (settingsOpen) listModels();
+  }
+
+  function resetForOriginSwitch(nextOrigin: string): void {
+    activeOrigin = nextOrigin;
+    sessionGeneration += 1;
+    listing += 1;
+    modelListing += 1;
+    inputListing += 1;
+    entryRequest += 1;
+    snapshot = null;
+    draft = '';
+    recordingSince = null;
+    levels = [];
+    loadError = null;
+    actionError = null;
+    busy = false;
+    entries = [];
+    libraryError = null;
+    listedRevision = -1;
+    entry = null;
+    entryError = null;
+    entryCopied = false;
+    settingsError = null;
+    toggleError = null;
+    version = '';
+    models = null;
+    ollamaDown = false;
+    ollamaReason = '';
+    inputs = null;
+    inputsError = null;
+    settingsLoaded = false;
+    resetSnapshotBaseline = true;
   }
 
   function rebind(): void {
@@ -524,6 +631,204 @@
     resetSnapshotBaseline = true;
     listedRevision = -1;
     refreshAll();
+  }
+
+  function closeSettingsForConnect(): void {
+    if (settingsOpen) {
+      settingsPanel?.closeDialog();
+      settingsOpen = false;
+    }
+  }
+
+  function openConnectFromSettings(): void {
+    closeSettingsForConnect();
+    connectOrigin = 'manual_settings';
+    connectSubmitted = false;
+    connectFeedback = null;
+    connectOpen = true;
+    observeWebConnectDecision({
+      trigger: 'settings',
+      outcome: 'ok',
+      reason: 'open',
+      generation: webUi.connection.generation,
+    });
+  }
+
+  function openConnectFromRecovery(): void {
+    closeSettingsForConnect();
+    connectOrigin = 'manual_recovery';
+    connectSubmitted = false;
+    connectFeedback = webNeedsRecovery ? webRecoveryMessage : null;
+    connectOpen = true;
+    observeWebConnectDecision({
+      trigger: 'recovery',
+      outcome: 'ok',
+      reason: 'open',
+      generation: webUi.connection.generation,
+    });
+  }
+
+  function openConnectAuto(
+    message: string,
+    trigger: 'initial_failure' | 'explicit_failure' | 'post_auth_4401',
+    generation: number,
+    priorAuth: boolean,
+    failureCode: WebAttemptFailureCode,
+  ): void {
+    if (!connectOpen) {
+      closeSettingsForConnect();
+      connectOrigin = 'auto';
+      connectSubmitted = false;
+      connectOpen = true;
+    }
+    connectFeedback = message;
+    observeWebConnectDecision({
+      trigger,
+      outcome: 'ok',
+      reason: 'open',
+      generation,
+      priorAuth,
+      failureCode,
+    });
+  }
+
+  function submitConnect(config: WebConnectionConfig): void {
+    connectFeedback = null;
+    try {
+      configureWebConnection(config);
+      connectSubmitted = true;
+    } catch {
+      connectFeedback = 'Enter a valid server URL.';
+    }
+  }
+
+  function retryConnect(): void {
+    connectFeedback = null;
+    connectSubmitted = true;
+    retryWebConnection();
+  }
+
+  function focusRecorderAfterConnect(): void {
+    void tick().then(() => {
+      const primary = document.querySelector<HTMLButtonElement>('main .controls button:not(:disabled)');
+      const newBtn = document.querySelector<HTMLButtonElement>('.band button.primary:not(:disabled)');
+      (primary ?? newBtn ?? settingsButton)?.focus();
+      focusFromPointer = true;
+      pointerDown = false;
+    });
+  }
+
+  function focusRecoveryTrigger(): void {
+    void tick().then(() => {
+      (recoveryConnectButton ?? settingsButton)?.focus();
+      focusFromPointer = false;
+      pointerDown = false;
+    });
+  }
+
+  function dismissConnectForSuccess(): void {
+    const origin = connectOrigin;
+    connectOpen = false;
+    connectOrigin = null;
+    connectSubmitted = false;
+    connectFeedback = null;
+    if (origin === 'manual_settings') {
+      settingsInitialFocus = 'connect';
+      settingsOpen = true;
+      listModels();
+    } else {
+      pendingRecorderFocus = snapshot === null;
+      focusRecorderAfterConnect();
+    }
+  }
+
+  function cancelConnect(): void {
+    const origin = connectOrigin;
+    connectOpen = false;
+    connectOrigin = null;
+    connectSubmitted = false;
+    connectFeedback = null;
+    observeWebConnectDecision({
+      trigger: 'cancel',
+      outcome: 'cancelled',
+      reason: 'dismiss',
+      generation: webUi.connection.generation,
+    });
+    if (origin === 'manual_settings') {
+      settingsInitialFocus = 'connect';
+      settingsOpen = true;
+      listModels();
+    } else {
+      focusRecoveryTrigger();
+    }
+  }
+
+  function handleWebUiState(state: WebUiState): void {
+    webUi = state;
+    const attempt = state.connection;
+
+    if (activeOrigin !== null && attempt.effectiveOrigin !== activeOrigin) {
+      resetForOriginSwitch(attempt.effectiveOrigin);
+    } else if (activeOrigin === null) {
+      activeOrigin = attempt.effectiveOrigin;
+    }
+
+    const key = `${attempt.status}:${attempt.generation}`;
+    if (key === lastHandledAttemptKey) return;
+    lastHandledAttemptKey = key;
+
+    if (attempt.status === 'failed') {
+      if (attempt.failureCode === 'auth_4401') {
+        const trigger = attempt.priorAuth ? 'post_auth_4401' : 'initial_failure';
+        openConnectAuto('Authentication refused.', trigger, attempt.generation, attempt.priorAuth, attempt.failureCode);
+      } else if (attempt.failureCode !== 'disconnect') {
+        if (!attempt.priorAuth) {
+          openConnectAuto(
+            'Could not connect to the Scriber server.',
+            'initial_failure',
+            attempt.generation,
+            false,
+            attempt.failureCode,
+          );
+        } else if (attempt.reason === 'configure' || attempt.reason === 'explicit_retry') {
+          openConnectAuto(
+            'Could not connect to the Scriber server.',
+            'explicit_failure',
+            attempt.generation,
+            attempt.priorAuth,
+            attempt.failureCode,
+          );
+        } else {
+          observeWebConnectDecision({
+            trigger: 'transient_reconnect',
+            outcome: 'skip',
+            reason: 'suppress',
+            generation: attempt.generation,
+            priorAuth: attempt.priorAuth,
+            failureCode: attempt.failureCode,
+          });
+        }
+      }
+    } else if (attempt.status === 'authenticated' && connectOpen) {
+      if (connectOrigin === 'auto' || connectSubmitted) {
+        observeWebConnectDecision({
+          trigger: 'active_auth',
+          outcome: 'ok',
+          reason: 'dismiss',
+          generation: attempt.generation,
+          priorAuth: attempt.priorAuth,
+        });
+        dismissConnectForSuccess();
+      } else {
+        observeWebConnectDecision({
+          trigger: 'background_auth',
+          outcome: 'skip',
+          reason: 'keep_open',
+          generation: attempt.generation,
+          priorAuth: attempt.priorAuth,
+        });
+      }
+    }
   }
 
   async function run(action: Action): Promise<boolean> {
@@ -562,9 +867,7 @@
       fullscreen = on;
     });
     if (webBackend) {
-      onWebUiStateChanged((state) => {
-        webUi = state;
-      });
+      onWebUiStateChanged(handleWebUiState);
       onWebRebind(() => {
         rebind();
       });
@@ -615,6 +918,7 @@
   }
 
   function openSettings(fromPointer: boolean): void {
+    settingsInitialFocus = 'default';
     settingsOpen = true;
     listModels();
     settingsFromPointer = fromPointer;
@@ -629,7 +933,7 @@
   // Return for itself. A held key's repeats are swallowed.
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === 'Tab') pointerDown = false;
-    if (settingsOpen) return;
+    if (settingsOpen || connectOpen) return;
     if (e.target instanceof Element && e.target.closest('[role="menu"]') !== null) return;
     if (opensSettings(e)) {
       e.preventDefault();
@@ -692,9 +996,22 @@
           <p class="error" role="alert" title={entryError}>{entryError}</p>
         {/if}
       </div>
+    {:else if webBackend && snapshot === null && (loadError !== null || webNeedsRecovery)}
+      <p class="error" role="alert">{webRecoveryMessage}</p>
+      <div class="controls">
+        <button
+          type="button"
+          class="primary"
+          bind:this={recoveryConnectButton}
+          onclick={openConnectFromRecovery}
+        >
+          Connect
+        </button>
+        <button type="button" onclick={retryLoad}>Try again</button>
+      </div>
     {:else if loadError !== null}
       <p class="error" role="alert">Could not read the session: {loadError}</p>
-      <button type="button" onclick={load}>Try again</button>
+      <button type="button" onclick={retryLoad}>Try again</button>
     {:else if snapshot !== null}
       <div class="status-row" class:wrap={snapshot.phase === 'finished' && snapshot.text === '' && alert === null}>
         <p class="status" aria-live="polite" title={line} class:visually-hidden={alert !== null}>{line}</p>
@@ -710,14 +1027,28 @@
       </div>
 
       {#if snapshot.phase === 'ready' || snapshot.phase === 'recording' || snapshot.phase === 'paused'}
-        <MicrophoneMenu
-          name={activeMicrophone(snapshot, inputs, settings.inputDevice)}
-          {inputs}
-          saved={settings.inputDevice}
-          error={inputsError}
-          onopen={listInputs}
-          onchoose={chooseInput}
-        />
+        {#if webBackend}
+          {@const micName = snapshot.microphone ?? 'Browser microphone'}
+          <div class="mic-row">
+            <span class="mic-indicator" title={micName}>
+              <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
+                <rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5" fill="none" stroke="currentColor" />
+                <path d="M3 7.5a5 5 0 0 0 10 0" fill="none" stroke="currentColor" />
+                <line x1="8" y1="12.5" x2="8" y2="14.5" stroke="currentColor" />
+              </svg>
+              <span class="mic-name">{micName}</span>
+            </span>
+          </div>
+        {:else}
+          <MicrophoneMenu
+            name={activeMicrophone(snapshot, inputs, settings.inputDevice)}
+            {inputs}
+            saved={settings.inputDevice}
+            error={inputsError}
+            onopen={listInputs}
+            onchoose={chooseInput}
+          />
+        {/if}
       {/if}
 
       <div class="controls">
@@ -817,9 +1148,19 @@
         <span class="visually-hidden">Recorded&nbsp;</span>{formatElapsed(elapsed)}
       </span>
     {/if}
+    {#if webBackend && snapshot !== null && webNeedsRecovery}
+      <button
+        type="button"
+        class="primary"
+        bind:this={recoveryConnectButton}
+        onclick={openConnectFromRecovery}
+      >
+        Connect
+      </button>
+    {/if}
     <button
       type="button"
-      class:primary={snapshot?.phase === 'idle' && entry === null}
+      class:primary={snapshot?.phase === 'idle' && entry === null && !webNeedsRecovery}
       onclick={newPressed}
       disabled={entry === null && !can('new')} aria-keyshortcuts={SHORTCUTS.new?.aria}>
       New<kbd aria-hidden="true">{SHORTCUTS.new?.hint}</kbd>
@@ -841,6 +1182,7 @@
   </header>
 
   <SettingsPanel
+    bind:this={settingsPanel}
     {settings}
     open={settingsOpen}
     error={settingsError}
@@ -848,6 +1190,11 @@
     {ollamaDown}
     {ollamaReason}
     {version}
+    web={webBackend}
+    settingsReady={settingsLoaded}
+    effectiveOrigin={webUi.connection.effectiveOrigin}
+    initialFocus={settingsInitialFocus}
+    onconnect={openConnectFromSettings}
     onsummaries={setSummaries}
     onsummarymodel={setSummaryModel}
     oncleanupmodel={setCleanupModel}
@@ -863,4 +1210,29 @@
     oncopysound={setCopySound}
     onclose={settingsClosed}
   />
+
+  {#if webBackend}
+    <ConnectPanel
+      open={connectOpen}
+      effectiveOrigin={webUi.connection.effectiveOrigin}
+      feedback={connectFeedback}
+      connecting={connectConnecting}
+      canRetry={connectCanRetry}
+      onsubmit={submitConnect}
+      onretry={retryConnect}
+      oncancel={cancelConnect}
+    />
+  {/if}
 </div>
+
+<style>
+  .mic-indicator {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    min-width: 0;
+    gap: 6px;
+    padding: 4px 0;
+    color: var(--muted);
+  }
+</style>

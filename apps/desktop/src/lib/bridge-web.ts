@@ -39,13 +39,75 @@ export interface WebTimeouts {
   clipboardMs: number;
 }
 
+export type WebAttemptReason = 'initial' | 'reconnect' | 'explicit_retry' | 'configure';
+
+export type WebAttemptFailureCode =
+  | 'auth_4401'
+  | 'hello_timeout'
+  | 'invalid_hello'
+  | 'closed_before_hello'
+  | 'message_too_big'
+  | 'socket_error'
+  | 'disconnect';
+
+export type WebConnectionAttempt =
+  | {
+      status: 'idle';
+      generation: number;
+      effectiveOrigin: string;
+      priorAuth: boolean;
+    }
+  | {
+      status: 'connecting';
+      generation: number;
+      effectiveOrigin: string;
+      reason: WebAttemptReason;
+      priorAuth: boolean;
+    }
+  | {
+      status: 'authenticated';
+      generation: number;
+      effectiveOrigin: string;
+      reason: WebAttemptReason;
+      priorAuth: boolean;
+    }
+  | {
+      status: 'failed';
+      generation: number;
+      effectiveOrigin: string;
+      reason: WebAttemptReason;
+      priorAuth: boolean;
+      failureCode: WebAttemptFailureCode;
+    };
+
+export interface WebConnectDecision {
+  trigger:
+    | 'settings'
+    | 'recovery'
+    | 'initial_failure'
+    | 'explicit_failure'
+    | 'post_auth_4401'
+    | 'transient_reconnect'
+    | 'cancel'
+    | 'active_auth'
+    | 'background_auth';
+  outcome: 'ok' | 'skip' | 'cancelled';
+  reason: 'open' | 'suppress' | 'dismiss' | 'keep_open';
+  generation?: number;
+  priorAuth?: boolean;
+  failureCode?: WebAttemptFailureCode;
+}
+
 export interface WebObservation {
   seq: number;
-  category: 'connection' | 'rpc' | 'capture' | 'clipboard';
+  category: 'connection' | 'rpc' | 'capture' | 'clipboard' | 'connect';
   event: string;
   outcome: 'ok' | 'skip' | 'refused' | 'timeout' | 'cancelled' | 'failed';
   reason: string;
   generation: number;
+  trigger?: WebConnectDecision['trigger'];
+  priorAuth?: boolean;
+  failureCode?: WebAttemptFailureCode;
   requestId?: number;
   phase?: Phase;
   revision?: number;
@@ -63,12 +125,23 @@ export interface WebUiState {
   connectionLostNotice: boolean;
   clipboardOutcome: WebClipboardOutcome;
   archiveSuffix: string | null;
+  connection: WebConnectionAttempt;
+}
+
+function defaultEffectiveOrigin(): string {
+  return typeof window !== 'undefined' ? window.location.origin : '';
 }
 
 export const INITIAL_WEB_UI_STATE: WebUiState = {
   connectionLostNotice: false,
   clipboardOutcome: { kind: 'unwritten' },
   archiveSuffix: null,
+  connection: {
+    status: 'idle',
+    generation: 0,
+    effectiveOrigin: defaultEffectiveOrigin(),
+    priorAuth: false,
+  },
 };
 
 /** Distinguishes browser clipboard failure from post-copy learning RPC failure. */
@@ -213,18 +286,41 @@ export function projectWebSnapshot(raw: Snapshot, ui: WebUiState): Snapshot {
   }
 }
 
-function normalizeOrigin(raw: string): string {
+function isLoopbackHost(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  return (
+    lower === 'localhost' ||
+    lower.endsWith('.localhost') ||
+    lower === '[::1]' ||
+    /^127(?:\.\d{1,3}){3}$/.test(lower)
+  );
+}
+
+/**
+ * Normalizes a server URL to an HTTP(S) origin: trims whitespace, resolves
+ * relative URLs against `base`, maps WS(S) to HTTP(S), strips non-origin
+ * components, and rejects unsupported protocols, malformed URLs, or insecure
+ * non-loopback remote origins from HTTPS pages.
+ */
+export function normalizeOrigin(raw: string, base: string = defaultEffectiveOrigin()): string {
   const trimmed = raw.trim();
-  const base = window.location.origin;
   if (trimmed === '') return base;
+  if (/\s/.test(trimmed)) {
+    throw new Error('Enter a valid server URL.');
+  }
   const parsed = new URL(trimmed, base);
+  let protocol: 'http:' | 'https:';
   if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-    return `${parsed.protocol}//${parsed.host}`;
+    protocol = parsed.protocol;
+  } else if (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') {
+    protocol = parsed.protocol === 'wss:' ? 'https:' : 'http:';
+  } else {
+    throw new Error('Server URL must use http, https, ws or wss.');
   }
-  if (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') {
-    return `${parsed.protocol === 'wss:' ? 'https:' : 'http:'}//${parsed.host}`;
+  if (new URL(base).protocol === 'https:' && protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
+    throw new Error('Server URL must use https or wss from an HTTPS page.');
   }
-  throw new Error('Server URL must use http, https, ws or wss.');
+  return `${protocol}//${parsed.host}`;
 }
 
 function wsUrlFromOrigin(origin: string): string {
@@ -262,6 +358,7 @@ export class WebBridge {
   private generation = 0;
   private hasAuthenticatedOnce = false;
   private authRefused = false;
+  private socketFailed = false;
   private lastConnectionError: string | null = null;
   private helloTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -283,6 +380,9 @@ export class WebBridge {
   private finishText: string | null = null;
   private clipboardOutcome: WebClipboardOutcome = { kind: 'unwritten' };
   private archiveSuffix: string | null = null;
+  private connectionAttempt: WebConnectionAttempt;
+  private activeAttemptReason: WebAttemptReason = 'initial';
+  private activeAttemptOrigin = '';
   private nextAssocId = 0;
   private activeDoneAssoc: DoneAssociation | null = null;
   private obsSeq = 0;
@@ -290,6 +390,13 @@ export class WebBridge {
   constructor() {
     this.memEndpoint = this.readStoredEndpoint();
     this.memToken = this.readStoredToken();
+    this.activeAttemptOrigin = this.memEndpoint;
+    this.connectionAttempt = {
+      status: 'idle',
+      generation: 0,
+      effectiveOrigin: this.memEndpoint,
+      priorAuth: false,
+    };
   }
 
   /** Marks <html> with data-bridge="web" and opens the initial socket. */
@@ -301,21 +408,49 @@ export class WebBridge {
   /** Stores endpoint origin and token (with in-memory fallback) and immediately rebinds. */
   configureConnection(config: WebConnectionConfig): void {
     const origin = normalizeOrigin(config.endpoint);
+    const originChanged = origin !== this.memEndpoint;
     this.memEndpoint = origin;
     this.memToken = config.token;
-    this.writeStorage(WEB_ENDPOINT_KEY, origin);
-    this.writeStorage(WEB_TOKEN_KEY, config.token);
+    const savedEndpoint = this.writeStorage(WEB_ENDPOINT_KEY, origin);
+    const savedToken = this.writeStorage(WEB_TOKEN_KEY, config.token);
+    if (!savedEndpoint || !savedToken) {
+      this.observe({
+        category: 'connection',
+        event: 'storage',
+        outcome: 'skip',
+        reason: 'memory_fallback',
+        generation: this.generation,
+      });
+    }
     this.authRefused = false;
-    this.retire('configure', 'Reconnecting with updated server settings.');
+    this.socketFailed = false;
+    if (originChanged) {
+      this.resetEndpointState();
+    }
+    this.retire('configure', 'Reconnecting with updated server settings.', !originChanged);
     this.connect('configure');
   }
 
-  /** Explicitly retries the connection (clears an auth-refused latch). */
+  /** Explicitly retries the connection (clears an auth-refused latch and retires any stalled socket). */
   retryConnection(): void {
-    if (this.ws !== null) return;
     this.authRefused = false;
-    this.retire('explicit_retry', 'Reconnecting to the Scriber server.');
+    this.socketFailed = false;
+    this.retire('explicit_retry', 'Reconnecting to the Scriber server.', true);
     this.connect('explicit_retry');
+  }
+
+  /** Records a bounded, sanitized Connect UI decision observation for tests. */
+  observeConnectDecision(decision: WebConnectDecision): void {
+    this.observe({
+      category: 'connect',
+      event: 'decision',
+      outcome: decision.outcome,
+      reason: decision.reason,
+      generation: decision.generation ?? this.generation,
+      trigger: decision.trigger,
+      priorAuth: decision.priorAuth,
+      failureCode: decision.failureCode,
+    });
   }
 
   /** Current projected web UI feedback state. */
@@ -324,6 +459,7 @@ export class WebBridge {
       connectionLostNotice: this.connectionLostNotice,
       clipboardOutcome: this.clipboardOutcome,
       archiveSuffix: this.archiveSuffix,
+      connection: this.connectionAttempt,
     };
   }
 
@@ -892,19 +1028,43 @@ export class WebBridge {
     for (const cb of this.uiListeners) cb(state);
   }
 
+  private resetEndpointState(): void {
+    this.hasAuthenticatedOnce = false;
+    this.ownedRecording = false;
+    this.wasOwnerBeforeDisconnect = false;
+    this.connectionLostNotice = false;
+    this.lastSnapshotRevision = null;
+    this.finishAnchored = false;
+    this.finishText = null;
+    this.clipboardOutcome = { kind: 'unwritten' };
+    this.archiveSuffix = null;
+  }
+
   // ---- WebSocket transport & lifecycle --------------------------------------
 
   private ensureConnected(): void {
-    if (this.ws !== null || this.reconnectTimer !== null) return;
+    if (this.ws !== null || this.reconnectTimer !== null || this.socketFailed) return;
     this.connect('initial');
   }
 
-  private connect(reason: 'initial' | 'reconnect' | 'explicit_retry' | 'configure'): void {
+  private connect(reason: WebAttemptReason): void {
     this.clearReconnectTimer();
 
     const gen = ++this.generation;
+    const endpoint = this.memEndpoint;
+    const token = this.memToken;
+    const priorAuth = this.hasAuthenticatedOnce;
     this.authenticated = false;
     this.lastConnectionError = null;
+    this.activeAttemptReason = reason;
+    this.activeAttemptOrigin = endpoint;
+    this.connectionAttempt = {
+      status: 'connecting',
+      generation: gen,
+      effectiveOrigin: endpoint,
+      reason,
+      priorAuth,
+    };
     this.observe({
       category: 'connection',
       event: 'connect_start',
@@ -912,13 +1072,44 @@ export class WebBridge {
       reason,
       generation: gen,
     });
+    this.notifyUi();
 
-    const url = wsUrlFromOrigin(this.memEndpoint);
-    const ws = new WebSocket(url);
+    const url = wsUrlFromOrigin(endpoint);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      this.socketFailed = true;
+      this.lastConnectionError = 'Could not connect to the Scriber server.';
+      this.connectionAttempt = {
+        status: 'failed',
+        generation: gen,
+        effectiveOrigin: endpoint,
+        reason,
+        priorAuth,
+        failureCode: 'socket_error',
+      };
+      this.observe({
+        category: 'connection',
+        event: 'connect',
+        outcome: 'failed',
+        reason: 'socket_error',
+        generation: gen,
+      });
+      this.notifyUi();
+      const err = new Error(this.lastConnectionError);
+      const waiters = this.readyWaiters;
+      this.readyWaiters = [];
+      for (const w of waiters) w.reject(err);
+      return;
+    }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
 
+    const isActive = (): boolean => gen === this.generation && this.ws === ws;
+
     this.helloTimer = setTimeout(() => {
+      if (!isActive() || this.authenticated) return;
       this.observe({
         category: 'connection',
         event: 'hello',
@@ -931,14 +1122,17 @@ export class WebBridge {
         'hello_timeout',
         'Timed out waiting for the Scriber server handshake.',
         true,
+        'hello_timeout',
       );
     }, this.timeouts().helloMs);
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ hello: { token: this.memToken } }));
+      if (!isActive()) return;
+      ws.send(JSON.stringify({ hello: { token } }));
     };
 
     ws.onmessage = (event: MessageEvent) => {
+      if (!isActive()) return;
       let msg: unknown;
       try {
         msg = JSON.parse(String(event.data)) as unknown;
@@ -956,6 +1150,7 @@ export class WebBridge {
             'invalid_hello',
             'The server did not complete the Scriber handshake.',
             true,
+            'invalid_hello',
           );
         }
         return;
@@ -975,6 +1170,7 @@ export class WebBridge {
             'invalid_hello',
             'The server did not complete the Scriber handshake.',
             true,
+            'invalid_hello',
           );
           return;
         }
@@ -992,6 +1188,14 @@ export class WebBridge {
         const shouldNotifyRebind = this.hasAuthenticatedOnce || gen > 1 || this.readyWaiters.length === 0;
         this.hasAuthenticatedOnce = true;
         this.lastSnapshotRevision = null;
+        this.connectionAttempt = {
+          status: 'authenticated',
+          generation: gen,
+          effectiveOrigin: endpoint,
+          reason,
+          priorAuth,
+        };
+        this.notifyUi();
         if (shouldNotifyRebind) {
           for (const cb of this.rebindListeners) cb(gen);
         }
@@ -1006,6 +1210,7 @@ export class WebBridge {
     };
 
     ws.onclose = (event: CloseEvent) => {
+      if (!isActive()) return;
       if (event.code === CLOSE_UNAUTHORIZED) {
         this.authRefused = true;
         this.observe({
@@ -1020,15 +1225,18 @@ export class WebBridge {
           'auth_4401',
           'Authentication refused by the Scriber server. Check the token and try again.',
           false,
+          'auth_4401',
         );
         return;
       }
       if (event.code === CLOSE_MESSAGE_TOO_BIG) {
+        const failureCode: WebAttemptFailureCode = this.authenticated ? 'disconnect' : 'message_too_big';
         this.handleDisconnect(
           gen,
           'message_too_big',
           'Connection closed: message exceeded the server size limit.',
           true,
+          failureCode,
         );
         return;
       }
@@ -1045,10 +1253,11 @@ export class WebBridge {
           'closed_before_hello',
           'The server did not complete the Scriber handshake.',
           true,
+          'closed_before_hello',
         );
         return;
       }
-      this.handleDisconnect(gen, 'disconnect', 'Connection to the Scriber server was lost.', true);
+      this.handleDisconnect(gen, 'disconnect', 'Connection to the Scriber server was lost.', true, 'disconnect');
     };
   }
 
@@ -1107,21 +1316,37 @@ export class WebBridge {
   }
 
   private handleDisconnect(
-    _gen: number,
+    gen: number,
     reason: string,
     errorMessage: string,
     allowReconnect: boolean,
+    failureCode: WebAttemptFailureCode,
   ): void {
-    this.retire(reason, errorMessage);
+    if (gen !== this.generation) return;
+    const attemptReason = this.activeAttemptReason;
+    const attemptOrigin = this.activeAttemptOrigin;
+    const priorAuth = this.hasAuthenticatedOnce;
+    this.retire(reason, errorMessage, true);
+    this.connectionAttempt = {
+      status: 'failed',
+      generation: gen,
+      effectiveOrigin: attemptOrigin,
+      reason: attemptReason,
+      priorAuth,
+      failureCode,
+    };
+    this.notifyUi();
     if (allowReconnect && !this.authRefused) {
+      const scheduledGen = this.generation;
       this.observe({
         category: 'connection',
         event: 'retry',
         outcome: 'ok',
         reason: 'scheduled',
-        generation: this.generation,
+        generation: scheduledGen,
       });
       this.reconnectTimer = setTimeout(() => {
+        if (this.generation !== scheduledGen || this.ws !== null) return;
         this.reconnectTimer = null;
         this.connect('reconnect');
       }, this.timeouts().reconnectMs);
@@ -1140,7 +1365,7 @@ export class WebBridge {
     this.reconnectTimer = clearTimer(this.reconnectTimer);
   }
 
-  private retire(reason: string, errorMessage: string): void {
+  private retire(reason: string, errorMessage: string, preserveOwnership: boolean): void {
     const oldGen = this.generation;
     if (this.ws !== null || this.reconnectTimer !== null || this.pendingRpcs.size > 0 || this.readyWaiters.length > 0) {
       this.observe({ category: 'connection', event: 'retire', outcome: 'cancelled', reason, generation: oldGen });
@@ -1162,8 +1387,10 @@ export class WebBridge {
       }
     }
 
-    if (this.ownedRecording) {
+    if (preserveOwnership && this.ownedRecording) {
       this.wasOwnerBeforeDisconnect = true;
+      this.ownedRecording = false;
+    } else if (!preserveOwnership) {
       this.ownedRecording = false;
     }
     this.capture.stop('retired');
@@ -1201,7 +1428,7 @@ export class WebBridge {
     if (this.authenticated && this.ws !== null && this.ws.readyState === WebSocket.OPEN) {
       return this.generation;
     }
-    if (this.authRefused) {
+    if (this.authRefused || this.socketFailed) {
       throw new Error(
         this.lastConnectionError ?? 'Authentication refused by the Scriber server. Check the token and try again.',
       );
@@ -1298,11 +1525,12 @@ export class WebBridge {
     }
   }
 
-  private writeStorage(key: string, value: string): void {
+  private writeStorage(key: string, value: string): boolean {
     try {
       window.localStorage.setItem(key, value);
+      return true;
     } catch {
-      // In-memory fallback already updated by caller.
+      return false;
     }
   }
 
@@ -1327,6 +1555,9 @@ export class WebBridge {
     outcome: WebObservation['outcome'];
     reason: string;
     generation: number;
+    trigger?: WebConnectDecision['trigger'] | undefined;
+    priorAuth?: boolean | undefined;
+    failureCode?: WebAttemptFailureCode | undefined;
     requestId?: number | undefined;
     phase?: Phase | undefined;
     revision?: number | undefined;
@@ -1343,6 +1574,9 @@ export class WebBridge {
       outcome: entry.outcome,
       reason: entry.reason,
       generation: entry.generation,
+      ...(entry.trigger !== undefined ? { trigger: entry.trigger } : {}),
+      ...(entry.priorAuth !== undefined ? { priorAuth: entry.priorAuth } : {}),
+      ...(entry.failureCode !== undefined ? { failureCode: entry.failureCode } : {}),
       ...(entry.requestId !== undefined ? { requestId: entry.requestId } : {}),
       ...(entry.phase !== undefined ? { phase: entry.phase } : {}),
       ...(entry.revision !== undefined ? { revision: entry.revision } : {}),
