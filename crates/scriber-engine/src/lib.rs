@@ -14,7 +14,8 @@
 //! ([`Engine::library`]): titled by its start in local time, its audio
 //! encoded as M4A by macOS's `afconvert` (kept as WAV where that is
 //! missing) and summarized in one sentence by a local Ollama server (an
-//! excerpt of the transcript where that is unreachable). It is off by
+//! excerpt of the transcript where that is unreachable or when
+//! [`EngineConfig::library_summaries`] is off). It is off by
 //! default, so an app that embeds the engine keeps no audio it did not ask
 //! for.
 //!
@@ -159,6 +160,12 @@ pub struct EngineConfig {
     /// Whether finished sessions are kept in the recording library
     /// (`library/` in the data folder, see [`Engine::library`]).
     pub library: bool,
+    /// Whether library entries queue Ollama summary jobs when
+    /// [`Self::library`] is on (default `true`). Setting this to `false`
+    /// disables library summary work at runtime regardless of
+    /// `settings.json`'s `summaries` flag, without rewriting `settings.json`,
+    /// while leaving archiving, encoding, cleanup and warm-up unaffected.
+    pub library_summaries: bool,
     /// The Ollama server that summarizes library entries and cleans up
     /// transcripts.
     pub ollama_url: String,
@@ -183,8 +190,9 @@ pub struct EngineConfig {
 
 impl EngineConfig {
     /// The default model, downloaded into `data_dir`, no clipboard, no
-    /// library ([`DEFAULT_OLLAMA_URL`] and [`DEFAULT_SUMMARY_MODEL`] for
-    /// when it is turned on), [`OPEN`] as the text editor,
+    /// library (with [`Self::library_summaries`] on and
+    /// [`DEFAULT_OLLAMA_URL`] and [`DEFAULT_SUMMARY_MODEL`] for when the
+    /// library is turned on), [`OPEN`] as the text editor,
     /// [`KEEP_WARM_INTERVAL`] between keep-alive renewals, and
     /// [`LexiconSource::Bundled`] as the ordinary-word dictionary.
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
@@ -193,6 +201,7 @@ impl EngineConfig {
             model: ModelSource::default(),
             clipboard: None,
             library: false,
+            library_summaries: true,
             ollama_url: DEFAULT_OLLAMA_URL.to_string(),
             summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
             editor: PathBuf::from(OPEN),
@@ -345,6 +354,8 @@ struct Inner {
     shut: AtomicBool,
     /// Whether finished sessions are kept in the library.
     library: bool,
+    /// Whether library entries may queue summary jobs.
+    library_summaries: bool,
     /// Opens the glossary in the text editor.
     editor: TextEditor,
     /// The Ollama server, for listing its models.
@@ -405,7 +416,7 @@ impl Inner {
             ports.with_library(Library {
                 clock: &*a.clock,
                 encoder: &*a.encoder,
-                summarizer: &*a.summarizer,
+                summarizer: self.library_summaries.then_some(&*a.summarizer),
             })
         } else {
             ports
@@ -547,6 +558,7 @@ impl Engine {
             model,
             clipboard,
             library,
+            library_summaries,
             ollama_url,
             summary_model,
             editor,
@@ -571,6 +583,7 @@ impl Engine {
             queue: Jobs(Weak::clone(weak)),
             shut: AtomicBool::new(false),
             library,
+            library_summaries,
             editor: TextEditor::new(editor),
             ollama_url,
             default_model: summary_model,
@@ -1220,5 +1233,190 @@ impl Engine {
             .editor
             .open(&path)
             .map_err(|e| EngineError::Editor(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+
+    use super::{
+        Adapters, Captured, Cleaner, Clock, Downloader, Encoder, Engine, EngineConfig,
+        InputDevices, LevelSink, LexiconSource, LocalTime, ModelSource, Phrase, PortError,
+        Recorder, Summarizer, Transcriber, Warmer, fail,
+    };
+
+    struct StubAdapters;
+
+    impl Recorder for StubAdapters {
+        fn start(&self, _device: &str, _split_ms: u64) -> Result<String, PortError> {
+            Ok(String::new())
+        }
+
+        fn inputs(&self) -> Result<InputDevices, PortError> {
+            Ok(InputDevices::new(None, []))
+        }
+
+        fn stop(&self) -> Result<Captured, PortError> {
+            Ok(Captured::new(Vec::new(), 1, 16_000))
+        }
+
+        fn take_closed(&self) -> Vec<Captured> {
+            Vec::new()
+        }
+
+        fn on_split(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
+    }
+
+    impl Transcriber for StubAdapters {
+        fn missing_model(&self) -> Option<String> {
+            Some("missing".to_string())
+        }
+
+        fn warm(&self) -> Result<(), PortError> {
+            Ok(())
+        }
+
+        fn transcribe(
+            &self,
+            _samples: &[f32],
+            _prompt: Option<&str>,
+        ) -> Result<Vec<Phrase>, PortError> {
+            Ok(Vec::new())
+        }
+
+        fn unload(&self) -> bool {
+            false
+        }
+    }
+
+    impl Downloader for StubAdapters {
+        fn open(&self, _url: &str) -> Result<Box<dyn Read>, PortError> {
+            Err(fail("unused"))
+        }
+    }
+
+    impl Clock for StubAdapters {
+        fn now(&self) -> LocalTime {
+            LocalTime {
+                year: 2026,
+                month: 10,
+                day: 26,
+                hour: 14,
+                minute: 3,
+                second: 9,
+            }
+        }
+    }
+
+    impl Encoder for StubAdapters {
+        fn to_m4a(&self, _wav: &str, _m4a: &str) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+
+    impl Summarizer for StubAdapters {
+        fn summarize(&self, _model: &str, _transcript: &str) -> Result<String, PortError> {
+            Ok("stub-summary".to_string())
+        }
+    }
+
+    impl Cleaner for StubAdapters {
+        fn clean(
+            &self,
+            _model: &str,
+            _system: &str,
+            _request: &str,
+        ) -> Result<scriber_core::cleanup::Reply, PortError> {
+            Ok(scriber_core::cleanup::Reply::new(String::new()))
+        }
+    }
+
+    impl Warmer for StubAdapters {
+        fn warm(&self, _model: &str) -> Result<(), PortError> {
+            Ok(())
+        }
+
+        fn release(&self, _model: &str) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+
+    fn stub_adapters(_level: LevelSink) -> Adapters {
+        Adapters {
+            recorder: Box::new(StubAdapters),
+            transcriber: Box::new(StubAdapters),
+            downloader: Box::new(StubAdapters),
+            clock: Box::new(StubAdapters),
+            encoder: Box::new(StubAdapters),
+            summarizer: Box::new(StubAdapters),
+            cleaner: Box::new(StubAdapters),
+            warmer: Arc::new(StubAdapters),
+        }
+    }
+
+    /// Exercises the test-only stub methods that `Engine::with_adapters` does
+    /// not invoke during `Inner::ports` inspection so `lib.rs` stays at 100%
+    /// line coverage under `llvm-cov`.
+    fn cover_stub_adapters(stub: &StubAdapters) {
+        assert!(stub.start("", 0).is_ok(), "stub recorder start");
+        assert!(stub.inputs().is_ok(), "stub recorder inputs");
+        assert!(stub.stop().is_ok(), "stub recorder stop");
+        assert!(stub.take_closed().is_empty(), "stub recorder take_closed");
+        assert!(Transcriber::warm(stub).is_ok(), "stub transcriber warm");
+        assert!(stub.transcribe(&[], None).is_ok(), "stub transcribe");
+        assert!(stub.open("").is_err(), "stub downloader open");
+        assert!(Warmer::warm(stub, "").is_ok(), "stub warmer warm");
+        assert!(Warmer::release(stub, "").is_ok(), "stub warmer release");
+    }
+
+    #[test]
+    fn library_summaries_controls_summarizer_presence_in_ports() {
+        cover_stub_adapters(&StubAdapters);
+        for library_summaries in [true, false] {
+            let dir = TempDir::new().unwrap();
+            let config = EngineConfig {
+                model: ModelSource::Local(dir.path().join("missing.bin")),
+                library: true,
+                library_summaries,
+                lexicon: LexiconSource::None,
+                ..EngineConfig::new(dir.path())
+            };
+            let engine = Engine::with_adapters(config, stub_adapters, Arc::new(|_| {}));
+            assert!(
+                engine.act(super::Action::New, "").is_ok(),
+                "library_summaries={library_summaries}: engine accepts actions"
+            );
+            let ports = engine.0.ports();
+            let lib = ports.library.expect("library ports should be enabled");
+            assert_eq!(lib.clock.now().year, 2026, "clock attached");
+            assert!(lib.encoder.to_m4a("", "").is_ok(), "encoder attached");
+            assert_eq!(
+                lib.summarizer.is_some(),
+                library_summaries,
+                "library_summaries={library_summaries}: summarizer presence"
+            );
+            if let Some(summarizer) = lib.summarizer {
+                assert_eq!(
+                    summarizer.summarize("", "").unwrap(),
+                    "stub-summary",
+                    "attached summarizer forwards to the configured adapter"
+                );
+            }
+            assert_eq!(
+                ports
+                    .cleaner
+                    .expect("cleaner should stay attached")
+                    .clean("", "", "")
+                    .unwrap()
+                    .transcript,
+                "",
+                "library_summaries={library_summaries}: cleaner stays attached"
+            );
+            let _report = engine.shutdown();
+        }
     }
 }

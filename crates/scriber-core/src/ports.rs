@@ -304,8 +304,9 @@ pub struct Library<'a> {
     pub clock: &'a dyn Clock,
     /// Compresses each entry's audio.
     pub encoder: &'a dyn Encoder,
-    /// Writes each entry's summary.
-    pub summarizer: &'a dyn Summarizer,
+    /// Writes each entry's summary; `None` disables library summary work while
+    /// leaving archiving and encoding available.
+    pub summarizer: Option<&'a dyn Summarizer>,
 }
 
 /// Every port a session action needs, borrowed for the length of one call.

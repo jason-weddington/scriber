@@ -686,6 +686,7 @@ mod tests {
     fn the_library_is_off_by_default_with_ollama_defaults() {
         let c = EngineConfig::new("/data");
         assert!(!c.library, "off");
+        assert!(c.library_summaries, "library summaries on by default");
         assert_eq!(c.ollama_url, "http://127.0.0.1:11434", "url");
         assert_eq!(c.summary_model, "qwen3.8:27b-mlx", "model");
         assert_eq!(c.keep_warm_every, Duration::from_secs(240), "keep warm");
@@ -747,6 +748,63 @@ mod tests {
             engine.library_transcript("20261026-140309").unwrap(),
             "hello world",
             "the transcript"
+        );
+    }
+
+    #[test]
+    fn library_summaries_false_archives_and_encodes_without_summarizing() {
+        let dir = TempDir::new().unwrap();
+        let settings_bytes = br#"{"summaries":true}"#;
+        write(&dir, "settings.json", settings_bytes);
+        let fakes = Fakes::default();
+        let (engine, _rx) = fakes.open(EngineConfig {
+            library_summaries: false,
+            ..library_config(&dir)
+        });
+        let _recording = engine.record().unwrap();
+        assert_eq!(
+            engine.stop_and_wait(PATIENCE).unwrap(),
+            "hello world",
+            "text"
+        );
+        let id = "20261026-140309";
+        assert_eq!(
+            engine.library(),
+            [LibraryEntry {
+                id: id.to_string(),
+                title: "2026-10-26 14:03:09".to_string(),
+                summary: "hello world".to_string(),
+            }],
+            "the excerpt stays"
+        );
+        assert_eq!(
+            engine.library_transcript(id).unwrap(),
+            "hello world",
+            "the transcript"
+        );
+        reaches(&fakes.encoder.calls, 1);
+        let wav = dir.path().join(format!("library/{id}/audio.wav"));
+        let started = Instant::now();
+        while wav.exists() {
+            assert!(
+                started.elapsed() < PATIENCE,
+                "archived audio.wav should be removed after encoding"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("settings.json")).unwrap(),
+            settings_bytes,
+            "settings.json is preserved byte for byte"
+        );
+        assert!(
+            fakes.summarizer.models.lock().unwrap().is_empty(),
+            "summarizer is never called"
+        );
+        assert_eq!(
+            engine.state().library_revision,
+            1,
+            "only the archive bumped the library revision"
         );
     }
 

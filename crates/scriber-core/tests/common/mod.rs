@@ -530,7 +530,7 @@ impl World {
         self.ports().with_library(Library {
             clock: &self.clock,
             encoder: &self.encoder,
-            summarizer: &self.summarizer,
+            summarizer: Some(&self.summarizer),
         })
     }
 

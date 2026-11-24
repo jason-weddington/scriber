@@ -13,7 +13,7 @@ mod tests {
         base_id, clean_summary, entry_path, excerpt, list, title, transcript, valid_id,
     };
     use scriber_core::model::{LibraryEntry, Phase, Snapshot};
-    use scriber_core::ports::{Files as _, LocalTime};
+    use scriber_core::ports::{Files as _, Library, LocalTime, Ports};
     use serde_json::{Value, json};
 
     use crate::common::{World, at, speech};
@@ -697,6 +697,99 @@ mod tests {
         assert!(jobs.first().unwrap().contains("Encode"), "{jobs:?}");
     }
 
+    fn library_ports_without_summarizer(w: &World) -> Ports<'_> {
+        w.ports().with_library(Library {
+            clock: &w.clock,
+            encoder: &w.encoder,
+            summarizer: None,
+        })
+    }
+
+    fn job_kinds(w: &World) -> Vec<&'static str> {
+        w.queue
+            .jobs
+            .borrow()
+            .iter()
+            .map(|j| {
+                let debug = format!("{j:?}");
+                if debug.starts_with("Job(Encode") {
+                    "Encode"
+                } else if debug.starts_with("Job(Summary") {
+                    "Summary"
+                } else {
+                    "Other"
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn summary_queueing_requires_saved_setting_and_summarizer() {
+        for (saved_summaries, with_summarizer, want) in [
+            (true, true, &["Encode", "Summary"][..]),
+            (true, false, &["Encode"][..]),
+            (false, true, &["Encode"][..]),
+            (false, false, &["Encode"][..]),
+        ] {
+            let w = World::default();
+            put(
+                &w,
+                "settings.json",
+                format!(r#"{{"summaries":{saved_summaries}}}"#).as_bytes(),
+            );
+            let p = if with_summarizer {
+                w.library_ports()
+            } else {
+                library_ports_without_summarizer(&w)
+            };
+            let mut d = Dictation::default();
+            d.new_session(&p).unwrap();
+            d.record(&p).unwrap();
+            w.transcriber
+                .answers
+                .borrow_mut()
+                .push_back(Ok("Part 1.".to_string()));
+            let transcribe = d.pause(&p).unwrap().unwrap();
+            assert!(d.done(&p).unwrap().is_none(), "paused");
+            let s = d.complete(w.run(&transcribe), &p);
+            assert_eq!(
+                s.phase,
+                Phase::Finished,
+                "summaries={saved_summaries} summarizer={with_summarizer}: finished"
+            );
+            assert_eq!(
+                s.library_revision, 1,
+                "summaries={saved_summaries} summarizer={with_summarizer}: archived"
+            );
+            assert_eq!(
+                job_kinds(&w),
+                want,
+                "summaries={saved_summaries} summarizer={with_summarizer}: queued job kinds"
+            );
+            if saved_summaries && !with_summarizer {
+                let encode = w.queue.jobs.borrow_mut().pop().unwrap();
+                let before = d.snapshot(&p);
+                let after = d.complete(w.run_with(&encode, &p), &p);
+                assert_eq!(
+                    after, before,
+                    "an encode without a summarizer changes nothing in the session"
+                );
+                assert_eq!(
+                    *w.encoder.calls.borrow(),
+                    [(
+                        format!("library/{ID}/audio.wav"),
+                        format!("library/{ID}/audio.m4a")
+                    )],
+                    "the encode paths"
+                );
+                assert!(
+                    w.files.read(&entry_path(ID, "audio.wav")).is_err(),
+                    "the wav is removed"
+                );
+            }
+        }
+    }
+
     #[test]
     fn an_empty_transcript_is_not_archived() {
         let w = World::default();
@@ -912,6 +1005,36 @@ mod tests {
                 "{answer:?}: the entry is untouched"
             );
         }
+    }
+
+    #[test]
+    fn a_summary_without_a_summarizer_fails_and_keeps_the_entry() {
+        let w = World::default();
+        let (mut d, _, summary) = archived(&w);
+        let original = w.files.read(&entry_path(ID, "entry.json")).unwrap();
+        let p = library_ports_without_summarizer(&w);
+        let before = d.snapshot(&p);
+        let outcome = w.run_with(&summary, &p);
+        assert_eq!(
+            format!("{outcome:?}"),
+            r#"Outcome { mark: Summary, result: Err("the library summarizer is unavailable") }"#,
+            "missing summarizer error"
+        );
+        let after = d.complete(outcome, &p);
+        assert_eq!(after, before, "nothing changed");
+        assert_eq!(
+            after.library_revision, before.library_revision,
+            "library revision unchanged"
+        );
+        assert_eq!(
+            w.files.read(&entry_path(ID, "entry.json")).unwrap(),
+            original,
+            "the entry is untouched"
+        );
+        assert!(
+            w.summarizer.transcripts.borrow().is_empty(),
+            "no summarizer call"
+        );
     }
 
     #[test]

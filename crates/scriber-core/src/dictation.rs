@@ -272,6 +272,9 @@ impl Job {
 /// Why a library job did nothing, when the library is off.
 const LIBRARY_OFF: &str = "the library is off";
 
+/// Why a summary job did nothing, when the library has no summarizer.
+const SUMMARIZER_UNAVAILABLE: &str = "the library summarizer is unavailable";
+
 /// Why a cleanup job did nothing, when there is no cleanup model.
 const CLEANUP_OFF: &str = "the cleanup model is off";
 
@@ -308,9 +311,9 @@ fn encode(id: &str, ports: &Ports<'_>) -> Result<(), String> {
 /// Asks the model for entry `id`'s summary and writes it into the entry.
 fn summarize(id: &str, text: &str, ports: &Ports<'_>) -> Result<String, String> {
     let library = library_for(id, ports)?;
+    let summarizer = library.summarizer.ok_or(SUMMARIZER_UNAVAILABLE)?;
     let model = settings::load(ports.files).summary_model;
-    let raw = library
-        .summarizer
+    let raw = summarizer
         .summarize(&model, text)
         .map_err(|e| e.to_string())?;
     let summary = clean_summary(&raw).ok_or("the summary was empty")?;
@@ -1330,8 +1333,9 @@ impl Dictation {
 
     /// With the library on, keeps the finished session (unless it heard
     /// nothing) as a new entry, removes its segments' audio, and queues the
-    /// entry's encoding and, when summaries are on, its summary. When the
-    /// entry cannot be written the segments stay and nothing else changes.
+    /// entry's encoding and, when summaries are on and a summarizer is
+    /// attached, its summary. When the entry cannot be written the segments
+    /// stay and nothing else changes.
     fn archive(&mut self, ports: &Ports<'_>, record: &CleanupRecord) {
         let Some(lib) = ports.library else {
             if settings::load(ports.files).keep_segments
@@ -1371,7 +1375,7 @@ impl Dictation {
                 id: archived.id.clone(),
             }));
         }
-        if settings.summaries {
+        if settings.summaries && lib.summarizer.is_some() {
             jobs.push(Job(Work::Summary {
                 id: archived.id,
                 text: self.text.clone(),
