@@ -426,4 +426,178 @@ mod tests {
         assert!(phantom(&a, &p(" Thank you.", 320_000, 352_000)), "invented");
         assert!(!phantom(&a, &p(" Hello.", 320_000, 352_000)), "real words");
     }
+
+    const TRAILING_ACKS: [&str; 4] = ["Okay.", "Okay", "OK.", "OK"];
+
+    #[test]
+    fn a_trailing_acknowledgement_over_silence_is_dropped() {
+        let a = audio_a();
+        let hum = [loud(320_000), vec![SILENCE_RMS * 0.99; 32_000]].concat();
+        let spoken = [loud(320_000), loud(32_000)].concat();
+        for ack in TRAILING_ACKS {
+            let tail = p(&format!(" {ack}"), 320_000, 352_000);
+            assert_eq!(
+                kept_text(&a, &[hello(), tail.clone()]),
+                Some("Hello there.".to_string()),
+                "{ack} over digital silence"
+            );
+            assert_eq!(
+                kept_text(&hum, &[hello(), tail.clone()]),
+                Some("Hello there.".to_string()),
+                "{ack} over room hum"
+            );
+            assert_eq!(
+                kept_text(&spoken, &[hello(), tail]),
+                Some(format!("Hello there. {ack}")),
+                "{ack} over speech"
+            );
+        }
+        for variant in ["  oKaY.  ", "\tOKAY\n", "  oK. ", "  ok  "] {
+            assert_eq!(
+                kept_text(&a, &[hello(), p(variant, 320_000, 352_000)]),
+                Some("Hello there.".to_string()),
+                "{variant:?} case and whitespace"
+            );
+        }
+    }
+
+    #[test]
+    fn a_voiced_final_acknowledgement_at_the_silence_level_is_kept() {
+        for ack in TRAILING_ACKS {
+            let short = p(&format!(" {ack}"), 320_000, 350_401);
+            let mut at = audio_a();
+            if let Some(s) = at.get_mut(350_400) {
+                *s = SILENCE_RMS;
+            }
+            assert_eq!(
+                kept_text(&at, &[hello(), short.clone()]),
+                Some(format!("Hello there. {ack}")),
+                "{ack} at SILENCE_RMS"
+            );
+            let mut below = audio_a();
+            if let Some(s) = below.get_mut(350_400) {
+                *s = SILENCE_RMS * 0.99;
+            }
+            assert_eq!(
+                kept_text(&below, &[hello(), short]),
+                Some("Hello there.".to_string()),
+                "{ack} below SILENCE_RMS"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_final_or_compound_silent_acknowledgement_is_kept() {
+        let a = audio_a();
+        let first = [vec![0.0; 32_000], loud(320_000)].concat();
+        assert_eq!(
+            kept_text(
+                &first,
+                &[p(" Okay.", 0, 32_000), p(" Hello there.", 32_000, 352_000)]
+            ),
+            Some("Okay. Hello there.".to_string()),
+            "non-final silent Okay."
+        );
+        assert_eq!(
+            kept_text(
+                &a,
+                &[
+                    hello(),
+                    p(" Okay.", 320_000, 336_000),
+                    p(" Okay.", 336_000, 352_000)
+                ]
+            ),
+            Some("Hello there. Okay.".to_string()),
+            "only the final silent Okay. is dropped"
+        );
+        assert_eq!(
+            kept_text(&a, &[hello(), p(" Thank you. Okay.", 320_000, 352_000)]),
+            Some("Hello there. Thank you. Okay.".to_string()),
+            "compound phrase with Thank you. Okay."
+        );
+        assert_eq!(
+            kept_text(&a, &[hello(), p(" Okay. Got it.", 320_000, 352_000)]),
+            Some("Hello there. Okay. Got it.".to_string()),
+            "compound phrase starting with Okay."
+        );
+    }
+
+    #[test]
+    fn short_spoken_acknowledgements_are_kept() {
+        for ack in TRAILING_ACKS {
+            assert_eq!(
+                keep(SHORT_SEGMENT - 1, &format!(" {ack} ")),
+                Some(ack.to_string()),
+                "keep below SHORT_SEGMENT: {ack}"
+            );
+            assert_eq!(
+                keep(16_000, ack),
+                Some(ack.to_string()),
+                "keep short: {ack}"
+            );
+            assert_eq!(
+                kept_text(&loud(16_000), &[p(&format!(" {ack}"), 0, 16_000)]),
+                Some(ack.to_string()),
+                "kept_text short voiced: {ack}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sole_silent_acknowledgement_with_speech_elsewhere_is_dropped() {
+        let a = audio_a();
+        assert!(!is_silent(&a), "audio has audible samples elsewhere");
+        for ack in TRAILING_ACKS {
+            let phrase = p(&format!(" {ack}"), 320_000, 352_000);
+            assert_eq!(
+                phrase_audio(&a, &phrase).len(),
+                32_000,
+                "nonempty silent phrase span"
+            );
+            assert_eq!(kept_text(&a, &[phrase]), None, "{ack}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_acknowledgement_over_silence_is_a_phantom() {
+        let a = audio_a();
+        for ack in TRAILING_ACKS {
+            assert!(
+                phantom(&a, &p(&format!(" {ack}"), 320_000, 352_000)),
+                "{ack} over silence"
+            );
+            assert!(
+                !phantom(&a, &p(&format!(" {ack}"), 0, 320_000)),
+                "{ack} over speech"
+            );
+        }
+        assert!(
+            phantom(&a, &p("  oKaY.  ", 320_000, 352_000)),
+            "mixed case and whitespace"
+        );
+        assert!(
+            !phantom(&a, &p(" Hello.", 320_000, 352_000)),
+            "real words over silence"
+        );
+    }
+
+    #[test]
+    fn an_acknowledgement_with_an_empty_clamped_span_is_a_phantom() {
+        let a = audio_a();
+        for (label, phrase) in [
+            ("past end", p(" Okay.", 400_000, 410_000)),
+            ("inverted in silence", p(" OK.", 345_000, 330_000)),
+            ("inverted in speech", p(" Okay", 20_000, 10_000)),
+            ("zero width in speech", p(" OK", 16_000, 16_000)),
+        ] {
+            assert!(
+                phrase_audio(&a, &phrase).is_empty(),
+                "{label}: clamped span is empty"
+            );
+            assert!(
+                phantom(&a, &phrase),
+                "{label}: empty clamped span counts as silent"
+            );
+        }
+    }
 }

@@ -9,11 +9,10 @@ mod tests {
     #[test]
     fn the_format_is_pinned() {
         assert_eq!(
-            STYLE,
-            "Okay, here's what I need. First, check the board; then, once it's done, let me know.",
+            STYLE, "Here's what I need. First, check the board; then, once it's done, let me know.",
             "style"
         );
-        assert_eq!(STYLE.chars().count(), 84, "style length");
+        assert_eq!(STYLE.chars().count(), 78, "style length");
         assert_eq!(PREFIX, "Glossary: ", "prefix");
         assert_eq!(SEPARATOR, ", ", "separator");
         assert_eq!(MAX_PROMPT_CHARS, 500, "limit");
@@ -23,7 +22,7 @@ mod tests {
     fn terms_are_listed_in_file_order() {
         assert_eq!(
             prompt("talos\nagent-gtd\nPersonal KB\n"),
-            "Okay, here's what I need. First, check the board; then, once it's done, let me know. Glossary: talos, agent-gtd, Personal KB.",
+            "Here's what I need. First, check the board; then, once it's done, let me know. Glossary: talos, agent-gtd, Personal KB.",
             "three terms"
         );
         assert_eq!(
@@ -75,7 +74,7 @@ mod tests {
     #[test]
     fn the_prompt_stops_at_the_limit() {
         let fits = MAX_PROMPT_CHARS - STYLE.chars().count() - 1 - PREFIX.len() - 1;
-        assert_eq!(fits, 404, "room for terms");
+        assert_eq!(fits, 410, "room for terms");
         let x = "x".repeat(fits);
         let got = prompt(&x);
         assert_eq!(got, format!("{STYLE} {PREFIX}{x}."), "exactly at the limit");
@@ -87,7 +86,7 @@ mod tests {
     fn the_separator_counts_and_the_first_term_that_overflows_ends_the_list() {
         let fits = MAX_PROMPT_CHARS - STYLE.chars().count() - 1 - PREFIX.len() - 1;
         let rest = fits - 1 - SEPARATOR.len();
-        assert_eq!(rest, 401, "room after the first term");
+        assert_eq!(rest, 407, "room after the first term");
         let b = "b".repeat(rest);
         let got = prompt(&format!("a\n{b}"));
         assert_eq!(
@@ -166,12 +165,12 @@ mod app_tests {
             app("c".repeat(64)),
             app("dd".into()),
         ];
-        let boundary_user = "u".repeat(202);
+        let boundary_user = "u".repeat(208);
         let prompt = prompt_with_app(&boundary, std::slice::from_ref(&boundary_user));
         assert_eq!(prompt.chars().count(), 500);
         assert!(prompt.contains(&boundary_user));
         assert!(!prompt.contains("never spoken"));
-        assert!(prompt_with_app(&boundary, &["u".repeat(203)]).ends_with("dd."));
+        assert!(prompt_with_app(&boundary, &["u".repeat(209)]).ends_with("dd."));
         let overflow = vec![
             app("a".repeat(64)),
             app("b".repeat(64)),

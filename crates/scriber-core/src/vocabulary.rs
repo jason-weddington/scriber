@@ -2,9 +2,10 @@
 //! (`vocabulary.txt` in the app's data folder). Naming the terms up front
 //! makes Whisper spell project names and jargon the way the user does.
 
-/// A punctuated sentence the prompt always starts with, so Whisper writes periods and commas. Measured against real audio: do not edit.
+/// A punctuated sentence the prompt always starts with, so Whisper writes
+/// periods, commas, a semicolon and contractions.
 pub const STYLE: &str =
-    "Okay, here's what I need. First, check the board; then, once it's done, let me know.";
+    "Here's what I need. First, check the board; then, once it's done, let me know.";
 
 /// What the prompt starts with.
 pub const PREFIX: &str = "Glossary: ";

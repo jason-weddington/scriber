@@ -7,8 +7,10 @@
 //! prompt returns punctuation such as "." for noise. A segment is trimmed of
 //! trailing silence before transcription (Whisper appends "Thank you." to room
 //! tone), and the short-segment test runs on the trimmed length. The last
-//! phrase is dropped only when its whole text is on [`HALLUCINATIONS`] and its
-//! own span is silent at [`SILENCE_RMS`], before the short-segment rule runs.
+//! phrase is dropped only when its whole text is on [`HALLUCINATIONS`] or the
+//! trailing-only acknowledgement list (`"Okay."`, `"Okay"`, `"OK."`, `"OK"`)
+//! and its own span is silent at [`SILENCE_RMS`], before the short-segment
+//! rule runs.
 
 use crate::ports::Phrase;
 
@@ -57,6 +59,12 @@ pub const HALLUCINATIONS: [&str; 12] = [
     "(silence)",
     "Subtitles by the Amara.org community",
 ];
+
+/// Standalone acknowledgements Whisper appends to trailing silence or room
+/// tone. Unlike [`HALLUCINATIONS`], these are never dropped by [`keep`] (so a
+/// short spoken reply is kept) and qualify only as a final [`phantom`] phrase
+/// over phrase-local silence.
+const TRAILING_PHANTOMS: [&str; 4] = ["Okay.", "Okay", "OK.", "OK"];
 
 /// What separates two segments' text in the transcript: a pause is usually
 /// a thought boundary, so each segment is a paragraph.
@@ -140,12 +148,22 @@ pub fn phrase_audio<'a>(samples: &'a [f32], phrase: &Phrase) -> &'a [f32] {
     samples.get(start..end).unwrap_or_default()
 }
 
-/// True when `phrase` is an invention over silence: its whole text is on
-/// [`HALLUCINATIONS`] and its own span of `samples` is silent at
-/// [`SILENCE_RMS`] (see [`is_silent`]).
+/// True when `text`'s whole text (trimmed, ignoring ASCII case) is one of
+/// [`TRAILING_PHANTOMS`].
+fn trailing_phantom(text: &str) -> bool {
+    TRAILING_PHANTOMS
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(text.trim()))
+}
+
+/// True when `phrase` is a phantom over silence: its whole text (trimmed,
+/// ignoring ASCII case) is on [`HALLUCINATIONS`] or the trailing-only
+/// acknowledgement list (`"Okay."`, `"Okay"`, `"OK."`, `"OK"`), and its own
+/// span of `samples` is silent at [`SILENCE_RMS`] (see [`is_silent`]).
 #[must_use]
 pub fn phantom(samples: &[f32], phrase: &Phrase) -> bool {
-    invented(&phrase.text) && is_silent(phrase_audio(samples, phrase))
+    (invented(&phrase.text) || trailing_phantom(&phrase.text))
+        && is_silent(phrase_audio(samples, phrase))
 }
 
 /// The text worth keeping from `phrases`, the transcriber's reply to

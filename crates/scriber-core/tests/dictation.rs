@@ -433,6 +433,88 @@ mod tests {
         assert_eq!(text, "Hello. Thank you.", "kept");
     }
 
+    /// Twenty seconds of speech and two of silence, transcribed as "Hello."
+    /// up to `split` and "Okay." from there to the end of the trimmed audio;
+    /// returns the finished snapshot, the transcriber call count and the
+    /// transcribed sample count.
+    fn hello_then_okay(split: usize) -> (Snapshot, usize, usize) {
+        let w = World::default();
+        w.recorder.captures.borrow_mut().push_back(Ok(Captured::new(
+            [speech(320_000), vec![0.0; 32_000]].concat(),
+            1,
+            16_000,
+        )));
+        w.transcriber.phrases.borrow_mut().push_back(vec![
+            Phrase {
+                text: " Hello.".into(),
+                start: 0,
+                end: split,
+            },
+            Phrase {
+                text: " Okay.".into(),
+                start: split,
+                end: 328_000,
+            },
+        ]);
+        let p = w.ports();
+        let (mut d, jobs) = at(&w, Phase::Paused);
+        let _none = d.done(&p).unwrap();
+        finish(&mut d, &w, &jobs[0]);
+        let calls = w.transcriber.calls.borrow();
+        (snap(&d, &w), calls.len(), calls[0].0)
+    }
+
+    #[test]
+    fn a_phantom_last_okay_over_quiet_padding_is_dropped() {
+        let (split, end) = (320_000, 328_000);
+        let (s, calls, heard) = hello_then_okay(split);
+        assert_eq!(calls, 1, "one transcription call");
+        assert_eq!(heard, 328_000, "trimmed to the retained padding");
+        assert!(split < end && end <= heard, "nonempty span inside input");
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, "Hello.", "dropped");
+    }
+
+    #[test]
+    fn a_spoken_last_okay_overlapping_speech_is_kept() {
+        let (split, end) = (300_000, 328_000);
+        let (s, calls, heard) = hello_then_okay(split);
+        assert_eq!(calls, 1, "one transcription call");
+        assert_eq!(heard, 328_000, "trimmed to the retained padding");
+        assert!(split < end && end <= heard, "nonempty span inside input");
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, "Hello. Okay.", "kept");
+    }
+
+    #[test]
+    fn a_short_spoken_standalone_okay_is_kept() {
+        let w = World::default();
+        let len = 16_000;
+        assert!(
+            len < scriber_core::transcript::SHORT_SEGMENT,
+            "shorter than SHORT_SEGMENT"
+        );
+        w.recorder
+            .captures
+            .borrow_mut()
+            .push_back(Ok(Captured::new(speech(len), 1, 16_000)));
+        w.transcriber.phrases.borrow_mut().push_back(vec![Phrase {
+            text: " Okay.".into(),
+            start: 0,
+            end: len,
+        }]);
+        let p = w.ports();
+        let (mut d, _) = at(&w, Phase::Recording);
+        let job = d.done(&p).unwrap().unwrap();
+        finish(&mut d, &w, &job);
+        let calls = w.transcriber.calls.borrow();
+        assert_eq!(calls.len(), 1, "one transcription call");
+        assert_eq!(calls[0].0, len, "voiced short reply");
+        let s = snap(&d, &w);
+        assert_eq!(s.phase, Phase::Finished, "finished");
+        assert_eq!(s.text, "Okay.", "kept");
+    }
+
     #[test]
     fn a_long_segment_of_mostly_room_tone_drops_its_hallucination() {
         let w = World::default();
