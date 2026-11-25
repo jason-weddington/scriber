@@ -2,6 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.15.0 - 2026-11-24
+#### Features
+- Add EngineConfig::library_summaries to let embedders disable library summary jobs - (35a6a54) - vortac-dispatch
+#### Bug Fixes
+- Guard against silent trailing phantom "Okay."/"OK." and remove "Okay, " from STYLE prompt - (31f2fb8) - vortac-dispatch
+#### Documentation
+- document EngineConfig::library_summaries and optional Library::summarizer - (a26ee3f) - Jason Weddington
+#### Miscellaneous Chores
+- (**deps**) update cookie to 0.18.3 for RUSTSEC-2026-0594 - (8b95b76) - Jason Weddington
+
+- - -
+
 ## v0.14.0 - 2026-11-22
 #### Features
 - Bundle SCOWL 60 English dictionary for learning and context jargon filtering - (da52702) - vortac-dispatch
