@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.0 - 2026-11-28
+#### Features
+- Expose opt-in vulkan Cargo feature on scriber-engine forwarding whisper-rs/vulkan - (1c230ac) - vortac-dispatch
+#### Documentation
+- document opt-in scriber-engine vulkan feature - (932a167) - Jason Weddington
+
+- - -
+
 ## v0.15.0 - 2026-11-24
 #### Features
 - Add EngineConfig::library_summaries to let embedders disable library summary jobs - (35a6a54) - vortac-dispatch
