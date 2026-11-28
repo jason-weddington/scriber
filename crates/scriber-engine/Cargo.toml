@@ -7,6 +7,10 @@ rust-version.workspace = true
 description = "Scriber's dictation engine: scriber-core with the real microphone, Whisper, data folder and download, for any Rust app."
 publish = false
 
+[features]
+default = []
+vulkan = ["whisper-rs/vulkan"]
+
 [dependencies]
 # The logic. A group of its own, so `cargo sort --grouped` keeps it first.
 scriber-core = { path = "../scriber-core" }
@@ -30,8 +34,9 @@ thiserror = "2"
 # CDLA-Permissive-2.0, which deny.toml does not allow).
 ureq = { version = "3.5.0", default-features = false, features = ["native-tls-no-default"] }
 # whisper.cpp. Building it needs cmake. On macOS it runs on the GPU through
-# Metal (the target table below); elsewhere on the CPU, so the workspace
-# builds and gates on Linux.
+# Metal (the target table below); on Linux it runs on the CPU by default, or on
+# the GPU through Vulkan when built with the opt-in `vulkan` feature (which
+# needs Vulkan development headers and `glslc`).
 whisper-rs = "0.16.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]

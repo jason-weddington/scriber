@@ -70,15 +70,19 @@ fi
 step pnpm-install in_app pnpm install --frozen-lockfile --prefer-offline --silent
 step architecture scripts/check-architecture.sh
 step checks-selftest scripts/selftest-checks.sh
-step clippy cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+# Root workspace clippy, tests and coverage run with default features (not
+# --all-features) so normal gate hosts are not required to install the opt-in
+# Vulkan toolchain; `deny` below still audits the full feature graph via
+# `deny.toml`'s `all-features = true`.
+step clippy cargo clippy --workspace --all-targets --locked -- -D warnings
 step clippy-app in_app cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 # One instrumented build serves every Rust test step below, so the core is
 # compiled once, not once per step.
-step tests cargo llvm-cov nextest --workspace --all-features --locked --no-report
+step tests cargo llvm-cov nextest --workspace --locked --no-report
 # The same suite under an odd time zone and a decimal-comma locale: nothing
 # may depend on the machine's zone or language.
 step tests-tz-locale env TZ=Pacific/Chatham LANG=de_DE.UTF-8 LC_ALL=de_DE.UTF-8 \
-  cargo llvm-cov nextest --workspace --all-features --locked --no-report
+  cargo llvm-cov nextest --workspace --locked --no-report
 step svelte-check in_app pnpm check
 step eslint in_app pnpm lint
 step unit-tests in_app pnpm exec playwright test --project unit
@@ -91,7 +95,7 @@ step unit-tests in_app pnpm exec playwright test --project unit
 # The engine's cpal and whisper.cpp adapters (and its smoke example) need a
 # microphone and a speech model the gate never has, so they are not measured;
 # every other file in the core, engine and server is held to the floor.
-step coverage cargo llvm-cov nextest --workspace --all-features --locked \
+step coverage cargo llvm-cov nextest --workspace --locked \
   --ignore-filename-regex 'crates/scriber-engine/(src/(device|whisper)\.rs|examples/)' \
   --fail-under-lines "$RUST_COVERAGE_FLOOR"
 # nextest does not run doctests; without this they silently never run.

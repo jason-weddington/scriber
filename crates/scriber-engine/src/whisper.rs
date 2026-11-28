@@ -19,8 +19,9 @@ pub(crate) const BEAM_PATIENCE: f32 = -1.0;
 /// The language every decode is forced to.
 pub(crate) const LANGUAGE: &str = "en";
 
-/// whisper.cpp, on Metal on macOS and on the CPU elsewhere; the model loads
-/// once (warm-up or first use) and stays until `unload`.
+/// whisper.cpp, on Metal on macOS and on the CPU by default on Linux (or on
+/// Vulkan on Linux when built with the opt-in `vulkan` feature); the model
+/// loads once (warm-up or first use) and stays until `unload`.
 pub struct Whisper(Source, LoadOnce<WhisperContext>);
 
 /// Where [`Whisper`] looks for its model.
